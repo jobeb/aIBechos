@@ -316,10 +316,17 @@ class AutoWatcher:
             # en TMDB), y reintentarlos en cada ciclo era un bucle infinito.
             attempts = self._processed[key].get("attempts", 0)
             if attempts >= _MAX_RETRY_ATTEMPTS:
-                self._log_skip_once(key, f"{status}, {attempts} intentos agotados", name)
-                return False
-            _log.info("Reprocesando (estado anterior=%s, intento %d/%d): %s",
-                      status, attempts + 1, _MAX_RETRY_ATTEMPTS, name)
+                # Tras actualizar el filtro italiano, un archivo con baja_confianza
+                # previo (3 intentos) debe poder reintentarse si sigue en la carpeta
+                # y ha pasado un tiempo prudencial, en vez de quedar bloqueado para siempre
+                ts = float(self._processed[key].get("ts", 0) or 0)
+                if ts and (time.time() - ts) < 24 * 3600:
+                    self._log_skip_once(key, f"{status}, {attempts} intentos agotados", name)
+                    return False
+                _log.info("Reintentando tras 24h pese a intentos agotados (filtro actualizado): %s", name)
+            else:
+                _log.info("Reprocesando (estado anterior=%s, intento %d/%d): %s",
+                          status, attempts + 1, _MAX_RETRY_ATTEMPTS, name)
             # La cuenta de intentos NO se borra con la entrada -- se lleva al
             # siguiente _mark() (ver _pending_attempts), o el contador se
             # reiniciaría solo y el tope no serviría de nada.

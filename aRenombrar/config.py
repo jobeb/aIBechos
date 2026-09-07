@@ -324,6 +324,11 @@ DEFAULTS = {
     #                                      stuck_tries, last_alt_ts}}}}
     # Se gestiona desde gui/app.py y core/unstuck.py; no tocar a mano.
     "missing_ep_auto_downloads": {},
+    # Paginado global para todas las tablas paginadas (ver TableView.page_size
+    # y _on_global_page_size_changed en gui/app.py). Valores 10/50/100 fijos,
+    # "Ajustado" calcula fitted = altura_disponible // alto_fila solo al abrir
+    # pestaña (sin recalcular al redimensionar) para evitar doble render.
+    "page_size": "Ajustado",
 }
 
 

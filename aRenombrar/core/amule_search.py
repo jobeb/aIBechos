@@ -95,8 +95,9 @@ def build_amule_query(series_name: str, season: int, episode: int,
 
     # Limpiar dobles espacios
     q = re.sub(r"\s{2,}", " ", q).strip()
-    # Si el archivo original pedía castellano, añadir indicador si aún no está
-    if prefers_castellano and "castellano" not in q.lower():
+    # Si hay template personalizado se respeta tal cual (no añadir castellano automáticamente)
+    has_custom = tmpl is not None and str(tmpl).strip() != ""
+    if not has_custom and prefers_castellano and "castellano" not in q.lower():
         q = f"{q} castellano" if q else "castellano"
     return q if q else f"{series_name} {season}x{episode:02d}" if season is not None else series_name
 
@@ -113,6 +114,7 @@ def build_amule_season_query(series_name: str, season: int,
             if k.strip().lower() == low:
                 tmpl = v
                 break
+    has_custom = tmpl is not None and str(tmpl).strip() != ""
     if tmpl is None or not str(tmpl).strip():
         return _maybe_add_castellano(f"{series_name} {season}x", prefers_castellano)
 
@@ -133,12 +135,16 @@ def build_amule_season_query(series_name: str, season: int,
                 # Asegurar sufijo x
                 if not q.endswith("x"):
                     q = q.rstrip() + "x"
+                if has_custom:
+                    return q
                 return _maybe_add_castellano(q, prefers_castellano)
             except Exception:
                 return _maybe_add_castellano(f"{series_name} {season}x", prefers_castellano)
         try:
             q = tmpl.format(serie=series_name, temporada=season, episodio="", año="")
             q = re.sub(r"\s{2,}", " ", q).strip()
+            if has_custom:
+                return q
             return _maybe_add_castellano(q, prefers_castellano)
         except Exception:
             return _maybe_add_castellano(f"{series_name} {season}x", prefers_castellano)
@@ -151,6 +157,8 @@ def build_amule_season_query(series_name: str, season: int,
             # Si el template era solo "Slime" sin vars, añadir temporada
             if str(q).strip().lower() == str(templates.get(series_name, "")).strip().lower():
                 q = f"{q} {season}x"
+        if has_custom:
+            return q
         return _maybe_add_castellano(q, prefers_castellano)
     except Exception:
         return _maybe_add_castellano(f"{series_name} {season}x", prefers_castellano)

@@ -52,8 +52,12 @@ Se mantiene el mismo contrato de datos que core/amule_client.py
 """
 
 import hashlib
+import binascii
+import os
+import re
 import socket
 import struct
+import subprocess
 import threading
 import time as _time
 from typing import List, Optional, Tuple
@@ -288,6 +292,16 @@ def _format_size(bytes_size: int) -> str:
     if bytes_size < 1024 ** 3:
         return f"{bytes_size / 1024 ** 2:.1f} MB"
     return f"{bytes_size / 1024 ** 3:.2f} GB"
+
+
+def _no_console_kwargs():
+    """Kwargs para subprocess.run que oculta la ventana en Windows."""
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {"startupinfo": startupinfo, "creationflags": subprocess.CREATE_NO_WINDOW}
 
 
 class EcClient:
@@ -570,35 +584,237 @@ class EcClient:
         Cada elemento: {hash_hex, name, size_done, size_full, percent, speed, sources, status}
         Si el servidor no soporta la operación o no hay cola, devuelve [] sin lanzar.
         """
+        def _get_download_queue_via_amulecmd(host="localhost", port=4712, password="", timeout=5) -> list[dict]:
+            """Fallback: lee "show DL" desde amulecmd para obtener descargas activas.
+
+            Si amulecmd no está disponible o falla, devuelve lista vacía.
+            """
+            # Detectar amulecmd
+            from core.amule_client import _find_amulecmd
+            exe = _find_amulecmd("")
+            if not exe:
+                return []
+
+            args = [exe, "-c", "show DL"]
+            if host:
+                args.extend(["-h", host])
+            if port:
+                args.extend(["-p", str(port)])
+            if password:
+                args.extend(["-P", password])
+
+            def _find_temp_dir() -> str:
+                try:
+                    if os.name == "nt":
+                        conf_path = os.path.join(os.environ.get("APPDATA", ""),
+                                                 "aMule", "aMule.conf")
+                    else:
+                        conf_path = os.path.join(os.path.expanduser("~"),
+                                                 ".aMule", "aMule.conf")
+                    if os.path.isfile(conf_path):
+                        with open(conf_path, "r", encoding="utf-8", errors="replace") as f:
+                            for line in f:
+                                line=line.strip()
+                                if line.startswith("TempDir="):
+                                    return line[len("TempDir="):].replace("\\\\", "\\")
+                except Exception:
+                    pass
+                return ""
+
+            try:
+                result = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                                        **_no_console_kwargs())
+                combined = (result.stdout or "") + (result.stderr or "")
+                if not combined.strip():
+                    return []
+                # Formato REAL de "show DL" (verificado contra amulecmd 3.0.1)
+                # cada descarga ocupa DOS líneas:
+                #   > <HASH32> <nombre del archivo>
+                #   >     [<pct>%]  <sources>/<total> ... - <estado> - <xx>.part.met - <prio> [- <vel>]
+                # La velocidad solo aparece cuando está descargando; Waiting no la trae.
+                # El segundo número puede venir como "+01" o "(01)".
+                lines = combined.splitlines()
+                out = []
+                i, n = 0, len(lines)
+                while i < n:
+                    raw = lines[i].lstrip()
+                    m = re.match(r'>\s+([0-9A-Fa-f]{32})\s+(.+)', raw)
+                    if not m:
+                        i += 1
+                        continue
+                    hhex = m.group(1).lower()
+                    name = m.group(2).strip()
+                    percent = 0.0
+                    sources = 0
+                    status = 2          # código PartFileStatus: 2=descargando
+                    speed = 0
+                    part_met = ""
+                    det = ""
+                    if i + 1 < n:
+                        det = lines[i + 1].lstrip()
+                        # solo tratar la siguiente línea si es detalle de descarga
+                        if det.startswith(">") and "[" in det and "%" in det:
+                            # percent
+                            pm = re.search(r'\[([\d.,]+)\s*%\]', det)
+                            if pm:
+                                try:
+                                    percent = float(pm.group(1).replace(",", "."))
+                                except ValueError:
+                                    percent = 0.0
+                            # sources = primer número antes de "/"
+                            sm = re.search(r'\]\s+(\d+)\s*/', det)
+                            if sm:
+                                try:
+                                    sources = int(sm.group(1))
+                                except ValueError:
+                                    sources = 0
+                            # status: texto entre los primeros dos " - "
+                            # ej: " - Waiting - 004.part.met - "
+                            parts = det.split(" - ")
+                            if len(parts) >= 2:
+                                sc = parts[1].strip().lower()
+                                for kw, code in (("complet", 4), ("pause", 1),
+                                                 ("wait", 0), ("hash", 6),
+                                                 ("morph", 3), ("alloc", 3),
+                                                 ("stop", 7)):
+                                    if kw in sc:
+                                        status = code
+                                        break
+                            # part file
+                            pm2 = re.search(r'(\d+\.part\.met)', det)
+                            if pm2:
+                                part_met = pm2.group(1)
+                            # speed opcional al final: "12.40 kB/s" o "1.5 MB/s"
+                            spm = re.search(r'(\d+(?:[.,]\d+)?)\s*([KMGT]?B)/s\s*$', det, re.IGNORECASE)
+                            if spm:
+                                try:
+                                    sn = float(spm.group(1).replace(",", "."))
+                                except ValueError:
+                                    sn = 0.0
+                                unit = spm.group(2).upper()
+                                if unit.startswith("G"):
+                                    speed = int(sn * 1024 * 1024 * 1024)
+                                elif unit.startswith("M"):
+                                    speed = int(sn * 1024 * 1024)
+                                elif unit.startswith("K"):
+                                    speed = int(sn * 1024)
+                                else:
+                                    speed = int(sn)
+                            i += 2
+                        else:
+                            i += 1
+                    else:
+                        i += 1
+                    # Enriquecer tamaños desde el .part en Temp si es posible.
+                    # aMule pre-aloca el .part al tamaño completo, así que su
+                    # tamaño en disco ≈ size_full; size_done ≈ percent*size_full.
+                    size_full = 0
+                    size_done = 0
+                    if part_met:
+                        try:
+                            td = _find_temp_dir()
+                            if td:
+                                part_path = os.path.join(td, part_met.replace(".met", ""))
+                                if os.path.isfile(part_path):
+                                    size_full = os.path.getsize(part_path)
+                                    # Si está completando (100%), size_done = size_full
+                                    size_done = int(size_full * percent / 100.0) if percent else 0
+                                    # Para 0% pero archivo pre-alocado grande, done sería 0; ok
+                        except Exception:
+                            pass
+                    out.append({
+                        "hash_hex": hhex,
+                        "name": name,
+                        "size_done": size_done,
+                        "size_full": size_full,
+                        "percent": percent,
+                        "speed": speed,
+                        "sources": sources,
+                        "status": status,
+                        "part_met": part_met,
+                    })
+                return out
+            except Exception:
+                return []
+
         try:
             self._send_packet(EC_OP_GET_DLOAD_QUEUE, [])
             opcode, tags = self._recv_packet()
-            if opcode not in (EC_OP_DLOAD_QUEUE, EC_OP_STRINGS):
+        except Exception:
+            # Fallo de red/conexión EC: intentar amulecmd como respaldo
+            try:
+                return _get_download_queue_via_amulecmd(self.host, self.port, self.password)
+            except Exception:
                 return []
+        if opcode == EC_OP_FAILED:
+            err = self._extract_error(tags) or ""
+            # Si el servidor EC no soporta la operación (p.ej. "Unknown command"),
+            # no lo tratamos como un fallo real: usamos el fallback amulecmd.
+            if err and any(kw in err.lower() for kw in ("unknown", "unsupported", "not implemented", "command")):
+                try:
+                    return _get_download_queue_via_amulecmd(self.host, self.port, self.password)
+                except Exception:
+                    return []
+            try:
+                return _get_download_queue_via_amulecmd(self.host, self.port, self.password)
+            except Exception:
+                return []
+        if opcode not in (EC_OP_DLOAD_QUEUE, EC_OP_STRINGS):
+            # Si el servidor responde otro opcode (ej: status reply), intentar amulecmd
+            try:
+                return _get_download_queue_via_amulecmd(self.host, self.port, self.password)
+            except Exception:
+                return []
+        try:
             out = []
             for t in tags:
-                if t.get("tag") != EC_TAG_PARTFILE:
+                # Aceptar cualquier tag que traiga un nombre de partfile (robusto ante
+                # variaciones de versión de aMule: PARTFILE 0x0300, KNOWNFILE 0x0400, etc.)
+                if t.get_child(EC_TAG_PARTFILE_NAME) is None and getattr(t, "name", None) not in (EC_TAG_PARTFILE, 0x0400, 0x0401):
                     continue
-                kids = {c.get("tag"): c for c in t.get("children", [])}
-                h = kids.get(EC_TAG_PARTFILE_HASH)
-                raw = h.get("value") if h else None
+                h_tag = t.get_child(EC_TAG_PARTFILE_HASH)
+                raw = h_tag.data if h_tag and h_tag.tagtype == EC_TAGTYPE_HASH16 else None
                 if not raw or not isinstance(raw, (bytes, bytearray)) or len(raw) != 16:
-                    continue
-                import binascii
+                    # Algunos servidores mandan el hash como dato del propio tag PARTFILE
+                    if t.tagtype == EC_TAGTYPE_HASH16 and len(t.data) == 16:
+                        raw = t.data
+                    else:
+                        # Buscar hash en cualquier hijo tipo HASH16
+                        for c in getattr(t, "children", []):
+                            if c.tagtype == EC_TAGTYPE_HASH16 and len(c.data) == 16:
+                                raw = c.data
+                                break
+                        if not raw or len(raw) != 16:
+                            continue
                 hhex = binascii.hexlify(raw).decode("ascii").lower()
-                name_t = kids.get(EC_TAG_PARTFILE_NAME)
-                name = name_t.get("value", "") if name_t else ""
-                sd = kids.get(EC_TAG_PARTFILE_SIZE_DONE)
-                sf = kids.get(EC_TAG_PARTFILE_SIZE_FULL)
-                size_done = int(sd.get("value", 0) or 0) if sd else 0
-                size_full = int(sf.get("value", 0) or 0) if sf else 0
+                name_t = t.get_child(EC_TAG_PARTFILE_NAME)
+                name = name_t.to_str() if name_t else ""
+                sd = t.get_child(EC_TAG_PARTFILE_SIZE_DONE)
+                sf = t.get_child(EC_TAG_PARTFILE_SIZE_FULL)
+                try:
+                    size_done = sd.to_int() if sd else 0
+                except Exception:
+                    size_done = 0
+                try:
+                    size_full = sf.to_int() if sf else 0
+                except Exception:
+                    size_full = 0
                 pct = (size_done / size_full * 100.0) if size_full else 0.0
-                sp_t = kids.get(EC_TAG_PARTFILE_SPEED)
-                speed = int(sp_t.get("value", 0) or 0) if sp_t else 0
-                sc_t = kids.get(EC_TAG_PARTFILE_SOURCE_COUNT)
-                sources = int(sc_t.get("value", 0) or 0) if sc_t else 0
-                st_t = kids.get(EC_TAG_PARTFILE_STATUS)
-                status = int(st_t.get("value", 0) or 0) if st_t else 0
+                sp_t = t.get_child(EC_TAG_PARTFILE_SPEED)
+                try:
+                    speed = sp_t.to_int() if sp_t else 0
+                except Exception:
+                    speed = 0
+                sc_t = t.get_child(EC_TAG_PARTFILE_SOURCE_COUNT)
+                try:
+                    sources = sc_t.to_int() if sc_t else 0
+                except Exception:
+                    sources = 0
+                st_t = t.get_child(EC_TAG_PARTFILE_STATUS)
+                try:
+                    status = st_t.to_int() if st_t else 0
+                except Exception:
+                    status = 0
                 out.append({
                     "hash_hex": hhex,
                     "name": name,
@@ -610,25 +826,102 @@ class EcClient:
                     "status": status,
                     "raw_hash": raw,
                 })
+            # Si EC no mandó tamaños (común en esta versión de aMule),
+            # enriquecer desde los .part en Temp mapeando por hash.
+            try:
+                if any(d.get("size_full", 0) == 0 for d in out):
+                    if os.name == "nt":
+                        conf_path = os.path.join(os.environ.get("APPDATA", ""),
+                                                 "aMule", "aMule.conf")
+                    else:
+                        conf_path = os.path.join(os.path.expanduser("~"),
+                                                 ".aMule", "aMule.conf")
+                    td = ""
+                    if os.path.isfile(conf_path):
+                        with open(conf_path, "r", encoding="utf-8", errors="replace") as f:
+                            for line in f:
+                                line=line.strip()
+                                if line.startswith("TempDir="):
+                                    td = line[len("TempDir="):].replace("\\\\", "\\")
+                                    break
+                    if td and os.path.isdir(td):
+                        # mapear hash -> part_path vía .part.met
+                        h2part = {}
+                        for fn in os.listdir(td):
+                            if not fn.lower().endswith(".part.met"):
+                                continue
+                            fp = os.path.join(td, fn)
+                            try:
+                                with open(fp, "rb") as fh:
+                                    data = fh.read(21)
+                                if len(data) >= 21:
+                                    hh = binascii.hexlify(data[5:21]).decode("ascii").lower()
+                                    pp = os.path.join(td, fn[:-4])  # .part
+                                    if os.path.isfile(pp):
+                                        h2part[hh] = pp
+                            except Exception:
+                                continue
+                        for d in out:
+                            if d.get("size_full", 0) == 0:
+                                pp = h2part.get(d.get("hash_hex","").lower())
+                                if pp:
+                                    try:
+                                        sf = os.path.getsize(pp)
+                                        d["size_full"] = sf
+                                        pct = d.get("percent", 0) or 0
+                                        d["size_done"] = int(sf * pct / 100.0) if pct else 0
+                                        # si EC no mandó percent, derivarlo de tamaños
+                                        if not pct and sf:
+                                            d["percent"] = (d["size_done"]/sf*100.0) if sf else 0
+                                    except Exception:
+                                        pass
+            except Exception:
+                pass
             return out
         except Exception:
             return []
 
     def cancel_download(self, hash_hex: str) -> Tuple[bool, str]:
-        """Cancela/elimina una descarga por hash MD4 hex (32 chars)."""
+        """Cancela/elimina una descarga por hash MD4 hex (32 chars). Usa
+        amulecmd como vía principal (fiable en aMule 3.0.1; EC_OP_GET_DLOAD_QUEUE
+        ya falla con 'Servidor no añadido' y EC_OP_PARTFILE_REMOVE devuelve
+        falsos positivos). EC queda como fallback secundario."""
         if not hash_hex or len(hash_hex) != 32:
             return False, "hash inválido"
         try:
-            import binascii
             raw = binascii.unhexlify(hash_hex)
         except Exception:
             return False, "hash no es hex válido"
+        # 1) Intentar por amulecmd primero (es el que devuelve 'Operation was successful' de forma fiable)
+        try:
+            from core.amule_client import _find_amulecmd
+            exe = _find_amulecmd("")
+            if exe:
+                args = [exe, "-c", f"cancel {hash_hex}", "-h", self.host, "-p", str(self.port), "-P", self.password]
+                result = subprocess.run(args, capture_output=True, text=True, timeout=10, **_no_console_kwargs())
+                combined = (result.stdout or "") + (result.stderr or "")
+                low = combined.lower()
+                if "operation was successful" in low:
+                    return True, ""
+                # hash no encontrado o error explícito -> no considerar éxito, probar EC
+                if "error" in low or "failed" in low or "not found" in low or "no such" in low:
+                    pass
+                elif "processing by hash" in low and "operation was successful" not in low:
+                    # amulecmd dice 'Processing' pero sin éxito -> tratar como no encontrado
+                    pass
+        except Exception:
+            pass
+        # 2) Fallback EC (por si amulecmd no está disponible)
         try:
             partfile = _make_tag(EC_TAG_PARTFILE, EC_TAGTYPE_HASH16, raw)
             self._send_packet(EC_OP_PARTFILE_REMOVE, [partfile])
             opcode, tags = self._recv_packet()
             if opcode == EC_OP_FAILED:
                 return False, self._extract_error(tags) or "aMule rechazó el borrado"
+            # Cualquier otro opcode sin error se considera éxito (EC a veces devuelve 0x01)
+            err = self._extract_error(tags)
+            if err:
+                return False, err
             return True, ""
         except Exception as e:
             return False, str(e)

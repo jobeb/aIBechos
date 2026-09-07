@@ -81,6 +81,10 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
+CloseApplications=yes
+CloseApplicationsFilter=*.exe,*.dll,*.chm
+RestartApplications=yes
+AppMutex=aIBechosSingletonMutex
 
 [Languages]
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
@@ -95,6 +99,21 @@ Source: "dist\aIBechos\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  // Intento silencioso de cerrar la app si sigue en ejecución (bandeja,
+  // pystray, etc. — Restart Manager a veces no la detecta, ver reporte de
+  // Victor con el diálogo "no pudo cerrar"). taskkill /f es inmediato y no
+  // pide confirmación; si no está en ejecución, devuelve código !=0 y se ignora.
+  Exec('taskkill.exe', '/f /im aIBechos.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Pequeña espera para que el bloqueo de fichero .lock se libere
+  Sleep(800);
+  Result := '';
+end;
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Iniciar {#MyAppName}"; Flags: nowait postinstall skipifsilent

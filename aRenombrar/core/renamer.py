@@ -88,6 +88,8 @@ def get_extension(filepath: str) -> str:
 VIDEO_EXTENSIONS = {
     ".mkv", ".mp4", ".avi", ".mov", ".m4v",
     ".wmv", ".flv", ".ts", ".m2ts", ".webm",
+    ".mpg", ".mpeg", ".mpe", ".m2v", ".mts", ".m2ts",
+    ".3gp", ".3g2", ".f4v", ".rm", ".rmvb", ".vob", ".ogv",
 }
 
 # Ebooks de texto -- identificados vía Google Books (core/book_client.py).

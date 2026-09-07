@@ -1,5 +1,5 @@
 """Puntuación de resultados de búsqueda de aMule para destacar el capítulo
-que más conviene bajar (ver pestaña Descargar de la app).
+que más conviene bajar (ver pestaña Descargas de la app).
 
 El primer resultado "ideal" no obliga a ordenar la tabla: solo se usa para
 pintar de un color distinto la fila del MEJOR candidato. Criterios que
@@ -26,7 +26,7 @@ from core.amule_client import AmuleSearchResult
 from core.series_match import normalize_series_name, series_similarity
 
 
-_LANG_RE = re.compile(r"\b(?:spa|spanish|español|espanol|castellano|latino)\b",
+_LANG_RE = re.compile(r"\b(?:spa|spanish|español|espanol|castellano|latino|dual)\b",
                       re.IGNORECASE)
 # Catalán: el usuario NO quiere nada en catalán, así que un release que lo
 # delate se penaliza fuerte para que jamás gane a uno en español. "cat" suelto
@@ -64,18 +64,46 @@ _FRA_RE = re.compile(r"\b(?:vostfr|vosta|vosta-fr|vf\b|french|français|francais
 # Italiano (ITA/Italiano/Italiana): ver is_italian_only() -- si el release es
 # italiano y no trae NINGÚN rastro de español, se EXCLUYE (como el porno); si
 # además lleva español (dual ENG-SPA, "Spanish subs"...), solo se penaliza.
-_ITA_RE = re.compile(r"\b(?:ita|italian|italiano|italiana)\b", re.IGNORECASE)
+# Usa look-behind/ahead para cazar SUB_ITA / AAC_ITA donde '_' rompe \b.
+_ITA_RE = re.compile(r"(?<![A-Za-z0-9])(?:ita|italian|italiano|italiana)(?![A-Za-z0-9])", re.IGNORECASE)
 # Marcadores de TÍTULO en italiano (palabras-función y lexemas inequívocos,
 # ausentes del castellano/inglés) por si el nombre no lleva el token ITA pero
-# el título está traducido al italiano (p.ej. "Un Caso Di Chiaroscuro"). Se
-# exigen >=2 para no falsear con palabras sueltas compartidas ("la", "un"...).
+# el título está traducido al italiano (p.ej. "Un Caso Di Chiaroscuro" o
+# "La Mossa Della Bella" 2x06, "Visitatori" 2x13 By Kagome, "La Riunione Che Danza" 2x16). Se exigen >=2
+# para no falsear con palabras sueltas compartidas ("la", "un"...), salvo que
+# venga con el grupo Kagome (italiano) donde basta 1 o directamente Kagome sin castellano.
 _ITA_TITLE_RE = re.compile(
     r"\b(?:il|lo|gli|le|di|del|della|dello|dei|delle|degli|nel|nella|nello|"
     r"nei|negli|sul|sulla|sullo|sui|sulle|dal|dalla|dai|dalle|dagli|"
     r"sempre|dopo|perche|perché|senza|dove|quando|tutto|tutta|tutti|tutte|"
     r"niente|nulla|troppo|ancora|adesso|davvero|amore|morte|notte|giorno|"
     r"storia|famiglia|fratelli|uomini|donne|ragazzi|bambini|signore|grazie|"
-    r"ecco|avanti|basta|ciao)\b", re.IGNORECASE)
+    r"ecco|avanti|basta|ciao|bella|bello|belle|belli|mossa|mosse|visitatori|visitatore|speranza|riconciliazione|preparativi|inviti|udienze|avventori|vigilia|apertura|decisione|folla|riunione|danza|che)\b", re.IGNORECASE)
+_KAGOME_RE = re.compile(r"kagome", re.IGNORECASE)
+# Palabras italianas muy distintivas para el título (una sola basta si viene con Kagome o sola en el título)
+_ITA_TITLE_DISTINCTIVE_RE = re.compile(
+    r"\b(?:della|delle|degli|dalla|dalle|degli|riunione|mossa|mosse|visitatori|visitatore|speranza|riconciliazione|preparativi|inviti|udienze|avventori|vigilia|apertura|decisione|folla|danza|che)\b",
+    re.IGNORECASE)
+
+def _episode_title_part(name: str) -> str:
+    """Extrae el título del episodio (lo que va después de 2x16 / S02E16) hasta el siguiente tag técnico.
+    Ej. 'Tensei ... 2x16 - La Riunione Che Danza 1080P By Kagome.mkv' → 'La Riunione Che Danza'."""
+    if not name:
+        return ""
+    m = _EPISODE_SCAN.search(name)
+    if not m:
+        return ""
+    after = name[m.end():]
+    # quitar separadores iniciales
+    after = re.sub(r'^[\s\-\._]+', '', after)
+    # cortar antes de tags técnicos o grupo
+    # 1080P, 720P, 480P, By, (, [, ., etc.
+    cut = re.split(r'\b(?:1080p|720p|480p|576p|2160p|4k|by|\(|\[)\b', after, flags=re.IGNORECASE)
+    title = cut[0] if cut else after
+    # quitar extensión y separadores finales
+    title = re.sub(r'\.[a-z0-9]{2,4}$', '', title, flags=re.IGNORECASE)
+    title = re.sub(r'[\s\-\._]+$', '', title)
+    return title.strip()
 
 # Muestras/trailers NO son el capítulo completo: penalizan fuerte.
 _SAMPLE_RE = re.compile(r"\b(?:sample|muestra|preview|trailer|demo)\b",
@@ -177,9 +205,20 @@ def is_italian_only(name: str) -> bool:
     # Hay rastro de español (audio o subs): no es "solo italiano".
     if _LANG_RE.search(name):
         return False
-    # Marcador explícito ITA/Italiano...
+    # Marcador explícito ITA/Italiano (caza SUB_ITA, AAC_ITA con (?<![A-Za-z0-9]))
     if _ITA_RE.search(name):
         return True
+    # Grupo Kagome es italiano: cualquier Kagome sin castellano es italiano (La Riunione, Visitatori)
+    if _KAGOME_RE.search(name):
+        return True
+    # Título del episodio en italiano (ej. "Tensei 2x16 - La Riunione Che Danza 1080P")
+    # Con solo nombre+numero+título, 1 palabra distintiva en el título ya indica italiano
+    try:
+        tp = _episode_title_part(name)
+        if tp and len(_ITA_TITLE_DISTINCTIVE_RE.findall(tp)) >= 1:
+            return True
+    except Exception:
+        pass
     # ...o título traducido al italiano (>=2 palabras-función inequívocas):
     # cubre nombres que no llevan el token ITA pero sí el título en italiano.
     return len(_ITA_TITLE_RE.findall(name)) >= 2
@@ -487,8 +526,14 @@ def score_download(result: AmuleSearchResult,
     if _PROPER_RE.search(name):
         score += 4.0
 
-    # Fuentes (más = más fiable)
-    score += min(result.sources, 10) * 1.5
+    # Fuentes (más = más fiable) – tope alto para que 205 fuentes pese
+    # claramente más que 2, sin que un mediocre gane solo por fuentes.
+    s = int(result.sources or 0)
+    score += min(s, 10) * 1.5 + min(max(s - 10, 0), 20) * 0.7 + min(max(s - 30, 0), 70) * 0.3
+    if s > 100:
+        score += 5.0
+    if s > 150:
+        score += 5.0
     if result.complete:
         score += 4.0
 

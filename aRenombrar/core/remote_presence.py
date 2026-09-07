@@ -70,6 +70,41 @@ def was_uploaded_according_to_history(history: list, local_path: str, filename: 
     return False
 
 
+def stale_remote_from_history(history: list, local_path: str, filename: str,
+                              new_remote: str) -> str:
+    """Ruta remota bajo la que este MISMO archivo se subió ANTES, si esa
+    ruta difiere de la que se va a usar ahora.
+
+    El caso de uso: un archivo se identificó mal ("Papillon (2017)" como
+    "Papillon (1973)") y se empezó a subir con ese nombre viejo; al
+    reasignarlo bien y volver a subir, el servidor puede haber quedado con
+    un resto (parcial o la versión completa) bajo el nombre viejo. Esto
+    detecta ese resto comparando el historial (local_path → ruta remota)
+    con la ruta nueva. Devuelve "" si no hay ningún resto distinto.
+
+    Solo se miran los registros "ok"/"error" (el "error" a medias también
+    deja un parcial) con el campo "remote" aprovechable (rutas POSIX del
+    servidor, no las locales guardadas por error -- ver
+    looks_like_remote_path). Si la ruta vieja coincide con la nueva (se
+    está resubiendo el mismo archivo al mismo sitio), no hay resto que
+    borrar y se devuelve "".
+    """
+    if not new_remote or not looks_like_remote_path(new_remote):
+        return ""
+    for e in reversed(history or []):
+        if not isinstance(e, dict) or e.get("status") not in ("ok", "error"):
+            continue
+        if local_path and e.get("local_path") == local_path:
+            old = e.get("remote", "")
+            if looks_like_remote_path(old) and old != new_remote:
+                return old
+        elif not local_path and filename and e.get("filename") == filename:
+            old = e.get("remote", "")
+            if looks_like_remote_path(old) and old != new_remote:
+                return old
+    return ""
+
+
 def resolve_remote_path(history: list, local_path: str, filename: str,
                         ftp_lookup=None) -> str:
     """Ruta en el servidor, tirando de FTP solo cuando hace falta.

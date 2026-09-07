@@ -471,6 +471,61 @@ class _SeriesMatchDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+class _StaleUploadDialog(ctk.CTkToplevel):
+    """Diálogo modal al subir un archivo que ya se empezó a subir con OTRO
+    nombre (porque lo asignamos mal y luego lo reasignamos — p.ej.
+    "Papillon (2017)" detectado como "Papillon (1973)").
+
+    El servidor puede haber quedado con un parcial (o incluso la versión
+    completa) bajo ese nombre viejo y erróneo. Ofrece borrarlo antes de
+    subir la versión recién corregida a su nombre/ubicación definitiva.
+    """
+    def __init__(self, parent, desired: str, stale: str):
+        super().__init__(parent)
+        parent._apply_icon(self)
+        self.result = None   # "delete_upload" | "no_delete" | None (cancelar subida)
+        self.title("Resto de subida anterior")
+        self.resizable(False, False)
+        self.grab_set()
+        self.lift()
+        self.attributes("-topmost", True)
+        self.update_idletasks()
+        pw = parent.winfo_rootx() + parent.winfo_width() // 2
+        ph = parent.winfo_rooty() + parent.winfo_height() // 2
+        dw, dh = 500, 240
+        self.geometry(f"{dw}x{dh}+{pw - dw//2}+{ph - dh//2}")
+
+        ctk.CTkLabel(self,
+                     text="Este archivo ya se subió con otro nombre (identificación anterior).",
+                     font=ctk.CTkFont(size=13, weight="bold"), wraplength=450).pack(padx=24, pady=(20, 8))
+        ctk.CTkLabel(self,
+                     text=f"Resto en el servidor:\n{stale}\n\nSe va a subir ahora como:\n{desired}",
+                     font=ctk.CTkFont(size=11), text_color="#95a5a6",
+                     justify="left", wraplength=450).pack(padx=24, pady=(0, 8))
+        ctk.CTkLabel(self,
+                     text="El viejo puede haber quedado a medio subir. ¿Borrarlo del servidor?",
+                     font=ctk.CTkFont(size=11), text_color="#95a5a6", wraplength=450).pack(padx=24, pady=(0, 14))
+
+        bf = ctk.CTkFrame(self, fg_color="transparent")
+        bf.pack(padx=24, pady=(0, 8))
+        ctk.CTkButton(bf, text="Borrar resto y subir", width=160,
+                      fg_color=ERROR_COLOR, hover_color="#96281b",
+                      command=lambda: self._close("delete_upload")).pack(side="left", padx=6)
+        ctk.CTkButton(bf, text="No borrar, subir", width=140,
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=lambda: self._close("no_delete")).pack(side="left", padx=6)
+        ctk.CTkButton(self, text="Cancelar la subida", width=140,
+                      fg_color="transparent", border_width=1,
+                      command=lambda: self._close(None)).pack(pady=(0, 18))
+
+        self.protocol("WM_DELETE_WINDOW", lambda: self._close(None))
+        self.wait_window()
+
+    def _close(self, result):
+        self.result = result
+        self.destroy()
+
+
 class _RenameReservationsDialog(ctk.CTkToplevel):
     """Diálogo modal al cambiar "Tu nombre" en Ajustes teniendo reservas
     propias con el nombre anterior -- ver App._resolve_app_user_name_change.
@@ -1041,6 +1096,9 @@ class App(_AppBase):
         _mark("TkinterDnD._require")
         self.config_data = Config()
         _mark("Config()")
+        # Paginado fijo global (ver config.py:page_size y _on_global_page_size_changed)
+        # Valores: "10","50","100" fijos o "Ajustado" (fitted solo al abrir pestaña)
+        self._page_size_var = ctk.StringVar(value=str(self.config_data.get("page_size", "Ajustado")))
         self.tmdb = TMDBClient(self.config_data["tmdb_api_key"])
         # Identificación de libros/cómics (ver core/book_client.py,
         # core/comicvine_client.py, core/openlibrary_client.py) -- mismo
@@ -1142,6 +1200,7 @@ class App(_AppBase):
         self._downloads_jobs_lock = threading.Lock()
         self._downloads_pending_jobs = []
         self._downloads_search_active = False
+        self._downloads_search_started_ts = 0
         self._downloads_wake = threading.Event()
         # Cupo de subidas simultáneas COMPARTIDO entre la cola manual y el modo
         # automático — "Subidas simultáneas" en Ajustes limita el total real,
@@ -1326,6 +1385,7 @@ class App(_AppBase):
         # tanto si la app se abre a mano como por el autoarranque.
         self.after(400, self._restore_auto_watcher_state)
         self.after(600, self._start_missing_ep_auto_worker)
+        self.after(500, self._apply_fitted_for_current_view)
         if "--minimized" in sys.argv:
             self.after(200, self._minimize_to_tray)
 
@@ -1793,6 +1853,147 @@ class App(_AppBase):
             + self._tray_btn.winfo_reqwidth() + 16                # bandeja
         )
 
+    def _fitted_page_size_for(self, table) -> int:
+        """Calcula page_size ajustado a altura disponible solo al abrir pestaña."""
+        try:
+            table.update_idletasks()
+            avail = 0
+            if getattr(table, "scrollable", True):
+                try:
+                    avail = table.body._parent_canvas.winfo_height()
+                except Exception:
+                    avail = 0
+            if avail <= 1:
+                try:
+                    avail = table.body.winfo_height()
+                except Exception:
+                    avail = 0
+            if avail <= 1:
+                try:
+                    avail = table.winfo_height()
+                    try:
+                        avail -= table.header_frame.winfo_height()
+                    except Exception:
+                        pass
+                    avail -= 12
+                except Exception:
+                    avail = 0
+            if avail <= 1:
+                try:
+                    avail = max(200, (self.winfo_height() or 600) - 320)
+                except Exception:
+                    avail = 400
+            stride = getattr(table, "_row_stride_px", None)
+            if stride is None:
+                stride = getattr(table, "row_height", 26) + 6
+            # margen para no provocar scroll: sobra 1.5 filas -> quitar 2 de seguridad
+            fitted = int((avail - 4) // max(1, stride))
+            fitted = max(10, fitted - 1)
+            return fitted
+        except Exception:
+            return 25
+
+    def _on_global_page_size_changed(self, value: str):
+        """Selector global 'Mostrar:' (10/50/100/Ajustado) junto a Anterior/Siguiente."""
+        is_fitted = str(value).strip() == "Ajustado"
+        if not is_fitted:
+            try:
+                n = int(str(value).strip())
+                if n not in (10, 25, 50, 100):
+                    return
+            except Exception:
+                return
+            self.config_data.set("page_size", n)
+            self.config_data.save()
+            for attr in ("_file_table", "_missing_ep_table", "_movies_table", "_history_table",
+                         "_cleanup_table", "_protected_table", "_downloads_table",
+                         "_watch_sync_preview_table", "_watch_sync_history_table"):
+                tbl = getattr(self, attr, None)
+                if tbl is not None:
+                    try:
+                        tbl.page_size = n
+                    except Exception:
+                        pass
+        else:
+            self.config_data.set("page_size", "Ajustado")
+            self.config_data.save()
+            # calcular fitted solo para la vista visible ahora; las demás se calcularán al abrirse
+            cur = self._current_view_key()
+            attr_map = {"files": "_file_table", "missing_ep": "_missing_ep_table", "movies": "_movies_table",
+                        "history": "_history_table", "cleanup": "_cleanup_table", "protected": "_protected_table",
+                        "downloads": "_downloads_table"}
+            tbl_attr = attr_map.get(cur)
+            if tbl_attr:
+                tbl = getattr(self, tbl_attr, None)
+                if tbl is not None:
+                    try:
+                        tbl.page_size = self._fitted_page_size_for(tbl)
+                    except Exception:
+                        pass
+        # resetear página y repintar solo la vista visible para no doblar render
+        try:
+            cur = self._current_view_key()
+            if cur == "files":
+                self._files_page = 0
+                self._refresh_table()
+            elif cur == "missing_ep":
+                self._missing_ep_page = 0
+                self._render_missing_episodes_table()
+            elif cur == "movies":
+                self._movies_page = 0
+                self._render_movies_table()
+            elif cur == "history":
+                self._history_page = 0
+                try:
+                    self._render_history_page()
+                except Exception:
+                    self._refresh_history_view()
+            elif cur == "cleanup":
+                self._cleanup_page = 0
+                self._render_cleanup_page()
+            elif cur == "protected":
+                self._protected_page = 0
+                self._render_protected_table()
+            elif cur == "downloads":
+                self._downloads_page = 0
+                self._downloads_rebuild_page()
+        except Exception:
+            pass
+
+    def _apply_fitted_for_current_view(self):
+        if str(self.config_data.get("page_size", "Ajustado")) != "Ajustado":
+            return
+        try:
+            cur = self._current_view_key()
+            mapping = {"files": "_file_table", "missing_ep": "_missing_ep_table", "movies": "_movies_table",
+                       "history": "_history_table", "cleanup": "_cleanup_table", "protected": "_protected_table",
+                       "downloads": "_downloads_table"}
+            attr = mapping.get(cur)
+            if attr:
+                tbl = getattr(self, attr, None)
+                if tbl is not None:
+                    tbl.page_size = self._fitted_page_size_for(tbl)
+                    # repintar con nuevo tamaño sin doble
+                    if cur == "files":
+                        self._refresh_table()
+                    elif cur == "missing_ep":
+                        self._render_missing_episodes_table()
+                    elif cur == "movies":
+                        self._render_movies_table()
+                    elif cur == "history":
+                        try:
+                            self._render_history_page()
+                        except Exception:
+                            self._refresh_history_view()
+                    elif cur == "cleanup":
+                        self._render_cleanup_page()
+                    elif cur == "protected":
+                        self._render_protected_table()
+                    elif cur == "downloads":
+                        self._downloads_rebuild_page()
+        except Exception:
+            pass
+
     def _on_root_resize(self, event):
         if event.widget is not self:
             return   # <Configure> también burbujea desde widgets hijos -- solo interesa el de la ventana
@@ -2095,8 +2296,67 @@ class App(_AppBase):
         folder = self.config_data.get("watch_folder", "").strip()
         if was_running and folder and not (self._watcher and self._watcher.running):
             self._toggle_auto()
+        # El botón se pone en "Detener" sin esperar a que el hilo
+        # sobreviva su primera línea: si muere enseguida (carpeta aún no
+        # montada, excepción temprana) queda "Detener" pero muerto.
+        # Verificar y mantener sincronizado.
+        self.after(1500, self._ensure_auto_watcher_consistent)
+        self.after(8000, self._periodic_auto_watcher_check)
+
+    def _periodic_auto_watcher_check(self):
+        try:
+            self._ensure_auto_watcher_consistent()
+        finally:
+            self.after(8000, self._periodic_auto_watcher_check)
+
+    def _ensure_auto_watcher_consistent(self):
+        """Sincroniza el botón con el estado real del watcher y repara
+        el desfase del arranque: botón en Detener pero hilo muerto."""
+        try:
+            should_run = bool(self.config_data.get("auto_watcher_running", False)
+                              and self.config_data.get("watch_folder", "").strip())
+            is_run = bool(self._watcher and self._watcher.running)
+            if should_run != is_run:
+                if should_run and not is_run:
+                    if self._watcher and not self._watcher.running:
+                        try:
+                            self._watcher.stop()
+                        except Exception:
+                            pass
+                        self._watcher = None
+                    self._toggle_auto()
+                elif not should_run and is_run:
+                    try:
+                        self._watcher.stop()
+                    except Exception:
+                        pass
+                    self._watcher = None
+                    try:
+                        self._auto_btn.configure(text="⚡ Auto", width=90, fg_color="transparent", border_width=1)
+                    except Exception:
+                        pass
+            else:
+                want = "⏹ Detener" if is_run else "⚡ Auto"
+                try:
+                    if self._auto_btn.cget("text") != want:
+                        if is_run:
+                            self._auto_btn.configure(text="⏹ Detener", width=90, fg_color="#c0392b", hover_color="#96281b", border_width=0)
+                        else:
+                            self._auto_btn.configure(text="⚡ Auto", width=90, fg_color="transparent", border_width=1)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _toggle_auto(self):
+        # Limpiar watcher muerto antes de decidir: si queda "Detener" pero
+        # el hilo ya murió, el siguiente clic debe arrancar de nuevo.
+        if self._watcher and not self._watcher.running:
+            try:
+                self._watcher.stop()
+            except Exception:
+                pass
+            self._watcher = None
         if self._watcher and self._watcher.running:
             self._watcher.stop()
             self._watcher = None
@@ -2125,6 +2385,9 @@ class App(_AppBase):
             self._set_status(f"Vigilando: {folder}", SUCCESS_COLOR)
             self.config_data.set("auto_watcher_running", True)
             self.config_data.save()
+            # Verificar que quedó vivo (carpeta montada, sin excepción
+            # temprana). Si muere, _ensure lo repara.
+            self.after(700, self._ensure_auto_watcher_consistent)
 
     def _on_auto_event(self, tipo, msg):
         colors = {"info": ACCENT, "ok": SUCCESS_COLOR,
@@ -2266,7 +2529,7 @@ class App(_AppBase):
         "files": "📁 Archivos",
         "movies": "🎬 Recomendado",
         "missing_ep": "🔍 Episodios",
-        "downloads": "📥 Descargar",
+        "downloads": "📥 Descargas",
         "cleanup": "🗑 Liberar espacio",
         "protected": "🔒 Protegidos",
         "history": "📋 Historial",
@@ -2375,6 +2638,7 @@ class App(_AppBase):
         elif self._downloads_visible:
             self._downloads_frame.grid_remove()
             self._downloads_visible = False
+            self._stop_active_poll()
         elif self._stats_visible:
             self._stats_frame.grid_remove()
             self._stats_visible = False
@@ -2383,42 +2647,85 @@ class App(_AppBase):
 
         if view_key == "files":
             self._files_frame.grid(row=0, column=0, sticky="nsew")
+            if str(self.config_data.get("page_size", "Ajustado")) == "Ajustado":
+                try:
+                    self._file_table.page_size = self._fitted_page_size_for(self._file_table)
+                except Exception:
+                    pass
             self._sync_favorites_from_ftp()
             self._sync_reservations_from_ftp()
         elif view_key == "missing_ep":
             self._missing_ep_frame.grid(row=0, column=0, sticky="nsew")
             self._missing_ep_visible = True
+            if str(self.config_data.get("page_size", "Ajustado")) == "Ajustado":
+                try:
+                    self._missing_ep_table.page_size = self._fitted_page_size_for(self._missing_ep_table)
+                except Exception:
+                    pass
             self._sync_favorites_from_ftp()
             self._sync_shared_dub_verdicts_from_ftp()
             self._sync_missing_episodes_from_ftp()
         elif view_key == "movies":
             self._movies_frame.grid(row=0, column=0, sticky="nsew")
             self._movies_visible = True
+            if str(self.config_data.get("page_size", "Ajustado")) == "Ajustado":
+                try:
+                    self._movies_table.page_size = self._fitted_page_size_for(self._movies_table)
+                except Exception:
+                    pass
             self._sync_favorites_from_ftp()
             self._sync_missing_movies_from_ftp()
         elif view_key == "history":
             self._history_frame.grid(row=0, column=0, sticky="nsew")
             self._history_visible = True
+            if str(self.config_data.get("page_size", "Ajustado")) == "Ajustado":
+                try:
+                    self._history_table.page_size = self._fitted_page_size_for(self._history_table)
+                except Exception:
+                    pass
             self._sync_activity_history_from_ftp()
             self._refresh_history_view()   # por si hay subidas nuevas desde la última vez
         elif view_key == "cleanup":
             self._cleanup_frame.grid(row=0, column=0, sticky="nsew")
             self._cleanup_visible = True
+            if str(self.config_data.get("page_size", "Ajustado")) == "Ajustado":
+                try:
+                    self._cleanup_table.page_size = self._fitted_page_size_for(self._cleanup_table)
+                except Exception:
+                    pass
             self._sync_favorites_from_ftp()
             self._sync_reservations_from_ftp()
             self._sync_cleanup_candidates_from_ftp()
         elif view_key == "protected":
             self._protected_frame.grid(row=0, column=0, sticky="nsew")
             self._protected_visible = True
+            if str(self.config_data.get("page_size", "Ajustado")) == "Ajustado":
+                try:
+                    self._protected_table.page_size = self._fitted_page_size_for(self._protected_table)
+                except Exception:
+                    pass
             self._render_protected_table()   # con lo que haya en el mirror local, sin esperar al FTP
             self._sync_reservations_from_ftp()
         elif view_key == "watch_sync":
             self._watch_sync_top_frame.grid(row=0, column=0, sticky="nsew")
             self._watch_sync_top_visible = True
+            if str(self.config_data.get("page_size", "Ajustado")) == "Ajustado":
+                for _tbl in (getattr(self, "_watch_sync_preview_table", None), getattr(self, "_watch_sync_history_table", None)):
+                    if _tbl is not None:
+                        try:
+                            _tbl.page_size = self._fitted_page_size_for(_tbl)
+                        except Exception:
+                            pass
             self._refresh_watch_sync_history_view()   # por si hay sincronizaciones nuevas desde la última vez
         elif view_key == "downloads":
             self._downloads_frame.grid(row=0, column=0, sticky="nsew")
             self._downloads_visible = True
+            if str(self.config_data.get("page_size", "Ajustado")) == "Ajustado":
+                try:
+                    self._downloads_table.page_size = self._fitted_page_size_for(self._downloads_table)
+                except Exception:
+                    pass
+            self._refresh_active_downloads()
         elif view_key == "stats":
             self._stats_frame.grid(row=0, column=0, sticky="nsew")
             self._stats_visible = True
@@ -2585,7 +2892,8 @@ class App(_AppBase):
         # que ajusta el ancho del frame interno al canvas; sin él las filas no llenan el ancho completo
         self._file_list_frame._parent_canvas.bind(
             "<Configure>", self._on_table_resize, add="+")
-        self._file_table.enable_dynamic_page_size(lambda _size: self._refresh_table())
+        _ps = self.config_data.get("page_size", "Ajustado")
+        self._file_table.page_size = 25 if str(_ps) == "Ajustado" else int(_ps)
         self._file_rows = []
         # tmdb_id -> [etiquetas "⚡" de la tabla de Archivos]. Es una LISTA y no
         # un widget suelto (como en Episodios que faltan) porque aquí puede
@@ -2622,6 +2930,9 @@ class App(_AppBase):
             files_nav_fr, text="Siguiente >", width=100, fg_color="transparent", border_width=1,
             command=lambda: self._files_change_page(1))
         self._files_next_btn.pack(side="left")
+        ctk.CTkLabel(files_nav_fr, text="Mostrar:", text_color=PENDING_COLOR).pack(side="left", padx=(12, 4))
+        ctk.CTkOptionMenu(files_nav_fr, values=["10", "50", "100", "Ajustado"], variable=self._page_size_var, width=70,
+                          command=self._on_global_page_size_changed).pack(side="left")
 
         self._drop_zone = ctk.CTkLabel(self._file_list_frame,
                                         text="Arrastra archivos aquí\no usa + Archivos",
@@ -5783,6 +6094,38 @@ class App(_AppBase):
         remote_filename = (entry.new_name if rename_remote else entry.name) or Path(entry.path).name
         remote_file = f"{remote_dir.rstrip('/')}/{remote_filename}"
 
+        # Este mismo archivo se subió antes bajo OTRO nombre (identificación
+        # vieja y errónea -- p.ej. "Papillon (2017)" como "Papillon (1973)"),
+        # así que el servidor puede haber quedado con un resto a medio subir
+        # bajo ese nombre viejo. Ofrecer borrarlo antes de subir la versión
+        # corregida; si el usuario lo desea, se borra y se continúa. No
+        # molesta en el caso normal (misma ruta -> sin resto).
+        stale_remote = ("" if getattr(entry, "_stale_checked", False) else
+                        self._stale_remote_from_history(entry.path, entry.name, remote_file))
+        if stale_remote:
+            answer = [None]
+            ev = threading.Event()
+            def _ask_stale(d=remote_file, s=stale_remote, ans=answer, e=ev):
+                dlg = _StaleUploadDialog(self, d, s)
+                ans[0] = dlg.result
+                e.set()
+            self.after(0, _ask_stale)
+            ev.wait()
+            entry._stale_checked = True   # no volver a preguntar en reintentos de esta tanda
+            if answer[0] is None:
+                # Cancelar esta subida
+                self._ftp_row_set(entry, "Saltado", 0, 0)
+                self.after(0, lambda e=entry: self._update_row(e))
+                return False, "saltado"
+            if answer[0] == "delete_upload":
+                try:
+                    ok_del, _msg_del = self._delete_remote_file(stale_remote)
+                    _log.info("Resto de subida antiguo borrado: %s -> %s",
+                              stale_remote, ok_del)
+                except Exception as e:
+                    _log.warning("No se pudo borrar el resto de subida antiguo %s: %s",
+                                 stale_remote, e)
+
         try:
             local_size = Path(entry.path).stat().st_size
         except OSError:
@@ -7178,6 +7521,8 @@ class App(_AppBase):
             ColumnSpec("season_ep", "T/E", width=60),
             ColumnSpec("target", "Se marcará en", width=110),
         ])
+        _ps = self.config_data.get("page_size", "Ajustado")
+        self._watch_sync_preview_table.page_size = 25 if str(_ps) == "Ajustado" else int(_ps)
         self._watch_sync_preview_table.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 4))
         self._watch_sync_preview_table.grid_remove()
 
@@ -7195,6 +7540,9 @@ class App(_AppBase):
             nav_fr, text="Siguiente >", width=100, fg_color="transparent", border_width=1,
             command=lambda: self._watch_sync_change_preview_page(1))
         self._watch_sync_preview_next_btn.pack(side="left")
+        ctk.CTkLabel(nav_fr, text="Mostrar:", text_color=PENDING_COLOR).pack(side="left", padx=(12, 4))
+        ctk.CTkOptionMenu(nav_fr, values=["10", "50", "100", "Ajustado"], variable=self._page_size_var, width=70,
+                          command=self._on_global_page_size_changed).pack(side="left")
         preview_bf = ctk.CTkFrame(self._watch_sync_preview_footer_frame, fg_color="transparent")
         preview_bf.pack()
         ctk.CTkButton(preview_bf, text="Cancelar", width=120, fg_color="transparent", border_width=1,
@@ -7237,6 +7585,8 @@ class App(_AppBase):
             ColumnSpec("destino", "Marcado en", width=100),
             ColumnSpec("estado", "Estado", width=80),
         ])
+        _ps = self.config_data.get("page_size", "Ajustado")
+        self._watch_sync_history_table.page_size = 25 if str(_ps) == "Ajustado" else int(_ps)
         self._watch_sync_history_table.grid(row=7, column=0, sticky="ew", padx=12, pady=(0, 4))
 
         hist_nav_fr = ctk.CTkFrame(fr, fg_color="transparent")
@@ -7251,6 +7601,9 @@ class App(_AppBase):
             hist_nav_fr, text="Siguiente >", width=100, fg_color="transparent", border_width=1,
             command=lambda: self._watch_sync_history_change_page(1))
         self._watch_sync_history_next_btn.pack(side="left")
+        ctk.CTkLabel(hist_nav_fr, text="Mostrar:", text_color=PENDING_COLOR).pack(side="left", padx=(12, 4))
+        ctk.CTkOptionMenu(hist_nav_fr, values=["10", "50", "100", "Ajustado"], variable=self._page_size_var, width=70,
+                          command=self._on_global_page_size_changed).pack(side="left")
 
         # Diferido -- igual motivo que _build_history_tab: esta pestaña se
         # construye al arrancar aunque esté oculta, y el historial puede
@@ -8588,7 +8941,8 @@ class App(_AppBase):
             self._movies_column_for_sort_key(self._movies_sort_key), self._movies_sort_asc)
         self._movies_table.on_column_resize = self._on_movies_column_resize
         self._movies_table.on_widths_changed = lambda w: self._save_table_col_widths("peliculas", w)
-        self._movies_table.enable_dynamic_page_size(lambda _size: self._movies_render_page())
+        _ps = self.config_data.get("page_size", "Ajustado")
+        self._movies_table.page_size = 25 if str(_ps) == "Ajustado" else int(_ps)
 
         # Separador arrastrable entre la tabla y el panel lateral -- mismo
         # patrón visual y de comportamiento que _missing_ep_sash (ver
@@ -8623,6 +8977,9 @@ class App(_AppBase):
             nav_fr, text="Siguiente >", width=100, fg_color="transparent", border_width=1,
             command=lambda: self._movies_change_page(1))
         self._movies_next_btn.pack(side="left")
+        ctk.CTkLabel(nav_fr, text="Mostrar:", text_color=PENDING_COLOR).pack(side="left", padx=(12, 4))
+        ctk.CTkOptionMenu(nav_fr, values=["10", "50", "100", "Ajustado"], variable=self._page_size_var, width=70,
+                          command=self._on_global_page_size_changed).pack(side="left")
 
         self._movies_results = self._rows_from_movies_cache()
         self._refresh_movies_genre_filter_options()
@@ -9869,7 +10226,8 @@ class App(_AppBase):
         self._missing_ep_table.set_sort_indicator(self._missing_ep_sort_key, self._missing_ep_sort_asc)
         self._missing_ep_table.on_column_resize = self._on_missing_ep_column_resize
         self._missing_ep_table.on_widths_changed = lambda w: self._save_table_col_widths("episodios", w)
-        self._missing_ep_table.enable_dynamic_page_size(lambda _size: self._missing_ep_render_page())
+        _ps = self.config_data.get("page_size", "Ajustado")
+        self._missing_ep_table.page_size = 25 if str(_ps) == "Ajustado" else int(_ps)
 
         # Separador arrastrable entre la tabla y el panel lateral -- mismo
         # patrón visual y de comportamiento que _detail_sash de Archivos
@@ -9908,6 +10266,9 @@ class App(_AppBase):
             nav_fr, text="Siguiente >", width=100, fg_color="transparent", border_width=1,
             command=lambda: self._missing_ep_change_page(1))
         self._missing_ep_next_btn.pack(side="left")
+        ctk.CTkLabel(nav_fr, text="Mostrar:", text_color=PENDING_COLOR).pack(side="left", padx=(12, 4))
+        ctk.CTkOptionMenu(nav_fr, values=["10", "50", "100", "Ajustado"], variable=self._page_size_var, width=70,
+                          command=self._on_global_page_size_changed).pack(side="left")
 
         self._missing_ep_results = self._load_missing_episodes_from_cache()
         # Series completas (sin hueco): None = todavía no calculadas. Solo
@@ -12262,10 +12623,14 @@ class App(_AppBase):
     def _force_search_missing_series(self, tmdb_id: int):
         """Fuerza búsqueda de los capítulos que faltan de una serie con ⚡ activo:
         ignora espera de reintento y grace 24h solo de los capítulos forzados,
-        y si hay capítulos descargando activa Unstuck (busca alternativas)."""
-        if str(tmdb_id) not in self._auto_complete_series():
-            self._set_status("Activa el rayo ⚡ primero para forzar búsqueda", WARNING_COLOR)
-            return
+        y si hay capítulos descargando activa Unstuck (busca alternativas).
+        Si el rayo no está activo para Slime u otra, se permite forzar igualmente
+        (avisa) para no bloquear el rescate tras borrar italianos."""
+        is_auto = str(tmdb_id) in self._auto_complete_series()
+        if not is_auto:
+            self._set_status("Rayo no activo para esta serie — forzando igualmente…", WARNING_COLOR)
+        else:
+            self._set_status(f"Forzando búsqueda para serie {tmdb_id}…", PENDING_COLOR)
         self._set_status(f"Forzando búsqueda para serie {tmdb_id}…", PENDING_COLOR)
         def _worker():
             try:
@@ -12305,7 +12670,7 @@ class App(_AppBase):
                             self._unstuck_set_rec(tmdb_id, int(season), int(ep), rec)
                 self.config_data.save()
                 # Lanzar pasada forzada (reusa lógica con unstuck ya cableado)
-                self._auto_complete_series_single(tmdb_id)
+                self._auto_complete_series_single(tmdb_id, force=True)
                 self.after(0, lambda: self._set_status(f"Búsqueda forzada lanzada para {fresh.get('name', tmdb_id)}", SUCCESS_COLOR))
             except Exception as e:
                 _log.exception("Forzar búsqueda falló para %s", tmdb_id)
@@ -12377,7 +12742,7 @@ class App(_AppBase):
             except Exception:
                 _log.exception("Autocompletado: fallo en serie %s", tmdb_id_str)
 
-    def _auto_complete_series_single(self, tmdb_id: int):
+    def _auto_complete_series_single(self, tmdb_id: int, force: bool = False):
         """Descarga los capítulos pendientes de UNA serie con autocompletado.
         Primero obtiene la lista fresca de faltantes (rescan de esa serie
         sola, que ya cruza contra el FTP y quita lo que ya está en el
@@ -12395,7 +12760,7 @@ class App(_AppBase):
             return
         busy.add(tmdb_id)
         try:
-            self._auto_complete_series_single_impl(tmdb_id)
+            self._auto_complete_series_single_impl(tmdb_id, force=force)
         finally:
             busy.discard(tmdb_id)
 
@@ -12422,7 +12787,7 @@ class App(_AppBase):
                 expected[n] = nums
         return expected
 
-    def _auto_complete_series_single_impl(self, tmdb_id: int):
+    def _auto_complete_series_single_impl(self, tmdb_id: int, force: bool = False):
         # Fila actual si ya está cachada; sin ella no se puede reescanear
         # esa serie sola (se necesita source/server_id).
         row = next((r for r in self._missing_ep_results if r.get("tmdb_id") == tmdb_id), None)
@@ -12506,11 +12871,25 @@ class App(_AppBase):
         checked = (self._auto_checked_map().get(str(tmdb_id)) or {})
         retries = (self._auto_retry_map().get(str(tmdb_id)) or {})
         now = _time.time()
+        # Pre-cargar cola aMule para status y para decidir si un checked reciente (italiano borrado) debe liberarse ya
+        _q_cache_early: dict[str, dict] = {}
+        try:
+            with self._amule_ec_lock:
+                ec_q2 = EcClient(host=self.config_data.get("amule_host", "localhost"),
+                                 port=self.config_data.get("amule_port", 4712),
+                                 password=self.config_data.get("amule_password", ""),
+                                 timeout=5.0)
+                ec_q2.connect()
+                for it in ec_q2.get_download_queue():
+                    _q_cache_early[it["hash_hex"]] = it
+                ec_q2.close()
+        except Exception:
+            _q_cache_early = {}
 
         # Header de capítulos faltantes que de verdad hay que intentar.
         pending = []
         for season in sorted(fresh.get("missing", {})):
-            for ep in fresh["missing"][season]:
+            for ep in sorted(fresh["missing"][season]):
                 # El episodio está marcado como resuelto pero SIGUE faltando en
                 # el servidor. Hay que distinguir dos casos, y no hacerlo era
                 # el bucle de relanzamiento (ver _AUTO_LAUNCHED_GRACE_S): antes
@@ -12521,26 +12900,35 @@ class App(_AppBase):
                 # aún no toca reintentarlo?) está en core/auto_complete_state.py.
                 action, drop_checked = auto_complete_state.decide_episode(
                     checked, retries, season, ep, now)
+                if action == auto_complete_state.WAIT_DOWNLOAD:
+                    try:
+                        rec_ep = self._unstuck_get_rec(tmdb_id, season, ep)
+                        in_q = bool(rec_ep and (rec_ep.get("primary_hash") in _q_cache_early or rec_ep.get("alt_hash") in _q_cache_early))
+                        if not in_q:
+                            # No está en cola -> se borró (ej. Slime italiano) -> forzar reintento con filtro actual
+                            drop_checked = True
+                            self._unset_auto_checked_episode(tmdb_id, season, ep)
+                            action = auto_complete_state.ATTEMPT
+                            _log.info("Autocompletado: forzado reintento de %s %dx%02d tras borrado (no en cola)", series_name, season, ep)
+                    except Exception:
+                        pass
                 if drop_checked:
                     self._unset_auto_checked_episode(tmdb_id, season, ep)
                 if action == auto_complete_state.ATTEMPT:
                     pending.append((season, ep))
 
-        # Guardia rápida local: que no esté ya en upload_history (aunque el
-        # reescaneo lo hubiera quitado de missing, por si el servidor de
-        # medios va desactualizado con respecto al FTP).
-        history_remote_paths = {h.get("remote", "") for h in self._load_history()
-                                if h.get("status") == "ok"}
-        to_download = []
-        for season, episode in pending:
-            if self._auto_episode_in_history(history_remote_paths, series_name, season, episode):
-                self._set_auto_checked_episode(tmdb_id, season, episode)
-                self._clear_auto_retry_episode(tmdb_id, season, episode)
-                continue
-            to_download.append((season, episode))
+        to_download = list(pending)
 
         if not to_download:
+            try:
+                self.after(0, lambda n=series_name: self._set_status(f"{n}: sin huecos nuevos", SUCCESS_COLOR))
+            except Exception:
+                pass
             return
+        try:
+            self.after(0, lambda n=series_name, c=len(to_download): self._set_status(f"Buscando {c} capítulo(s) de {n} en aMule…", PENDING_COLOR))
+        except Exception:
+            pass
 
         # ── Unstuck: pre-cargar cola aMule una vez por pasada para medir avance ──
         _q_cache: dict[str, dict] = {}
@@ -12561,7 +12949,11 @@ class App(_AppBase):
         _log.info("Autocompletado: '%s' -> %d capítulo(s) nuevos por descargar",
                   series_name, len(to_download))
         for season, episode in to_download:
-            if str(tmdb_id) not in self._auto_complete_series():
+            try:
+                self.after(0, lambda n=series_name, s=season, e=episode: self._set_status(f"Autocompletado {n} {s}x{int(e):02d}: buscando en aMule…", PENDING_COLOR))
+            except Exception:
+                pass
+            if not force and str(tmdb_id) not in self._auto_complete_series():
                 _log.info("Autocompletado: serie %s deshabilitada durante la tanda, abortando", tmdb_id)
                 break
             # ── Unstuck: si la descarga primaria está atascada (tiempo+avance) → alternativa
@@ -12683,6 +13075,10 @@ class App(_AppBase):
                     rec.setdefault("stuck_tries", 0)
                     self._unstuck_set_rec(tmdb_id, season, episode, rec)
                 _log.info("Autocompletado: descarga lanzada para '%s'", query)
+                try:
+                    self.after(0, lambda n=series_name, s=season, e=episode: self._set_status(f"{n} {s}x{int(e):02d} → descarga lanzada", SUCCESS_COLOR))
+                except Exception:
+                    pass
             else:
                 # Fallo (sin candidato, aMule caído...): NO se marca checked.
                 # Se registra en el mapa de reintentos con backoff exponencial
@@ -12690,6 +13086,10 @@ class App(_AppBase):
                 # espaciado (ver _AUTO_RETRY_*).
                 self._set_auto_retry_episode(tmdb_id, season, episode)
                 _log.info("Autocompletado: '%s' no se pudo descargar (%s)", query, why)
+                try:
+                    self.after(0, lambda n=series_name, s=season, e=episode, w=why: self._set_status(f"{n} {s}x{int(e):02d} sin candidato ({w})", WARNING_COLOR))
+                except Exception:
+                    pass
 
         # ── Unstuck: limpiar recs de episodios ya completados (ya no faltan) → borrar la descarga que quedó colgada
         if self.config_data.get("unstuck_enabled"):
@@ -12749,6 +13149,10 @@ class App(_AppBase):
         criterio best_result que el botón manual). Devuelve (ok, motivo, hash_hex).
         hash_hex es el MD4 hex del partfile descargado (o "" si falla). No
         toca la sesión/pestaña Descargas (crea la suya y la cierra)."""
+        try:
+            self.after(0, lambda q=query: self._set_status(f"Buscando '{q[:60]}' en aMule…", PENDING_COLOR))
+        except Exception:
+            pass
         ec = EcClient(
             host=self.config_data.get("amule_host", "localhost"),
             port=self.config_data.get("amule_port", 4712),
@@ -12765,16 +13169,20 @@ class App(_AppBase):
                     return False, "aMule no disponible", ""
                 st = search_type or self.config_data.get("amule_search_type", "Kad")
                 best = None
-                last = None
+                last_key = None
                 try:
                     for results in ec.iter_search(
                             query, search_type=st, poll_interval=2.0, max_duration=20.0):
                         candidate = best_result(results, query) if results else None
                         if candidate is not None:
-                            best = candidate
-                            if last is not None and best is last:
+                            # best_result evalúa TODOS los acumulados (no solo los nuevos), por lo que
+                            # el mejor solo puede mejorar con cada sondeo; si se estabiliza 2 polls seguidos se puede salir antes
+                            cand_key = self._downloads_key(candidate)
+                            if last_key is not None and cand_key == last_key:
+                                best = candidate
                                 break
-                            last = best
+                            best = candidate
+                            last_key = cand_key
                     if best is None:
                         return False, "sin candidato que cumpla el umbral", ""
                     ok, _raw = ec.download(best)
@@ -12838,6 +13246,12 @@ class App(_AppBase):
         attach_tooltip(dl_search_btn, lambda: "Buscar en aMule por la red elegida. Kad no "
                        "necesita servidor; Global consulta los servidores eD2k.")
         dl_search_btn.pack(side="left", padx=(0, 6))
+        self._downloads_search_btn = dl_search_btn
+        self._downloads_stop_btn = ctk.CTkButton(top, text="Parar", width=70, height=28,
+                      fg_color="#c0392b", hover_color="#96281b",
+                      command=self._downloads_stop_search, state="disabled")
+        attach_tooltip(self._downloads_stop_btn, lambda: "Parar la búsqueda en curso")
+        self._downloads_stop_btn.pack(side="left", padx=(0, 6))
 
         self._downloads_status_lbl = ctk.CTkLabel(parent, text="",
                                                    font=ctk.CTkFont(size=11), anchor="w")
@@ -12863,8 +13277,19 @@ class App(_AppBase):
         # separadores arrastrables (resizable), ordenación por cabecera
         # (sortable) y ocultar/mostrar columnas con el menú contextual del
         # clic derecho (on_visibility_changed).
+        # Contenedor izquierdo con dos listas apiladas (resultados arriba,
+        # descargas activas abajo) para que la ficha TMDB siga ocupando todo
+        # el alto a la derecha, como antes.
+        left_wrap = ctk.CTkFrame(body, fg_color="transparent")
+        left_wrap.grid(row=0, column=0, sticky="nsew")
+        left_wrap.grid_columnconfigure(0, weight=1)
+        left_wrap.grid_rowconfigure(0, weight=3)  # resultados
+        left_wrap.grid_rowconfigure(1, weight=0)  # paginación
+        left_wrap.grid_rowconfigure(2, weight=0)  # cabecera descargas
+        left_wrap.grid_rowconfigure(3, weight=3)  # descargas
+
         sw0 = self._saved_col_widths("descargar")   # anchos guardados de una sesión anterior, si hay
-        self._downloads_table = TableView(body, columns=[
+        self._downloads_table = TableView(left_wrap, columns=[
             # Nombre de ancho FIJO (antes expand=True): al ser expand, la
             # columna absorbía TODO el espacio sobrante (~770px en una
             # ventana de 1200) y los nombres de aMule (300-500px de media)
@@ -12929,16 +13354,56 @@ class App(_AppBase):
         self._downloads_side_panel = self._build_downloads_side_panel(body)
         self._downloads_side_panel.grid(row=0, column=2, sticky="nsew")
 
-        pag = ctk.CTkFrame(parent, fg_color="transparent")
-        pag.grid(row=3, column=0, sticky="ew", pady=(6, 0))
-        self._downloads_prev_btn = ctk.CTkButton(pag, text="< Anterior", width=100, height=26,
-                                                  command=self._downloads_prev_page, state="disabled")
-        self._downloads_prev_btn.pack(side="left", padx=(0, 8))
-        self._downloads_page_lbl = ctk.CTkLabel(pag, text="", font=ctk.CTkFont(size=11), anchor="center")
-        self._downloads_page_lbl.pack(side="left", expand=True)
-        self._downloads_next_btn = ctk.CTkButton(pag, text="Siguiente >", width=100, height=26,
-                                                  command=self._downloads_next_page, state="disabled")
-        self._downloads_next_btn.pack(side="right")
+        pag = ctk.CTkFrame(left_wrap, fg_color="transparent")
+        pag.grid(row=1, column=0, pady=(6, 0))
+        self._downloads_prev_btn = ctk.CTkButton(pag, text="< Anterior", width=100, fg_color="transparent", border_width=1,
+                                                  command=self._downloads_prev_page)
+        self._downloads_prev_btn.pack(side="left")
+        self._downloads_page_lbl = ctk.CTkLabel(pag, text="", text_color=PENDING_COLOR)
+        self._downloads_page_lbl.pack(side="left", padx=12)
+        self._downloads_next_btn = ctk.CTkButton(pag, text="Siguiente >", width=100, fg_color="transparent", border_width=1,
+                                                  command=self._downloads_next_page)
+        self._downloads_next_btn.pack(side="left")
+        ctk.CTkLabel(pag, text="Mostrar:", text_color=PENDING_COLOR).pack(side="left", padx=(12, 4))
+        ctk.CTkOptionMenu(pag, values=["10", "50", "100", "Ajustado"], variable=self._page_size_var, width=70,
+                          command=self._on_global_page_size_changed).pack(side="left")
+
+        # --- Descargas (cola de aMule, activas + completadas juntas) --- debajo de resultados, misma columna
+        dl_header = ctk.CTkFrame(left_wrap, fg_color="transparent")
+        dl_header.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        ctk.CTkLabel(dl_header, text="Descargas", font=ctk.CTkFont(size=12, weight="bold")).pack(side="left")
+        self._active_downloads_status_lbl = ctk.CTkLabel(dl_header, text="—", font=ctk.CTkFont(size=11), text_color=PENDING_COLOR)
+        self._active_downloads_status_lbl.pack(side="left", padx=(8, 0))
+        ctk.CTkButton(dl_header, text="↻", width=30, height=22,
+                      fg_color="transparent", border_width=1,
+                      command=self._refresh_active_downloads).pack(side="right")
+
+        dl_wrap = ctk.CTkFrame(left_wrap, fg_color="transparent")
+        dl_wrap.grid(row=3, column=0, sticky="nsew", pady=(2, 0))
+        dl_wrap.grid_columnconfigure(0, weight=1)
+        dl_wrap.grid_rowconfigure(0, weight=1)
+
+        self._active_downloads_table = TableView(dl_wrap, columns=[
+            ColumnSpec("name", "Archivo", width=300, min_width=120, resizable=True, expand=True, sortable=True),
+            ColumnSpec("size", "Tamaño", width=90, min_width=70, resizable=True, sortable=True),
+            ColumnSpec("done", "Descargado", width=90, min_width=70, resizable=True, sortable=True),
+            ColumnSpec("percent", "%", width=60, min_width=50, resizable=True, sortable=True),
+            ColumnSpec("prog", "Progreso", width=100, min_width=80, resizable=True, sortable=False),
+            ColumnSpec("speed", "Velocidad", width=85, min_width=70, resizable=True, sortable=True),
+            ColumnSpec("sources", "Fuentes", width=60, min_width=50, resizable=True, sortable=True),
+            ColumnSpec("eta", "Restante", width=80, min_width=70, resizable=True, sortable=True),
+            ColumnSpec("status", "Estado", width=110, min_width=80, resizable=True, sortable=True),
+            ColumnSpec("accion", "", width=110, expand=False, hideable=False),
+        ], header_right_pad=16)
+        self._active_downloads_table.grid(row=0, column=0, sticky="nsew")
+        self._active_downloads_table.row_height = 26
+        self._active_downloads_row_widgets = {}
+        dl_wrap.bind("<Configure>", self._on_active_table_resize)
+        self._active_downloads_data = []
+        self._active_downloads_poll_id = None
+
+        # start polling downloads (cola eMule)
+        self.after(2000, self._schedule_active_poll)
 
         self._downloads_results = []
         self._downloads_page = 0
@@ -12956,12 +13421,8 @@ class App(_AppBase):
         self._downloads_pending_results = None
         self._downloads_last_sort_key = None
         self._downloads_last_sort_asc = None
-        # Como las demás tablas: el número de resultados POR PÁGINA se
-        # ajusta solo al alto real de la tabla (redimensionar la ventana),
-        # en vez de fijarse en un número arbitrario que hacía aparecer la
-        # barra de scroll del CTkScrollableFrame cuando había muchos
-        # resultados. Al cambiar el tamaño, se repinta la página actual.
-        self._downloads_table.enable_dynamic_page_size(lambda _size: self._downloads_rebuild_page())
+        _ps = self.config_data.get("page_size", "Ajustado")
+        self._downloads_table.page_size = 25 if str(_ps) == "Ajustado" else int(_ps)
         # Token de búsqueda en curso: cada búsqueda nueva lo incrementa y
         # el hilo de la anterior lo compara para pararse solo (ver
         # _downloads_perform_search) -- sin esto, lanzar una búsqueda
@@ -13022,9 +13483,13 @@ class App(_AppBase):
         # Búsqueda manual directa en Descargas (usuario teclea y pulsa
         # Buscar): si la query ya no coincide con la que traía año de
         # Películas, limpiar el contexto de año para no penalizar mal.
+        # Además, si la query manual no trae patrón de episodio (1x01,
+        # S01E01...), se considera búsqueda de película: nunca recomendar
+        # capítulo de serie (ver score_download is_movie).
         if query != self._downloads_query_for_year:
             self._downloads_expected_year = None
-            self._downloads_is_movie = False
+            has_ep = bool(re.search(r"(?:[Ss]\d{1,2}[Ee]\d{1,3}|\d{1,2}[xX]\d{1,3})", query))
+            self._downloads_is_movie = not has_ep
         if not query:
             self._downloads_status_lbl.configure(text="Introduce un término de búsqueda",
                                                   text_color=ERROR_COLOR)
@@ -13055,6 +13520,11 @@ class App(_AppBase):
             text=f'Buscando "{query}" en {st}... (los resultados se actualizan solos, hasta 1 minuto)',
             text_color=PENDING_COLOR)
         self._downloads_status_lbl.update()
+        try:
+            self._downloads_stop_btn.configure(state="normal")
+            self._downloads_search_btn.configure(state="disabled")
+        except Exception:
+            pass
         threading.Thread(target=self._downloads_perform_search, args=(query, token), daemon=True).start()
 
     _downloads_type_map = {
@@ -13101,6 +13571,7 @@ class App(_AppBase):
                 # sondeos (ver _downloads_drain_jobs), en vez de esperar a que
                 # la búsqueda termine y abrir otra conexión.
                 self._downloads_search_active = True
+                self._downloads_search_started_ts = _time.monotonic()
                 self._downloads_wake.clear()
                 try:
                     # Se sondea EC SEARCH_RESULTS cada pocos segundos y se va
@@ -13170,6 +13641,11 @@ class App(_AppBase):
     def _downloads_enable_search_controls(self):
         self._downloads_type_menu.configure(state="normal")
         self._downloads_file_type_menu.configure(state="normal")
+        try:
+            self._downloads_search_btn.configure(state="normal")
+            self._downloads_stop_btn.configure(state="disabled")
+        except Exception:
+            pass
 
     def _downloads_finish_search(self):
         # Flush coalescencia pendiente antes de cerrar
@@ -13184,6 +13660,10 @@ class App(_AppBase):
             if pending is not None:
                 self._downloads_apply_display(pending, live=True)
         self._downloads_enable_search_controls()
+        try:
+            self._downloads_stop_btn.configure(state="disabled")
+        except Exception:
+            pass
         n = len(self._downloads_results)
         if n:
             self._downloads_status_lbl.configure(
@@ -13191,6 +13671,448 @@ class App(_AppBase):
         else:
             self._downloads_status_lbl.configure(
                 text="Búsqueda terminada sin resultados.", text_color=PENDING_COLOR)
+
+    def _downloads_stop_search(self):
+        """Parar la búsqueda en curso (poll de EC). Invalida el token para que
+        el hilo de _downloads_perform_search salga en el siguiente sondeo."""
+        self._downloads_search_token += 1
+        try:
+            self._downloads_wake.set()
+        except Exception:
+            pass
+        # Cancelar coalescencia pendiente
+        if self._downloads_pending_display_id is not None:
+            try:
+                self.after_cancel(self._downloads_pending_display_id)
+            except Exception:
+                pass
+            self._downloads_pending_display_id = None
+            self._downloads_pending_results = None
+        with self._downloads_jobs_lock:
+            self._downloads_search_active = False
+        self._downloads_enable_search_controls()
+        try:
+            self._downloads_stop_btn.configure(state="disabled")
+        except Exception:
+            pass
+        self._downloads_status_lbl.configure(text="Búsqueda detenida", text_color=PENDING_COLOR)
+
+    # --- Descargas activas (cola eMule) ---
+
+    def _stop_active_poll(self):
+        if getattr(self, "_active_downloads_poll_id", None) is not None:
+            try:
+                self.after_cancel(self._active_downloads_poll_id)
+            except Exception:
+                pass
+            self._active_downloads_poll_id = None
+
+    def _schedule_active_poll(self):
+        # Solo se sondea la cola mientras la vista Descargas está visible y
+        # no hay una búsqueda EC en curso. Fuera de esa vista no se
+        # reconstruye nada (creaba cientos de widgets cada 3 s en segundo
+        # plano y saturaba la UI).
+        if not getattr(self, "_downloads_visible", False):
+            return
+        self._stop_active_poll()
+        self._active_downloads_poll_id = self.after(3000, self._poll_active_downloads)
+
+    def _poll_active_downloads(self):
+        self._active_downloads_poll_id = None
+        if not getattr(self, "_downloads_visible", False):
+            return
+        # Si la búsqueda quedó colgada (flag True >70s sin limpiarse), liberarla
+        if getattr(self, "_downloads_search_active", False):
+            ts = getattr(self, "_downloads_search_started_ts", 0) or 0
+            if ts and (_time.monotonic() - ts) > 70:
+                self._downloads_search_active = False
+                try:
+                    _log.warning("Descargas: _downloads_search_active colgado >70s, liberado")
+                except Exception:
+                    pass
+            else:
+                self._schedule_active_poll()
+                return
+        try:
+            threading.Thread(target=self._fetch_active_downloads, daemon=True).start()
+        finally:
+            # Asegurar siguiente sondeo aunque el thread falle al crearse
+            if getattr(self, "_downloads_visible", False):
+                self._schedule_active_poll()
+
+    def _is_viewable_active(self):
+        try:
+            return self._active_downloads_table.winfo_viewable()
+        except Exception:
+            try:
+                return self._active_downloads_table.winfo_ismapped()
+            except Exception:
+                return False
+
+    def _fetch_active_downloads(self):
+        try:
+            from core.ec_client import EcClient
+            host = self.config_data.get("amule_host", "localhost")
+            port = int(self.config_data.get("amule_port", 4712) or 4712)
+            pwd = self.config_data.get("amule_password", "")
+            ec = EcClient(host, port, pwd, timeout=5.0)
+            ec.connect()
+            try:
+                queue = ec.get_download_queue()
+            finally:
+                try:
+                    ec.close()
+                except Exception:
+                    pass
+            self.after(0, lambda q=queue: self._rebuild_active_downloads(q))
+        except Exception as e:
+            try:
+                from core.appdirs import app_data_dir
+                from pathlib import Path
+                _p = Path(app_data_dir()) / "active_poll.log"
+                with open(_p, "a", encoding="utf-8") as _f:
+                    _f.write(f"{_time.strftime('%Y-%m-%d %H:%M:%S')} fetch error {e}\n")
+            except Exception:
+                pass
+            self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"— ({e})", text_color=ERROR_COLOR))
+
+    def _rebuild_active_downloads(self, queue: list, force: bool = False):
+        # Normalizar tamaños: show DL no trae bytes, pero si tenemos
+        # size_full desde el .part y percent, derivar size_done; y si
+        # tenemos ambos tamaños pero no percent, derivarlo.
+        for d in (queue or []):
+            try:
+                sf = int(d.get("size_full", 0) or 0)
+                sd = int(d.get("size_done", 0) or 0)
+                pct = float(d.get("percent", 0) or 0)
+                if sf > 0 and pct and sd == 0:
+                    d["size_done"] = int(sf * pct / 100.0)
+                elif sf > 0 and sd > 0 and not pct:
+                    d["percent"] = sd / sf * 100.0
+            except Exception:
+                pass
+        self._active_downloads_data = queue or []
+        # Separar completadas solo al 100% real (no 99.9). Usar tamaños si están disponibles.
+        def _is_completed(dd):
+            try:
+                sf = int(dd.get("size_full", 0) or 0)
+                sd = int(dd.get("size_done", 0) or 0)
+                if sf > 0 and sd >= sf:
+                    return True
+                pct = float(dd.get("percent", 0) or 0)
+                if pct >= 100.0:
+                    return True
+                # status 4 (Completado) solo cuenta si además está al 100%
+                return False
+            except Exception:
+                return False
+        n_completed = sum(1 for d in self._active_downloads_data if _is_completed(d))
+        n_active = len(self._active_downloads_data) - n_completed
+        if len(self._active_downloads_data) == 0:
+            self._active_downloads_status_lbl.configure(text="Sin descargas", text_color=PENDING_COLOR)
+        else:
+            total_speed = sum(int(d.get("speed", 0) or 0) for d in self._active_downloads_data)
+            total_full = sum(int(d.get("size_full", 0) or 0) for d in self._active_downloads_data)
+            total_done = sum(int(d.get("size_done", 0) or 0) for d in self._active_downloads_data)
+            parts = []
+            if n_active:
+                parts.append(f"{n_active} activa(s)")
+            if n_completed:
+                parts.append(f"{n_completed} completada(s)")
+            if total_full:
+                parts.append(f"{_fmt_size(total_full)}")
+                # opcional: mostrar progreso total como 1.2/5.2 GB
+                # parts.append(f"{_fmt_size(total_done)}/{_fmt_size(total_full)}")
+            parts.append(f"{self._fmt_speed(total_speed)}/s")
+            self._active_downloads_status_lbl.configure(
+                text=" · ".join(parts), text_color=SUCCESS_COLOR)
+        rows = [("active", d) for d in self._active_downloads_data]
+        hashes = tuple(d.get("hash_hex", "") for _, d in rows)
+        prev_hashes = getattr(self, "_dl_hashes", None)
+        if (not force) and hashes == prev_hashes:
+            self._update_active_rows_inplace(queue)
+            return
+        self._dl_hashes = hashes
+        try:
+            self._active_downloads_table.clear_rows()
+        except Exception:
+            try:
+                for w in self._active_downloads_table.body.winfo_children():
+                    w.destroy()
+            except Exception:
+                pass
+            self._active_downloads_table._cells = {}
+        widgets_map = {}
+        for kind, d in rows:
+            row = ctk.CTkFrame(self._active_downloads_table.body, fg_color=("gray95", "gray17"))
+            row.pack(fill="x", pady=2, padx=2)
+            def _cell(key):
+                return self._active_downloads_table.cell(row, key, pady=4)
+            def _lbl(c, text):
+                lbl = ctk.CTkLabel(c, text=text, font=ctk.CTkFont(size=11), anchor="w")
+                lbl.pack(fill="both", expand=True)
+                return lbl
+            c = _cell("name")
+            name_lbl = _lbl(c, _fit_text(d.get("name",""), self._active_downloads_table.col_width("name"), ctk.CTkFont(size=11)))
+            attach_tooltip(name_lbl, lambda n=d.get("name",""): n)
+            lbls = {"name": name_lbl}
+            lbls["size"] = _lbl(_cell("size"), _fmt_size(d.get("size_full",0)))
+            lbls["done"] = _lbl(_cell("done"), _fmt_size(d.get("size_done",0)))
+            _pct = float(d.get("percent", 0) or 0)
+            _disp = f"{int(_pct*10)/10:.1f}%" if _pct < 100 else "100.0%"
+            lbls["percent"] = _lbl(_cell("percent"), _disp)
+            # barra de progreso por descarga (corner_radius 0 para que 0% no muestre puntita azul)
+            prog_cell = _cell("prog")
+            prog_bar = ctk.CTkProgressBar(prog_cell, height=8, corner_radius=0)
+            prog_bar.set(max(0.0, min(1.0, _pct / 100.0)))
+            prog_bar.pack(fill="x", expand=True, pady=4)
+            lbls["prog"] = prog_bar
+            speed = d.get("speed",0)
+            lbls["speed"] = _lbl(_cell("speed"), self._fmt_speed(speed)+"/s" if speed else "—")
+            lbls["sources"] = _lbl(_cell("sources"), str(d.get("sources",0)))
+            lbls["eta"] = _lbl(_cell("eta"), self._eta_for_download(d))
+            lbls["status"] = _lbl(_cell("status"), self._status_label_for_download(d.get("status",0)))
+            c = _cell("accion")
+            bf = ctk.CTkFrame(c, fg_color="transparent")
+            bf.pack(fill="both", expand=True)
+            btn = ctk.CTkButton(bf, text="✕", width=28, height=20, fg_color="transparent", border_width=1, text_color=ERROR_COLOR,
+                                command=lambda h=d.get("hash_hex",""): self._cancel_active_download(h))
+            attach_tooltip(btn, lambda: "Cancelar descarga")
+            btn.pack(side="right", padx=(1,0))
+            btn_auto = ctk.CTkButton(bf, text="↻", width=28, height=20, fg_color="transparent", border_width=1,
+                                     command=lambda dd=dict(d): self._search_alternative_auto(dd))
+            attach_tooltip(btn_auto, lambda: "Buscar alternativa y descargar automáticamente (mejor candidato)")
+            btn_auto.pack(side="right", padx=(1,0))
+            btn_pick = ctk.CTkButton(bf, text="🔍", width=28, height=20, fg_color="transparent", border_width=1,
+                                     command=lambda dd=dict(d): self._search_alternative_choose(dd))
+            attach_tooltip(btn_pick, lambda: "Buscar alternativas para elegir manualmente")
+            btn_pick.pack(side="right", padx=(1,0))
+            widgets_map[d.get("hash_hex", "")] = (kind, lbls)
+        self._dl_widgets = widgets_map
+        try:
+            self._active_downloads_table.note_rows_rendered(len(rows))
+        except Exception:
+            pass
+
+    def _update_active_rows_inplace(self, queue: list):
+        """Actualiza solo las etiquetas de las filas activas sin destruir widgets."""
+        widgets = getattr(self, "_dl_widgets", {})
+        active_by_hash = {d.get("hash_hex", ""): d for d in queue}
+        for h, d in active_by_hash.items():
+            entry = widgets.get(h)
+            if not entry:
+                continue
+            kind, lbls = entry
+            if kind != "active":
+                continue
+            try:
+                lbls["size"].configure(text=_fmt_size(d.get("size_full", 0)))
+                lbls["done"].configure(text=_fmt_size(d.get("size_done", 0)))
+                _pct2 = float(d.get("percent", 0) or 0)
+                _disp2 = f"{int(_pct2*10)/10:.1f}%" if _pct2 < 100 else "100.0%"
+                lbls["percent"].configure(text=_disp2)
+                try:
+                    lbls["prog"].set(max(0.0, min(1.0, _pct2 / 100.0)))
+                except Exception:
+                    pass
+                speed = d.get("speed", 0)
+                lbls["speed"].configure(text=self._fmt_speed(speed) + "/s" if speed else "—")
+                lbls["sources"].configure(text=str(d.get("sources", 0)))
+                lbls["eta"].configure(text=self._eta_for_download(d))
+                lbls["status"].configure(text=self._status_label_for_download(d.get("status", 0)))
+            except Exception:
+                pass
+
+    def _on_active_table_resize(self, event):
+        try:
+            self._active_downloads_table.fit_to_width(event.width)
+            name_w = self._active_downloads_table.col_width("name")
+            if name_w != getattr(self, "_downloads_name_w", -1):
+                self._downloads_name_w = name_w
+                self._dl_hashes = None
+                self._rebuild_active_downloads(self._active_downloads_data, force=True)
+        except Exception:
+            pass
+
+    def _fmt_speed(self, bps: int) -> str:
+        if bps < 1024:
+            return f"{bps} B"
+        if bps < 1024*1024:
+            return f"{bps/1024:.1f} KB"
+        return f"{bps/1024/1024:.2f} MB"
+
+    def _eta_for_download(self, d: dict) -> str:
+        try:
+            speed = d.get("speed",0) or 0
+            if speed <= 0:
+                return "—"
+            remain = max(0, d.get("size_full",0) - d.get("size_done",0))
+            secs = int(remain / speed) if speed else 0
+            if secs <= 0:
+                return "—"
+            if secs < 60:
+                return f"{secs}s"
+            if secs < 3600:
+                return f"{secs//60}m {secs%60}s"
+            h = secs//3600
+            m = (secs%3600)//60
+            return f"{h}h {m}m"
+        except Exception:
+            return "—"
+
+    def _status_label_for_download(self, code: int) -> str:
+        # Códigos de aMule PartFileStatus (aprox): 0=waiting, 1=paused, 2=downloading, etc.
+        mapping = {0: "Esperando", 1: "Pausado", 2: "Descargando", 3: "Descargando", 4: "Completado", 7: "Detenido"}
+        return mapping.get(code, str(code) if code else "—")
+
+    def _cancel_active_download(self, hash_hex: str):
+        if not hash_hex:
+            return
+        def _worker(h=hash_hex):
+            try:
+                from core.ec_client import EcClient
+                host = self.config_data.get("amule_host", "localhost")
+                port = int(self.config_data.get("amule_port", 4712) or 4712)
+                pwd = self.config_data.get("amule_password", "")
+                ec = EcClient(host, port, pwd, timeout=5.0)
+                ec.connect()
+                try:
+                    ok, msg = ec.cancel_download(h)
+                finally:
+                    ec.close()
+                self.after(0, lambda ok=ok, msg=msg: self._active_downloads_status_lbl.configure(text="Cancelada" if ok else f"Error: {msg}", text_color=SUCCESS_COLOR if ok else ERROR_COLOR))
+                self.after(0, self._refresh_active_downloads)
+            except Exception as e:
+                self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"Error: {e}", text_color=ERROR_COLOR))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _alternative_query_for_download(self, d: dict) -> str:
+        """Query limpia para buscar alternativa a partir del nombre de la descarga."""
+        try:
+            name = d.get("name", "") or ""
+            det = detect_episode(name)
+            title = (det.get("title") or "").strip() if det else ""
+            if title:
+                season = det.get("season")
+                episode = det.get("episode")
+                templates = self.config_data.get("series_search_patterns") or {}
+                prefers = "castellano" in name.lower()
+                try:
+                    q = build_amule_query(title, season, episode, templates=templates, prefers_castellano=prefers)
+                    if q:
+                        return q
+                except Exception:
+                    pass
+                return title
+            base = name.rsplit(".", 1)[0] if "." in name else name
+            return base[:80].strip() or name[:80]
+        except Exception:
+            return (d.get("name", "") or "")[:80]
+
+    def _search_alternative_choose(self, d: dict):
+        """Rellena la caja de búsqueda con una query derivada y lanza la búsqueda para elegir a mano."""
+        try:
+            q = self._alternative_query_for_download(d)
+            if not q:
+                q = d.get("name", "")
+            self._downloads_search_var.set(q)
+            if not getattr(self, "_downloads_visible", False):
+                try:
+                    self._show_view_impl("downloads")
+                except Exception:
+                    pass
+            self._downloads_do_search()
+            self._set_status(f"Buscando alternativas para: {q[:60]}", PENDING_COLOR)
+        except Exception as e:
+            self._set_status(f"Error al buscar alternativa: {e}", ERROR_COLOR)
+
+    def _search_alternative_auto(self, d: dict):
+        """Busca alternativa y descarga automáticamente el mejor candidato."""
+        q = self._alternative_query_for_download(d)
+        if not q:
+            q = d.get("name", "")
+        try:
+            det = detect_episode(d.get("name", ""))
+            is_movie = (det.get("media_type") == "movie") if det else False
+        except Exception:
+            is_movie = False
+        try:
+            self._active_downloads_status_lbl.configure(text=f"Buscando alternativa: {q[:40]}…", text_color=PENDING_COLOR)
+        except Exception:
+            pass
+        self._set_status(f"Buscando alternativa para: {q[:50]}", PENDING_COLOR)
+
+        def worker():
+            try:
+                from core.ec_client import EcClient
+                host = self.config_data.get("amule_host", "localhost")
+                port = int(self.config_data.get("amule_port", 4712) or 4712)
+                pwd = self.config_data.get("amule_password", "")
+                search_type = self.config_data.get("amule_search_type", "Kad")
+                # Usar el mismo lock que las búsquedas normales (aMule solo 1 EC a la vez)
+                # y pausar el sondeo de Descargas igual que hace _downloads_perform_search
+                with self._amule_ec_lock:
+                    self._downloads_search_active = True
+                    self._downloads_search_started_ts = _time.monotonic()
+                    ec = EcClient(host, port, pwd, timeout=12.0)
+                    try:
+                        ec.connect()
+                    except Exception as e:
+                        self._downloads_search_active = False
+                        self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"Error aMule: {e}", text_color=ERROR_COLOR))
+                        return
+                    try:
+                        best = None
+                        last_results = []
+                        for results in ec.iter_search(q, search_type=search_type, file_type="", poll_interval=4.0, max_duration=40.0):
+                            last_results = results
+                            if not results:
+                                continue
+                            try:
+                                cand = best_result(results, q, is_movie=is_movie)
+                            except Exception:
+                                cand = None
+                            if cand:
+                                best = cand
+                                # si ya tiene fuentes decentes, no esperar todo el tiempo pero sí un poco más
+                                if getattr(cand, "sources", 0) >= 4:
+                                    # esperar una iteración más por si aparece algo mejor
+                                    continue
+                        if best is None and last_results:
+                            try:
+                                best = best_result(last_results, q, is_movie=is_movie)
+                            except Exception:
+                                best = None
+                        if best is None:
+                            self.after(0, lambda: self._active_downloads_status_lbl.configure(text="No se encontró alternativa", text_color=WARNING_COLOR))
+                            self.after(0, lambda: self._set_status("Sin alternativas válidas", WARNING_COLOR))
+                            return
+                        ok, msg = ec.download(best)
+                        if ok:
+                            self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"Alternativa lanzada: {best.name[:40]}", text_color=SUCCESS_COLOR))
+                            self.after(0, lambda: self._set_status(f"Alternativa descargando: {best.name[:50]}", SUCCESS_COLOR))
+                            self.after(0, self._refresh_active_downloads)
+                        else:
+                            self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"No se pudo descargar: {msg}", text_color=ERROR_COLOR))
+                    finally:
+                        self._downloads_search_active = False
+                        try:
+                            ec.close()
+                        except Exception:
+                            pass
+            except Exception as e:
+                self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"Error alternativa: {e}", text_color=ERROR_COLOR))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _refresh_active_downloads(self):
+        # Forzar sondeo inmediato
+        if getattr(self, "_active_downloads_poll_id", None) is not None:
+            try:
+                self.after_cancel(self._active_downloads_poll_id)
+            except Exception:
+                pass
+            self._active_downloads_poll_id = None
+        self._poll_active_downloads()
 
     @staticmethod
     def _downloads_truncate(text: str, max_len: int = 100) -> str:
@@ -13285,14 +14207,10 @@ class App(_AppBase):
             else:
                 self._downloads_status_lbl.configure(
                     text=f"{len(results)} resultado(s) encontrado(s)", text_color=SUCCESS_COLOR)
-        # Solo reordenar si el usuario cambió columna/dirección (no cada poll)
         if self._downloads_sort_key:
-            if (self._downloads_sort_key != self._downloads_last_sort_key or
-                    self._downloads_sort_asc != self._downloads_last_sort_asc):
-                self._downloads_apply_sort()
-                self._downloads_last_sort_key = self._downloads_sort_key
-                self._downloads_last_sort_asc = self._downloads_sort_asc
-            # si no cambió, mantener orden actual (no resort)
+            self._downloads_apply_sort()
+            self._downloads_last_sort_key = self._downloads_sort_key
+            self._downloads_last_sort_asc = self._downloads_sort_asc
         self._downloads_rebuild_page()
         # Restaurar scroll
         if yview is not None:
@@ -13378,10 +14296,29 @@ class App(_AppBase):
         # vista. Ver core/download_quality.py. Si la búsqueda vino de
         # Películas se pasa expected_year/is_movie para evitar
         # "Muy Lejos 2025" cuando se pidió "Muy lejos de aquí 2023".
+        # Además, si la query no trae patrón de episodio (1x01, S01E01...),
+        # se considera búsqueda de película: nunca recomendar capítulo.
+        _q = self._downloads_search_var.get()
+        _has_ep = bool(re.search(r"(?:[Ss]\d{1,2}[Ee]\d{1,3}|\d{1,2}[xX]\d{1,3})", _q))
+        _eff_is_movie = self._downloads_is_movie or not _has_ep
         best_candidate = best_result(
-            results, self._downloads_search_var.get(),
+            results, _q,
             expected_year=self._downloads_expected_year,
-            is_movie=self._downloads_is_movie)
+            is_movie=_eff_is_movie)
+        # Elegido siempre primero, por encima de la ordenación manual
+        if best_candidate is not None and best_candidate in results:
+            try:
+                idx = results.index(best_candidate)
+                if idx != 0:
+                    results.remove(best_candidate)
+                    results.insert(0, best_candidate)
+                    # Si estaba en otra página, llevar a la primera para que se vea
+                    if self._downloads_page != 0:
+                        self._downloads_page = 0
+                        start = 0
+                        end = min(pp, total)
+            except ValueError:
+                pass
         rows_rendered = 0
         for res in results[start:end]:
             rows_rendered += 1
@@ -17036,7 +17973,38 @@ class App(_AppBase):
             return
 
         if not borra_remoto:
-            # Solo disco: es instantáneo, no hace falta hilo.
+            is_uploading = (entry in getattr(self, "_upload_queue", [])) or getattr(entry, "status", "") in ("subiendo", "en_cola")
+            if is_uploading:
+                self._set_status(f"Cancelando subida y borrando: {entry.new_name or entry.name}", PENDING_COLOR)
+                def _bg_local():
+                    self._queue_skip_entry(entry)
+                    try:
+                        self._upload_queue.remove(entry)
+                    except ValueError:
+                        pass
+                    for _ in range(10):
+                        try:
+                            if local_path and Path(local_path).exists():
+                                os.remove(local_path)
+                                break
+                        except Exception as e:
+                            if "32" in str(e) or "being used" in str(e).lower() or "WinError" in str(type(e).__name__):
+                                _time.sleep(0.5)
+                                continue
+                            break
+                        _time.sleep(0.1)
+                    still_exists = bool(local_path and Path(local_path).exists())
+                    def _finish2():
+                        if not still_exists:
+                            self._drop_entry_row(entry)
+                            self._set_status(f"Borrado: {entry.new_name or entry.name}", SUCCESS_COLOR)
+                        else:
+                            _log.warning("No se pudo borrar en local tras cancelar subida: %s", local_path)
+                            self._set_status(f"No se pudo borrar (archivo en uso): {entry.new_name or entry.name}", ERROR_COLOR)
+                            self._drop_entry_row(entry)
+                    self.after(0, _finish2)
+                threading.Thread(target=_bg_local, daemon=True).start()
+                return
             if self._delete_local_file(entry, local_path):
                 self._drop_entry_row(entry)
             return
@@ -17053,6 +18021,17 @@ class App(_AppBase):
         disco. En ese orden a propósito -- si fallara el remoto tras haber
         borrado el local, el archivo del servidor se quedaría sin ninguna
         copia local desde la que reintentar."""
+        # Si estaba subiendo, cancelar primero para no borrar un archivo a medio subir bloqueado
+        try:
+            if entry in getattr(self, "_upload_queue", []):
+                self._queue_skip_entry(entry)
+                try:
+                    self._upload_queue.remove(entry)
+                except ValueError:
+                    pass
+                _time.sleep(0.4)
+        except Exception:
+            pass
         try:
             ok, msg = self._delete_remote_file(remote_path)
         except Exception as e:
@@ -17076,6 +18055,16 @@ class App(_AppBase):
         a detectar, dispara el evento "start" y la fila reaparece sola, con
         lo que quitarla se vuelve imposible (visto de verdad con una
         película que TMDB no tiene: volvía cada pocos segundos)."""
+        # Si estaba en cola o subiendo, sacarlo de la cola y cancelar su subida
+        try:
+            if entry in getattr(self, "_upload_queue", []):
+                try:
+                    self._upload_queue.remove(entry)
+                except ValueError:
+                    pass
+            self._queue_skip_entry(entry)
+        except Exception:
+            pass
         self._discard_from_auto_watcher(entry)
         self.files = [e for e in self.files if e is not entry]
         self._multi_selected.discard(entry)
@@ -18096,6 +19085,10 @@ class App(_AppBase):
         entry.new_name   = self._build_name(info, entry.ext)
         entry.status     = "listo"
         entry.error_msg  = ""
+        # Nueva identificación: si este archivo se había subido antes con el
+        # nombre equivocado, la próxima subida vuelve a ofrecer borrar el
+        # resto (ver _StaleUploadDialog / _stale_remote_from_history).
+        entry._stale_checked = False
         # Avisar a AutoWatcher de que este archivo ya está identificado a
         # mano: si seguía fallando por su cuenta (p.ej. detección local mala),
         # su reintento automático podía pisar este estado poco después
@@ -18139,6 +19132,7 @@ class App(_AppBase):
             entry.new_name   = self._build_name(info, entry.ext)
             entry.status     = "listo"
             entry.error_msg  = ""
+            entry._stale_checked = False
             self._mark_auto_processed(entry.path, "identificado_manual", entry.new_name)
             ok += 1
             ok_entries.append(entry)
@@ -19930,8 +20924,16 @@ class App(_AppBase):
 
     def _series_prefers_castellano(self, series_name: str) -> bool:
         """Si algún archivo de la lista para esa serie contiene 'castellano' en el nombre,
-        la búsqueda aMule debe priorizarlo (ver build_amule_query prefers_castellano)."""
-        low_series = (series_name or "").strip().lower()
+        la búsqueda aMule debe priorizarlo (ver build_amule_query prefers_castellano).
+        Si hay un template personalizado para la serie, se respeta tal cual y no se
+        añade 'castellano' automáticamente (el usuario ya controla la query)."""
+        # Template personalizado → no añadir castellano automáticamente
+        pats = self.config_data.get("series_search_patterns", {}) or {}
+        low = (series_name or "").strip().lower()
+        for k in pats:
+            if k.strip().lower() == low:
+                return False
+        low_series = low
         for e in getattr(self, "files", []):
             # Identidad de serie: media_info.title o detected title
             e_series = ""
@@ -20186,6 +21188,11 @@ class App(_AppBase):
             pass
         return []
 
+    def _stale_remote_from_history(self, local_path: str, filename: str, new_remote: str) -> str:
+        """Delegación a core.remote_presence.stale_remote_from_history (ver
+        allí la lógica y su docstring)."""
+        return rp.stale_remote_from_history(self._load_history(), local_path, filename, new_remote)
+
     def _save_history_entry(self, filename: str, remote: str, status: str, size: int, error_msg: str = "",
                              local_path: str = ""):
         entry = {
@@ -20373,6 +21380,9 @@ class App(_AppBase):
             nav_fr, text="Siguiente >", width=100, fg_color="transparent", border_width=1,
             command=lambda: self._history_change_page(1))
         self._history_next_btn.pack(side="left")
+        ctk.CTkLabel(nav_fr, text="Mostrar:", text_color=PENDING_COLOR).pack(side="left", padx=(12, 4))
+        ctk.CTkOptionMenu(nav_fr, values=["10", "50", "100", "Ajustado"], variable=self._page_size_var, width=70,
+                          command=self._on_global_page_size_changed).pack(side="left")
 
         self._history_col_order = ["fecha", "archivo", "tipo", "cliente", "destino", "tamano", "estado"]
         self._history_font = ctk.CTkFont(size=11)
@@ -20411,7 +21421,8 @@ class App(_AppBase):
         # su propia cabecera.
         self._history_table.on_column_resize = lambda: self._history_render_page()
         self._history_table.on_widths_changed = lambda w: self._save_table_col_widths("historial", w)
-        self._history_table.enable_dynamic_page_size(self._on_history_page_size_changed)
+        _ps = self.config_data.get("page_size", "Ajustado")
+        self._history_table.page_size = 25 if str(_ps) == "Ajustado" else int(_ps)
 
         # Diferido -- ver el mismo motivo en _build_missing_episodes_tab:
         # esta pestaña se construye al arrancar aunque esté oculta, y el
@@ -20984,7 +21995,8 @@ class App(_AppBase):
             "limpiar", "candidata", True)   # arranca igual que el comportamiento previo (alfabético)
         self._cleanup_table.set_sort_indicator(self._cleanup_sort_key, self._cleanup_sort_asc)
         self._cleanup_table.grid(row=0, column=0, sticky="nsew")
-        self._cleanup_table.enable_dynamic_page_size(lambda _size: self._render_cleanup_page())
+        _ps = self.config_data.get("page_size", "Ajustado")
+        self._cleanup_table.page_size = 25 if str(_ps) == "Ajustado" else int(_ps)
 
         # Paginado (ver TableView.page_size, calculado dinámicamente) -- mismo motivo que en
         # Episodios que faltan/Historial: con un servidor grande, cientos
@@ -21021,6 +22033,9 @@ class App(_AppBase):
             cleanup_nav_fr, text="Siguiente >", width=100, fg_color="transparent", border_width=1,
             command=lambda: self._cleanup_change_page(1))
         self._cleanup_next_btn.pack(side="left")
+        ctk.CTkLabel(cleanup_nav_fr, text="Mostrar:", text_color=PENDING_COLOR).pack(side="left", padx=(12, 4))
+        ctk.CTkOptionMenu(cleanup_nav_fr, values=["10", "50", "100", "Ajustado"], variable=self._page_size_var, width=70,
+                          command=self._on_global_page_size_changed).pack(side="left")
 
         # -- Ficha de TMDB de la candidata pulsada, a la derecha --
         self._cleanup_side_panel = self._build_cleanup_side_panel(body)
@@ -22298,7 +23313,8 @@ class App(_AppBase):
         ])
         self._protected_table.grid(row=0, column=0, sticky="nsew", padx=(0, CONTAINER_GAP))
         self._protected_table.on_widths_changed = lambda w: self._save_table_col_widths("protected", w)
-        self._protected_table.enable_dynamic_page_size(self._on_protected_page_size_changed)
+        _ps = self.config_data.get("page_size", "Ajustado")
+        self._protected_table.page_size = 25 if str(_ps) == "Ajustado" else int(_ps)
 
         self._protected_name_font = ctk.CTkFont(size=12)
 
@@ -22318,10 +23334,6 @@ class App(_AppBase):
         self._protected_side_panel = self._build_protected_side_panel(body)
         self._protected_side_panel.grid(row=0, column=2, sticky="nsew")
 
-        # Paginado (ver TableView.page_size, calculado dinámicamente) -- esta era la única tabla de
-        # listado de toda la app sin límite: con muchas reservas acumuladas
-        # se reconstruía entera (sin límite de filas) cada vez que se
-        # entraba en la pestaña. Mismo patrón que Historial/Liberar espacio.
         nav_fr = ctk.CTkFrame(parent, fg_color="transparent")
         nav_fr.grid(row=3, column=0, pady=(6, 0))
         self._protected_prev_btn = ctk.CTkButton(
@@ -22334,6 +23346,9 @@ class App(_AppBase):
             nav_fr, text="Siguiente >", width=100, fg_color="transparent", border_width=1,
             command=lambda: self._protected_change_page(1))
         self._protected_next_btn.pack(side="left")
+        ctk.CTkLabel(nav_fr, text="Mostrar:", text_color=PENDING_COLOR).pack(side="left", padx=(12, 4))
+        ctk.CTkOptionMenu(nav_fr, values=["10", "50", "100", "Ajustado"], variable=self._page_size_var, width=70,
+                          command=self._on_global_page_size_changed).pack(side="left")
 
         self._protected_items = []   # página actual, ver _render_protected_table
         self._protected_page = 0

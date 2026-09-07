@@ -18,13 +18,30 @@ from core.appdirs import APP_NAME, app_data_dir, is_windows
 # Referencia global al fichero abierto: si se recolectara (garbage
 # collection), el SO liberaría el bloqueo antes de tiempo.
 _lock_file = None
+_mutex_handle = None
 
 
 def acquire() -> bool:
     """Intenta tomar el bloqueo de instancia única.
     True si se consiguió (esta es la única instancia corriendo).
     False si ya hay otra instancia con el bloqueo tomado."""
-    global _lock_file
+    global _lock_file, _mutex_handle
+    # Mutex nombrado para el instalador (Inno Setup AppMutex). Se crea
+    # aunque el bloqueo de fichero falle, para que el instalador detecte
+    # la instancia vía Restart Manager / AppMutex incluso si el .lock no
+    # existe aún (arranque muy temprano). Ver setup.iss AppMutex.
+    if is_windows():
+        try:
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.windll.kernel32
+            # CreateMutexW: si ya existe, GetLastError() == ERROR_ALREADY_EXISTS (183)
+            _mutex_handle = kernel32.CreateMutexW(None, 0, "aIBechosSingletonMutex")
+            if _mutex_handle and ctypes.get_last_error() == 183:
+                # Otra instancia ya tiene el mutex
+                return False
+        except Exception:
+            pass
     lock_path = app_data_dir() / f"{APP_NAME}.lock"
     try:
         _lock_file = open(lock_path, "a+")

@@ -111,7 +111,7 @@ def remove_series_from_cache(cache: dict, tmdb_id: int) -> bool:
     return True
 
 
-_PERSONAL_FIELDS = ("ignored", "ai_verdict")
+_PERSONAL_FIELDS = ("ignored", "ignored_seasons", "ignored_episodes", "ai_verdict")
 
 
 def strip_personal_fields(cache: dict) -> dict:
