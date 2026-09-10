@@ -402,14 +402,19 @@ def test_cat_token_alone_is_not_catalan():
     assert score_download(_r(1, "Serie S01E01 catwoman.mkv")) >= 0
 
 
-def test_catalan_with_spanish_still_loses():
-    """Incluso "castellano + català" (dual) se penaliza: el doblaje catalán no
-    es lo que el usuario quiere, no debe ganar a un release solo en español."""
+def test_catalan_with_spanish_not_penalized():
+    """Con pista en español también ("castellano + català" en dual), no se
+    penaliza: lo que importa es que trae español. Solo el catalán sin
+    español resta."""
     cat_dual = score_download(_r(1, "Los Simpsons 2x04 castellano+català 1080p",
                                   sources=30, complete=True), "Los Simpsons 2x04")
     es_only = score_download(_r(2, "Los Simpsons 2x04 castellano 720p",
                                  sources=3, complete=False), "Los Simpsons 2x04")
-    assert es_only > cat_dual
+    assert cat_dual > es_only
+    # Y el catalán sin español sigue perdiendo contra el mismo release
+    cat_only = score_download(_r(1, "Los Simpsons 2x04 català 1080p",
+                                  sources=30, complete=True), "Los Simpsons 2x04")
+    assert es_only > cat_only
 
 
 def test_catalan_subtitle_release_never_wins_real_case():

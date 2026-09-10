@@ -47,14 +47,13 @@ from core.renamer import (build_new_name, rename_file, is_video_file, is_book_fi
                            is_comic_file, get_extension, build_name_for_media_info, is_archive_file)
 from core.ftp_client import _ftp_safe, sizes_by_top_level_folder, files_by_top_level_folder
 from core import shared_data
-from core.speed_ewma import SpeedEWMA
 from core.amule_client import AmuleSearchResult
 from core.ec_client import EcClient, EcConnectionError, EcAuthError, EcProtocolError
 from core.auto_watcher import AutoWatcher
 from core.series_match import best_match, match_names_exclusively, normalize_series_name, series_similarity
 from core import remote_presence as rp
 from core import auto_complete_state
-from core.download_quality import best_result
+from core.download_quality import best_result, explain_score
 from core.amule_search import build_amule_query, build_amule_season_query
 
 # Parecido mínimo para dar dos carpetas del FTP por la MISMA serie al
@@ -99,9 +98,11 @@ ICON_LINKS = ("#7F8C8D", "#5f6b6d")   # enlaces personalizados
 # Colores del botón "Descargar" automático de una fila de episodio: en
 # reposo lleva el color de marca, y cambia a OK (verde)/error (rojo)/en
 # curso (ámbar) según avanza el ciclo buscar🏏mejor candidato▶descargar.
+# ALREADY es cuando aMule ya lo tiene en completados y no lo vuelve a bajar.
 ICON_DL_IDLE   = ("#2980B9", "#155a8a")   # botón de descarga en reposo
 ICON_DL_BUSY   = ("#E67E22", "#b85c12")   # búsqueda + descarga en segundo plano
 ICON_DL_OK     = ("#27AE60", "#147a3d")   # descarga lanzada a aMule con éxito
+ICON_DL_ALREADY= ("#F39C12", "#9c6e0e")   # ya estaba en completados de aMule
 ICON_DL_FAIL   = ("#C0392B", "#8a1f16")   # no se encontró/como lanzado
 CONTAINER_GAP = 8   # separación estándar entre contenedores principales de la UI
 QUEUED_COLOR  = "#3498db"
@@ -492,7 +493,7 @@ class _StaleUploadDialog(ctk.CTkToplevel):
         self.update_idletasks()
         pw = parent.winfo_rootx() + parent.winfo_width() // 2
         ph = parent.winfo_rooty() + parent.winfo_height() // 2
-        dw, dh = 500, 240
+        dw, dh = 500, 280
         self.geometry(f"{dw}x{dh}+{pw - dw//2}+{ph - dh//2}")
 
         ctk.CTkLabel(self,
@@ -514,6 +515,14 @@ class _StaleUploadDialog(ctk.CTkToplevel):
         ctk.CTkButton(bf, text="No borrar, subir", width=140,
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=lambda: self._close("no_delete")).pack(side="left", padx=6)
+        bf2 = ctk.CTkFrame(self, fg_color="transparent")
+        bf2.pack(padx=24, pady=(0, 8))
+        ctk.CTkButton(bf2, text="Borrar resto y subir (todos)", width=160,
+                      fg_color=ERROR_COLOR, hover_color="#96281b",
+                      command=lambda: self._close("delete_upload_all")).pack(side="left", padx=6)
+        ctk.CTkButton(bf2, text="No borrar, subir (todos)", width=140,
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                      command=lambda: self._close("no_delete_all")).pack(side="left", padx=6)
         ctk.CTkButton(self, text="Cancelar la subida", width=140,
                       fg_color="transparent", border_width=1,
                       command=lambda: self._close(None)).pack(pady=(0, 18))
@@ -1155,6 +1164,7 @@ class App(_AppBase):
         self._upload_current_remote = ""
         self._upload_overwrite_all  = False
         self._upload_duplicate_ignore_all = False
+        self._upload_stale_choice = None  # None | "delete" | "no_delete" para lote manual (ver _StaleUploadDialog)
         self._rename_overwrite_all  = False
         self._upload_slot_of        = {}
         self._upload_skip_events    = []
@@ -1206,10 +1216,6 @@ class App(_AppBase):
         # automático — "Subidas simultáneas" en Ajustes limita el total real,
         # no cada origen por separado (ver core/upload_slots.py).
         self._upload_slots = UploadSlotManager(self.config_data)
-        # Velocidad total de la barra de estado, suavizada (ver
-        # _update_status_bar). Constante más corta que la de cada archivo: aquí
-        # solo hay que limar el desacompasamiento entre ellos.
-        self._total_speed_media = SpeedEWMA(tau=1.0)
 
         ctk.set_appearance_mode(self.config_data.get("appearance", "dark"))
         ctk.set_default_color_theme(self.config_data.get("color_theme", "blue"))
@@ -2194,15 +2200,9 @@ class App(_AppBase):
             # fila, cuánto se está aprovechando de verdad el ancho de banda
             # disponible en conjunto.
             total_speed = sum(e.ftp_speed for e in self.files if e.status == "subiendo")
-            # Cada sumando ya viene suavizado, pero sus lecturas no van
-            # acompasadas entre sí y el total todavía da escalones al sumarlas.
-            # Una segunda pasada corta lo deja quieto.
+            # Velocidad actual sin suavizar, a petición del usuario (aunque fluctúe).
             if total_speed > 0:
-                total_speed = self._total_speed_media.update(
-                    total_speed, _time.monotonic())
                 parts.append(f"Subiendo: {_fmt_speed(total_speed)}")
-            else:
-                self._total_speed_media.reset()   # que la próxima no arrastre
             self._status_bar_left.configure(text="   ·   ".join(parts))
 
         # El texto de la derecha refleja la selección de la vista ACTIVA
@@ -5782,6 +5782,7 @@ class App(_AppBase):
         self._upload_current_remote = ""
         self._upload_overwrite_all  = False
         self._upload_duplicate_ignore_all = False
+        self._upload_stale_choice = None
         # Refrescar en cada tanda por si han cambiado carpetas en el servidor
         self._series_folder_cache.clear()
         self._ftp_dir_cache.clear()
@@ -6103,28 +6104,53 @@ class App(_AppBase):
         stale_remote = ("" if getattr(entry, "_stale_checked", False) else
                         self._stale_remote_from_history(entry.path, entry.name, remote_file))
         if stale_remote:
-            answer = [None]
-            ev = threading.Event()
-            def _ask_stale(d=remote_file, s=stale_remote, ans=answer, e=ev):
-                dlg = _StaleUploadDialog(self, d, s)
-                ans[0] = dlg.result
-                e.set()
-            self.after(0, _ask_stale)
-            ev.wait()
-            entry._stale_checked = True   # no volver a preguntar en reintentos de esta tanda
-            if answer[0] is None:
-                # Cancelar esta subida
-                self._ftp_row_set(entry, "Saltado", 0, 0)
-                self.after(0, lambda e=entry: self._update_row(e))
-                return False, "saltado"
-            if answer[0] == "delete_upload":
+            # Si ya se eligió "para todos" en esta tanda, aplicar sin preguntar
+            if getattr(self, "_upload_stale_choice", None) == "delete":
                 try:
                     ok_del, _msg_del = self._delete_remote_file(stale_remote)
-                    _log.info("Resto de subida antiguo borrado: %s -> %s",
+                    _log.info("Resto de subida antiguo borrado (todos): %s -> %s",
                               stale_remote, ok_del)
                 except Exception as e:
                     _log.warning("No se pudo borrar el resto de subida antiguo %s: %s",
                                  stale_remote, e)
+                entry._stale_checked = True
+            elif getattr(self, "_upload_stale_choice", None) == "no_delete":
+                entry._stale_checked = True
+            else:
+                answer = [None]
+                ev = threading.Event()
+                def _ask_stale(d=remote_file, s=stale_remote, ans=answer, e=ev):
+                    dlg = _StaleUploadDialog(self, d, s)
+                    ans[0] = dlg.result
+                    e.set()
+                self.after(0, _ask_stale)
+                ev.wait()
+                entry._stale_checked = True   # no volver a preguntar en reintentos de esta tanda
+                if answer[0] is None:
+                    # Cancelar esta subida
+                    self._ftp_row_set(entry, "Saltado", 0, 0)
+                    self.after(0, lambda e=entry: self._update_row(e))
+                    return False, "saltado"
+                if answer[0] in ("delete_upload", "delete_upload_all"):
+                    if answer[0] == "delete_upload_all":
+                        self._upload_stale_choice = "delete"
+                    try:
+                        ok_del, _msg_del = self._delete_remote_file(stale_remote)
+                        _log.info("Resto de subida antiguo borrado: %s -> %s",
+                                  stale_remote, ok_del)
+                    except Exception as e:
+                        _log.warning("No se pudo borrar el resto de subida antiguo %s: %s",
+                                     stale_remote, e)
+                elif answer[0] in ("no_delete", "no_delete_all"):
+                    if answer[0] == "no_delete_all":
+                        self._upload_stale_choice = "no_delete"
+                    # no borrar, continuar
+                    pass
+                else:
+                    # Cancelar esta subida por si el diálogo devolvió algo inesperado
+                    self._ftp_row_set(entry, "Saltado", 0, 0)
+                    self.after(0, lambda e=entry: self._update_row(e))
+                    return False, "saltado"
 
         try:
             local_size = Path(entry.path).stat().st_size
@@ -9719,6 +9745,8 @@ class App(_AppBase):
         fav_btn.pack(fill="both", expand=True)
         fav_btn.bind("<Button-1>", lambda ev, tid=tmdb_id, name=r["title"], mt=media_type:
                      self._toggle_movie_favorite(tid, name, mt))
+        attach_tooltip(fav_btn, lambda mt=media_type, tid=tmdb_id: (
+            "Quitar de favoritos" if self._is_favorite(mt, tid) else "Añadir a favoritos"))
 
         c = _cell("lock")
         is_res = self._is_reserved(media_type, tmdb_id)
@@ -9728,6 +9756,8 @@ class App(_AppBase):
         lock_btn.pack(fill="both", expand=True)
         lock_btn.bind("<Button-1>", lambda ev, tid=tmdb_id, name=r["title"], mt=media_type:
                       self._toggle_movie_reservation(tid, name, mt))
+        attach_tooltip(lock_btn, lambda mt=media_type, tid=tmdb_id: (
+            "Quitar reserva" if self._is_reserved(mt, tid) else "Reservar: protege del borrado"))
 
         # Autocompletar la serie (⚡) -- SOLO series, pero la celda se pinta
         # SIEMPRE (vacía en las películas) para que las columnas de todas
@@ -11625,6 +11655,9 @@ class App(_AppBase):
         fav_btn.pack(fill="both", expand=True)
         fav_btn.bind("<Button-1>", lambda ev, tid=tmdb_id, name=r["name"]:
                       self._toggle_missing_ep_favorite(tid, name))
+        attach_tooltip(fav_btn, lambda tid=tmdb_id: (
+            "Quitar de favoritos" if self._is_favorite("tv", tid) else
+            "Añadir a favoritos"))
 
         # Igual que en Archivos/Liberar espacio (ver _lock_symbol/
         # _toggle_cleanup_item_reservation) -- CTkLabel + bind, no
@@ -11637,6 +11670,9 @@ class App(_AppBase):
         lock_btn.pack(fill="both", expand=True)
         lock_btn.bind("<Button-1>", lambda ev, tid=tmdb_id, name=r["name"]:
                        self._toggle_missing_ep_reservation(tid, name))
+        attach_tooltip(lock_btn, lambda tid=tmdb_id: (
+            "Quitar reserva" if self._is_reserved("tv", tid) else
+            "Reservar: protege del borrado"))
 
         # Autocompletar (⚡): igual que ★/🔒 -- CTkLabel + bind (rendimiento
         # con ~500 series cacheadas), sin marco, y CAMBIA DE COLOR al estar
@@ -12015,8 +12051,13 @@ class App(_AppBase):
                           self._search_missing_ep_on_amule(sq, sn))
             attach_tooltip(season_amule_btn, lambda: "Buscar esta temporada en aMule (abre la pestaña Descargas)")
             season_amule_btn.pack(side="left", padx=(4, 0))
+            season_dl_btn = ctk.CTkButton(header_fr, text="⬇", width=28, height=22,
+                          fg_color=ICON_DL_IDLE, hover_color=ICON_DL_BUSY,
+                          command=lambda tid=tmdb_id, s=season: self._download_missing_ep_season(tid, s))
+            attach_tooltip(season_dl_btn, lambda: "Descargar temporada completa (solo episodios que faltan; respeta ignorados salvo con Mostrar ignorados)")
+            season_dl_btn.pack(side="left", padx=(4, 0))
             # Clic derecho en cabecera de temporada → configurar template aMule por serie
-            for _w in (header_fr, toggle_btn, season_amule_btn):
+            for _w in (header_fr, toggle_btn, season_amule_btn, season_dl_btn):
                 _w.bind("<Button-3>", lambda e, sn=r["name"]: self._show_missing_ep_series_menu(e, sn))
             season_vars = {"serie": r["name"], "tmdb_id": tmdb_id, "temporada": season}
             for link in season_links:
@@ -12256,6 +12297,19 @@ class App(_AppBase):
                         self.after(0, lambda: self._dl_btn_reset(button, ICON_DL_FAIL))
                         return
                     st = self.config_data.get("amule_search_type", "Kad")
+                    # Tamaño típico de la temporada en el servidor (solo misma serie)
+                    typical = None
+                    if not is_movie:
+                        try:
+                            from core.download_quality import _series_title_before_episode, _parse_season_episode
+                            sname = _series_title_before_episode(query)
+                            se = _parse_season_episode(query)
+                            snum = se[0] if se else None
+                            if sname:
+                                typical = self._typical_size_for_series(sname, snum)
+                                _log.info("Botón episodio '%s': típico %s", query[:60], f"{typical/1024/1024:.0f} MB" if typical else "None")
+                        except Exception:
+                            typical = None
                     best = None
                     # Se lee en vivo: aMule va llenando la lista; sondeo modesto
                     # (2s) y se termina en cuanto el mejor alcanza el umbral y no
@@ -12264,7 +12318,7 @@ class App(_AppBase):
                     last = None
                     for results in ec.iter_search(
                             query, search_type=st, poll_interval=2.0, max_duration=20.0):
-                        candidate = best_result(results, query, expected_year, is_movie) if results else None
+                        candidate = best_result(results, query, expected_year, is_movie, typical_size=typical) if results else None
                         if candidate is not None:
                             best = candidate
                             if last is not None and best is last:
@@ -12274,7 +12328,39 @@ class App(_AppBase):
                         self.after(0, lambda: self._dl_btn_reset(button, ICON_DL_FAIL))
                         return
                     ok, _ = ec.download(best)
+                    if ok:
+                        # aMule no baja si ya está en completados → verde engañoso. Verificar cola/shared.
+                        try:
+                            import time as _t2, binascii, subprocess
+                            _t2.sleep(1.0)
+                            q = ec.get_download_queue()
+                            h = ""
+                            try:
+                                raw = getattr(best, "_ec_hash", None)
+                                if raw and len(raw)==16:
+                                    h = binascii.hexlify(raw).decode().lower()
+                            except Exception:
+                                h=""
+                            in_queue = any(x.get("hash_hex","").lower()==h for x in q) if h else False
+                            if not in_queue and h:
+                                from core.amule_client import _find_amulecmd
+                                from core.ec_client import _no_console_kwargs
+                                exe = _find_amulecmd("")
+                                if exe:
+                                    args=[exe,"-c","show shared","-h",host,"-p",str(port),"-P",pwd]
+                                    r=subprocess.run(args,capture_output=True,text=True,timeout=6,**_no_console_kwargs())
+                                    if h.lower() in (r.stdout or "").lower():
+                                        self.after(0, lambda: self._dl_btn_reset(button, ICON_DL_ALREADY))
+                                        self.after(0, lambda n=best.name: self._set_status(f"Ya en completados de aMule (no se vuelve a bajar): {n[:60]}", "#F39C12"))
+                                        return
+                        except Exception:
+                            pass
                     self.after(0, lambda: self._dl_btn_reset(button, ICON_DL_OK if ok else ICON_DL_FAIL))
+                    if ok:
+                        try:
+                            self.after(0, lambda n=best.name: self._set_status(f"Descarga lanzada: {n[:60]}", SUCCESS_COLOR))
+                        except Exception:
+                            pass
             except Exception:
                 self.after(0, lambda: self._dl_btn_reset(button, ICON_DL_FAIL))
             finally:
@@ -12284,6 +12370,42 @@ class App(_AppBase):
                     except Exception:
                         pass
 
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _download_missing_ep_season(self, tmdb_id: int, season: int):
+        """Botón '⬇ temporada' en Episodios que faltan: descarga todos los huecos de esa temporada."""
+        r = next((x for x in self._missing_ep_results if x["tmdb_id"] == tmdb_id), None)
+        if not r:
+            self._set_status("Serie no encontrada", WARNING_COLOR)
+            return
+        from core.missing_episodes import apply_ignored_filter
+        show_ignored = self._missing_ep_show_ignored_var.get()
+        missing = r.get("missing", {}) or {}
+        if not show_ignored:
+            missing = apply_ignored_filter(missing, r.get("ignored_seasons"), r.get("ignored_episodes"))
+        eps = sorted(missing.get(season, []) or [])
+        if not eps:
+            self._set_status(f"T{season} sin huecos" + (" (ignorados ocultos)" if r.get("ignored_seasons") or r.get("ignored_episodes") else ""), PENDING_COLOR)
+            return
+        # Tamaño típico de la temporada para penalizar outliers como Los Simpson 1.5GB vs 400MB
+        try:
+            typical = self._typical_size_for_series(r["name"], season)
+        except Exception:
+            typical = None
+        self._set_status(f"Descargando T{season}: {len(eps)} episodio(s)…", PENDING_COLOR)
+        def _worker():
+            ok_count = 0
+            for ep in eps:
+                q = build_amule_query(r["name"], season, ep,
+                                      templates=self.config_data.get("series_search_patterns", {}) or {},
+                                      prefers_castellano=self._series_prefers_castellano(r["name"]))
+                ok, why, _h = self._auto_amule_download_series(q, typical_size=typical)
+                if ok:
+                    ok_count += 1
+                # Pequeña pausa para no saturar EC (1 EC a la vez)
+                import time as _t
+                _t.sleep(1.2)
+            self.after(0, lambda: self._set_status(f"T{season} lanzada: {ok_count}/{len(eps)} episodio(s)", SUCCESS_COLOR if ok_count else WARNING_COLOR))
         threading.Thread(target=_worker, daemon=True).start()
 
     def _dl_btn_reset(self, button, color):
@@ -12946,6 +13068,7 @@ class App(_AppBase):
             except Exception:
                 _q_cache = {}
 
+        # Tamaño típico por temporada (se calcula por episodio en el bucle, con caché de 10 min)
         _log.info("Autocompletado: '%s' -> %d capítulo(s) nuevos por descargar",
                   series_name, len(to_download))
         for season, episode in to_download:
@@ -13029,8 +13152,12 @@ class App(_AppBase):
                         orig_st = self.config_data.get("amule_search_type", "Kad")
                         alt_st = "Global" if (orig_st or "").lower() == "kad" else "Kad"
                         alt_query = _usk.next_alternative_query(series_name, season, episode,
-                                                                self.config_data.get("series_search_patterns", {}) or {})
-                        ok2, why2, h2 = self._auto_amule_download_series(alt_query, search_type=alt_st)
+                                                                 self.config_data.get("series_search_patterns", {}) or {})
+                        try:
+                            _typ_alt = self._typical_size_for_series(series_name, season)
+                        except Exception:
+                            _typ_alt = None
+                        ok2, why2, h2 = self._auto_amule_download_series(alt_query, search_type=alt_st, typical_size=_typ_alt)
                         rec["stuck_tries"] = int(rec.get("stuck_tries", 0) or 0) + 1
                         rec["last_alt_ts"] = _time.time()
                         if ok2 and h2:
@@ -13058,7 +13185,11 @@ class App(_AppBase):
             query = build_amule_query(series_name, season, episode,
                                       templates=self.config_data.get("series_search_patterns", {}) or {},
                                       prefers_castellano=self._series_prefers_castellano(series_name))
-            ok, why, h = self._auto_amule_download_series(query)
+            try:
+                _typ_ep = self._typical_size_for_series(series_name, season)
+            except Exception:
+                _typ_ep = None
+            ok, why, h = self._auto_amule_download_series(query, typical_size=_typ_ep)
             if ok:
                 # Éxito: queda "checked" (no se vuelve a reintentar) y se
                 # borra cualquier reintento previo. Además se registra en
@@ -13080,6 +13211,14 @@ class App(_AppBase):
                 except Exception:
                     pass
             else:
+                if "ya en completados" in (why or "").lower():
+                    _log.info("Autocompletado: '%s' ya en completados de aMule, no se relanza", query)
+                    try:
+                        self.after(0, lambda n=series_name, s=season, e=episode: self._set_status(f"{n} {s}x{int(e):02d} ya en completados de aMule (no se vuelve a bajar)", "#F39C12"))
+                    except Exception:
+                        pass
+                    # No marcar checked ni retry: ya está en disco, el autowatcher lo subirá cuando lo detecte estable
+                    continue
                 # Fallo (sin candidato, aMule caído...): NO se marca checked.
                 # Se registra en el mapa de reintentos con backoff exponencial
                 # para volver a probarlo en pasadas futuras, cada vez más
@@ -13144,7 +13283,7 @@ class App(_AppBase):
                     return True
         return False
 
-    def _auto_amule_download_series(self, query: str, search_type: str | None = None):
+    def _auto_amule_download_series(self, query: str, search_type: str | None = None, typical_size: int | None = None):
         """Busca *query* en aMule y descarga el mejor candidato (mismo
         criterio best_result que el botón manual). Devuelve (ok, motivo, hash_hex).
         hash_hex es el MD4 hex del partfile descargado (o "" si falla). No
@@ -13173,7 +13312,7 @@ class App(_AppBase):
                 try:
                     for results in ec.iter_search(
                             query, search_type=st, poll_interval=2.0, max_duration=20.0):
-                        candidate = best_result(results, query) if results else None
+                        candidate = best_result(results, query, typical_size=typical_size) if results else None
                         if candidate is not None:
                             # best_result evalúa TODOS los acumulados (no solo los nuevos), por lo que
                             # el mejor solo puede mejorar con cada sondeo; si se estabiliza 2 polls seguidos se puede salir antes
@@ -13186,6 +13325,31 @@ class App(_AppBase):
                     if best is None:
                         return False, "sin candidato que cumpla el umbral", ""
                     ok, _raw = ec.download(best)
+                    if ok:
+                        # aMule no baja si ya está en completados → ok engañoso. Verificar cola/shared.
+                        try:
+                            import time as _t2, subprocess, binascii
+                            _t2.sleep(1.0)
+                            q = ec.get_download_queue()
+                            h_check = ""
+                            try:
+                                raw2 = getattr(best, "_ec_hash", None)
+                                if raw2 and len(raw2) == 16:
+                                    h_check = binascii.hexlify(raw2).decode("ascii").lower()
+                            except Exception:
+                                h_check = ""
+                            in_q = any(x.get("hash_hex","").lower() == h_check for x in q) if h_check else False
+                            if not in_q and h_check:
+                                from core.amule_client import _find_amulecmd
+                                from core.ec_client import _no_console_kwargs
+                                exe = _find_amulecmd("")
+                                if exe:
+                                    args = [exe,"-c","show shared","-h",ec.host,"-p",str(ec.port),"-P",ec.password]
+                                    r = subprocess.run(args,capture_output=True,text=True,timeout=6,**_no_console_kwargs())
+                                    if h_check.lower() in (r.stdout or "").lower():
+                                        return False, "ya en completados de aMule (no se vuelve a bajar)", h_check
+                        except Exception:
+                            pass
                     h = ""
                     if ok:
                         try:
@@ -13209,6 +13373,175 @@ class App(_AppBase):
         finally:
             try:
                 ec.close()
+            except Exception:
+                pass
+
+    _TYPICAL_CACHE_TTL = 600  # segundos: evita repetir listados FTP en cada repaint/búsqueda
+    _TYPICAL_MIN_SEASON_FILES = 3  # con menos ficheros la temporada no es representativa
+    _TYPICAL_TARGET_FILES = 6  # ficheros a acumular del fallback antes de calcular
+
+    def _typical_size_for_series(self, series_name: str, season: int | None = None) -> int | None:
+        """Tamaño típico de episodio ya en el servidor para *series_name* (solo FTP, sin historial).
+
+        Usa la temporada pedida si tiene >=3 ficheros (>10MB); si no, acumula las más recientes por
+        número hasta >=6 ficheros. Así no se mezclan calidades distintas (T01 SD 175MB con T03 HD
+        400-600MB): mezclarlas daba 175MB de típico para descargas HD. Sobre los tamaños elegidos se
+        usa la mediana del bucket de 200MB más pequeño entre los frecuentes (>=20%). Resultado con
+        caché de 10 min por (serie, temporada). Registra en app.log."""
+        import re as _re
+        import time as _tmod
+        series_name = (series_name or "").strip()
+        _log.info("Típico %r T%s: inicio (solo FTP)", series_name, season if season is not None else "?")
+        if not series_name:
+            _log.info("Típico: sin nombre de serie")
+            return None
+        try:
+            from core.series_match import normalize_series_name
+            _ckey = (normalize_series_name(series_name), season)
+        except Exception:
+            _ckey = (series_name.lower(), season)
+        _cache = getattr(self, "_typical_cache", None)
+        if _cache is None:
+            _cache = self._typical_cache = {}
+        _now = _tmod.time()
+        if _ckey in _cache:
+            _ts, _val = _cache[_ckey]
+            if _now - _ts < self._TYPICAL_CACHE_TTL:
+                return _val
+        own_ftp = self._new_ftp_client()
+        try:
+            from core.download_quality import _median_typical_size
+            from core.series_match import normalize_series_name, series_similarity
+            try:
+                own_ftp.connect(
+                    self.config_data.get("ftp_host", ""),
+                    int(self.config_data.get("ftp_port", 21)),
+                    self.config_data.get("ftp_user", ""),
+                    self.config_data.get("ftp_password", ""),
+                    self.config_data.get("ftp_use_tls", False))
+            except Exception as e:
+                _log.info("Típico %r: no se pudo conectar al FTP (%s)", series_name, e)
+                return None
+            if not own_ftp.is_connected():
+                _log.info("Típico %r: FTP no conectado", series_name)
+                return None
+            # Buscar carpeta de la serie por similitud en todas las categorías TV
+            norm_target = normalize_series_name(series_name)
+            cat, folder_name = None, None
+            for c in self.config_data.get("ftp_categories", {"tv": []}).get("tv", []):
+                root_try = c.get("root", "")
+                if not root_try:
+                    continue
+                try:
+                    dirs = own_ftp.list_dirs(root_try) or []
+                    for d in dirs:
+                        nd = normalize_series_name(d)
+                        if series_similarity(norm_target, nd, strict=False) >= 0.85 or norm_target in nd or nd in norm_target:
+                            cat, folder_name = c, d
+                            break
+                    if cat:
+                        break
+                except Exception:
+                    continue
+            if not cat or not folder_name:
+                _log.info("Típico %r (norm %r): no se encontró carpeta en FTP", series_name, norm_target)
+                return None
+            root = cat.get("root", "")
+            template = cat.get("template", "{serie}/")
+            # Ruta de la serie (padre de la temporada 1)
+            try:
+                season_path = own_ftp.build_remote_path(root.rstrip("/") + "/" + template, folder_name, 1, "", "tv")
+                from pathlib import PurePosixPath
+                target_path = str(PurePosixPath(season_path).parent).rstrip("/")
+            except Exception as e:
+                _log.info("Típico %r: no se pudo construir ruta (%s)", series_name, e)
+                return None
+            try:
+                subdirs = own_ftp.list_dirs(target_path) or []
+            except Exception as e:
+                _log.info("Típico %r: no se pudo listar %s (%s)", series_name, target_path, e)
+                return None
+            per_season = {}  # num -> dirname
+            for sd in subdirs:
+                m = _re.search(r"(\d{1,2})", sd)
+                if m and "temporada" in sd.lower():
+                    try:
+                        per_season[int(m.group(1))] = sd
+                    except ValueError:
+                        continue
+            if not per_season:
+                _log.info("Típico %r: sin carpetas de temporada en %s", series_name, target_path)
+                return None
+
+            def _sizes_of(snum):
+                _p = f"{target_path.rstrip('/')}/{per_season[snum]}"
+                try:
+                    files = own_ftp.list_files_with_sizes(_p) or []
+                except Exception as e:
+                    _log.info("Típico %r: no se pudo listar %s (%s)", series_name, _p, e)
+                    return []
+                out = []
+                for _name, sz in files:
+                    try:
+                        if sz and int(sz) > 10 * 1024 * 1024:  # >10MB para evitar samples
+                            out.append(int(sz))
+                    except Exception:
+                        continue
+                return out
+
+            sizes = []
+            used = []
+            if season is not None and season in per_season:
+                sizes = _sizes_of(season)
+                if len(sizes) >= self._TYPICAL_MIN_SEASON_FILES:
+                    used = [season]
+                else:
+                    sizes = []  # insuficiente: acumular recientes
+            if not sizes:
+                # Fallback: acumular de las más recientes hasta >=6 ficheros (máx 4 listados en total)
+                for snum in sorted(per_season.keys(), reverse=True):
+                    if len(used) >= 4:
+                        break
+                    if snum in used:
+                        continue
+                    got = _sizes_of(snum)
+                    if got:
+                        used.append(snum)
+                        sizes.extend(got)
+                    if len(sizes) >= self._TYPICAL_TARGET_FILES:
+                        break
+            if not sizes:
+                _log.info("Típico %r T%s: sin tamaños (solo FTP, sin historial)", series_name,
+                          season if season is not None else "?")
+                return None
+            try:
+                from collections import Counter
+                buckets = Counter(int(sz // (200 * 1024 * 1024)) for sz in sizes)
+                total = len(sizes)
+                thresh = max(3, int(total * 0.2))
+                frequent = [b for b, c in buckets.items() if c >= thresh]
+                if frequent:
+                    chosen = min(frequent)
+                else:
+                    max_count = max(buckets.values())
+                    candidates = [b for b, c in buckets.items() if c == max_count]
+                    chosen = min(candidates)
+                bucket_sizes = [sz for sz in sizes if int(sz // (200 * 1024 * 1024)) == chosen]
+                res = _median_typical_size(bucket_sizes) if bucket_sizes else _median_typical_size(sizes)
+                _log.info("Típico %r T%s: %d ficheros de T%s bucket %s -> %s MB", series_name,
+                          season if season is not None else "?", len(sizes), used,
+                          chosen, f"{res/1024/1024:.0f}" if res else "None")
+                _cache[_ckey] = (_now, res)
+                return res
+            except Exception as e:
+                _log.info("Típico %r error en bucket (%s)", series_name, e)
+                return _median_typical_size(sizes)
+        except Exception as e:
+            _log.info("Típico %r: fallo inesperado (%s)", series_name, e)
+            return None
+        finally:
+            try:
+                own_ftp.disconnect()
             except Exception:
                 pass
 
@@ -14061,6 +14394,18 @@ class App(_AppBase):
                         self._downloads_search_active = False
                         self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"Error aMule: {e}", text_color=ERROR_COLOR))
                         return
+                    # Tamaño típico de la temporada en el servidor (solo misma serie)
+                    _typical_alt = None
+                    if not is_movie:
+                        try:
+                            from core.download_quality import _series_title_before_episode, _parse_season_episode
+                            _sname_alt = _series_title_before_episode(q)
+                            _se_alt = _parse_season_episode(q)
+                            _snum_alt = _se_alt[0] if _se_alt else None
+                            if _sname_alt:
+                                _typical_alt = self._typical_size_for_series(_sname_alt, _snum_alt)
+                        except Exception:
+                            _typical_alt = None
                     try:
                         best = None
                         last_results = []
@@ -14069,7 +14414,7 @@ class App(_AppBase):
                             if not results:
                                 continue
                             try:
-                                cand = best_result(results, q, is_movie=is_movie)
+                                cand = best_result(results, q, is_movie=is_movie, typical_size=_typical_alt)
                             except Exception:
                                 cand = None
                             if cand:
@@ -14080,7 +14425,7 @@ class App(_AppBase):
                                     continue
                         if best is None and last_results:
                             try:
-                                best = best_result(last_results, q, is_movie=is_movie)
+                                best = best_result(last_results, q, is_movie=is_movie, typical_size=_typical_alt)
                             except Exception:
                                 best = None
                         if best is None:
@@ -14301,10 +14646,23 @@ class App(_AppBase):
         _q = self._downloads_search_var.get()
         _has_ep = bool(re.search(r"(?:[Ss]\d{1,2}[Ee]\d{1,3}|\d{1,2}[xX]\d{1,3})", _q))
         _eff_is_movie = self._downloads_is_movie or not _has_ep
+        _typical = None
+        if not _eff_is_movie:
+            try:
+                from core.download_quality import _series_title_before_episode, _parse_season_episode
+                _sname = _series_title_before_episode(_q)
+                _se = _parse_season_episode(_q)
+                _snum = _se[0] if _se else None
+                if _sname:
+                    _typical = self._typical_size_for_series(_sname, _snum)
+                    _log.info("Descargas manual '%s': típico %s", _q[:60], f"{_typical/1024/1024:.0f} MB" if _typical else "None")
+            except Exception:
+                _typical = None
         best_candidate = best_result(
             results, _q,
             expected_year=self._downloads_expected_year,
-            is_movie=_eff_is_movie)
+            is_movie=_eff_is_movie,
+            typical_size=_typical)
         # Elegido siempre primero, por encima de la ordenación manual
         if best_candidate is not None and best_candidate in results:
             try:
@@ -14367,7 +14725,18 @@ class App(_AppBase):
                                                      self._downloads_font),
                                    font=self._downloads_font, anchor="w", cursor="hand2")
                 lbl.pack(fill="both", expand=True)
-                attach_tooltip(lbl, lambda n=res.name: n)
+                # Tooltip con desglose de por qué se eligió o no
+                try:
+                    _is_best = (res is best_candidate)
+                    _exp = explain_score(res, _q, expected_year=self._downloads_expected_year, is_movie=_eff_is_movie, typical_size=_typical)
+                    _head = "✓ Recomendado\n" if _is_best else "✗ No recomendado\n"
+                    if not _is_best and best_candidate is not None:
+                        _head += f"Gana: {best_candidate.name[:50]} ({best_candidate.size_human}, {best_candidate.sources} fuentes)\n\n"
+                    _tip_txt = _head + _exp
+                except Exception:
+                    _tip_txt = res.name
+                attach_tooltip(lbl, lambda t=_tip_txt: t)
+                attach_tooltip(row_fr, lambda t=_tip_txt: t)
                 lbl.bind("<Configure>", lambda ev, t=res.name, l=lbl: _refit(t, l, "name"))
                 lbl.bind("<Button-1>", lambda e, r=res: self._show_downloads_result(r))
 
@@ -14392,11 +14761,15 @@ class App(_AppBase):
             # de la última columna siempre está. La celda es expand=True (la
             # única columna expand de esta tabla), así que absorbe el espacio
             # sobrante y el botón se pega a la DERECHA, junto al borde.
+            # Mismo aspecto que el ⬇ de Episodios/Películas: reposo azul, ámbar en curso.
             c = self._downloads_table.cell(row_fr, "accion", pady=6)
-            dl_res_btn = ctk.CTkButton(c, text="Descargar", width=80, height=24,
+            dl_res_btn = ctk.CTkButton(c, text="⬇", width=28, height=22,
+                         fg_color=ICON_DL_IDLE, hover_color=ICON_DL_BUSY,
                          command=lambda n=res.number: self._downloads_do_download(n))
-            attach_tooltip(dl_res_btn, lambda: "Poner este resultado a descargar en aMule. "
-                           "Aparecerá en tu carpeta de descargas cuando termine.")
+            attach_tooltip(dl_res_btn, lambda: (
+                "Buscar en aMule y descargar automáticamente el mejor candidato "
+                "para este resultado (en segundo plano, sin abrir la pestaña Descargas).\n"
+                "Color: azul=reposo, ámbar=en curso, verde=lanzado, rojo=sin candidato/error"))
             dl_res_btn.pack(side="right", padx=(0, 4))
         # Mide el alto medio por fila (igual que las demás tablas, ver
         # note_rows_rendered) para que el tamaño de página se ajuste al alto
@@ -14728,6 +15101,11 @@ class App(_AppBase):
             self._downloads_rebuild_page()
 
     def _downloads_do_download(self, result_number: int):
+        # Al pulsar ⬇ la búsqueda en curso finaliza: se invalida el token
+        # para que el hilo de sondeo salga (y se liberan los controles) y
+        # la descarga va por conexión EC propia.
+        if getattr(self, "_downloads_search_active", False):
+            self._downloads_stop_search()
         self._downloads_status_lbl.configure(
             text=f"Enviando descarga #{result_number} a aMule...", text_color=PENDING_COLOR)
         threading.Thread(target=self._downloads_do_download_worker,
@@ -14786,8 +15164,73 @@ class App(_AppBase):
             ok, raw = False, ""
         self._downloads_report_download(result_number, ok, raw)
 
+    def _download_hash_in_shared(self, hash_hex: str) -> bool:
+        """True si aMule ya tiene ese hash MD4 en compartidos (ya descargado)
+        y por tanto no lo volverá a bajar aunque se le pida.
+
+        Se comprueba primero la cola de descargas (si está ahí, se está
+        bajando de verdad) y solo si falta se mira `amulecmd show shared`.
+        Cualquier duda (sin hash, sin amulecmd, error) devuelve False: no se
+        puede afirmar nada y no se acusa. Se llama desde un hilo worker,
+        nunca desde la interfaz."""
+        if not hash_hex or len(hash_hex) != 32:
+            return False
+        try:
+            import time as _t2
+            _t2.sleep(1.0)
+            h = hash_hex.lower()
+            with self._amule_ec_lock:
+                ec = self._downloads_open_ec()
+                if ec is None:
+                    in_queue = False
+                else:
+                    try:
+                        q = ec.get_download_queue()
+                    finally:
+                        try:
+                            ec.close()
+                        except Exception:
+                            pass
+                    in_queue = any((d.get("hash_hex", "") or "").lower() == h for d in q)
+            if in_queue:
+                return False
+            from core.amule_client import _find_amulecmd, hash_in_shared_output
+            from core.ec_client import _no_console_kwargs
+            import subprocess
+            exe = _find_amulecmd("")
+            if not exe:
+                return False
+            args = [exe, "-c", "show shared",
+                    "-h", self.config_data.get("amule_host", "localhost"),
+                    "-p", str(self.config_data.get("amule_port", 4712) or 4712),
+                    "-P", self.config_data.get("amule_password", "")]
+            r = subprocess.run(args, capture_output=True, text=True, timeout=6,
+                               **_no_console_kwargs())
+            return hash_in_shared_output(r.stdout or "", h)
+        except Exception:
+            return False
+
     def _downloads_report_download(self, result_number: int, ok: bool, raw: str):
         if ok:
+            # aMule acepta la orden aunque el hash ya esté en compartidos y
+            # no añade nada a la cola: verificar antes de cantar éxito
+            # (mismo criterio que los caminos automáticos).
+            result = next((r for r in self._downloads_results if r.number == result_number), None)
+            h = ""
+            try:
+                raw_hash = getattr(result, "_ec_hash", None) if result is not None else None
+                if raw_hash and len(raw_hash) == 16:
+                    import binascii
+                    h = binascii.hexlify(raw_hash).decode("ascii").lower()
+            except Exception:
+                h = ""
+            if h and self._download_hash_in_shared(h):
+                name = result.name if result is not None else f"#{result_number}"
+                _log.info("Descarga #%s ya en completados de aMule: %s", result_number, name)
+                self.after(0, lambda: self._downloads_status_lbl.configure(
+                    text=f"Ya está en completados de aMule (nº {result_number}): {name[:60]} (no se vuelve a bajar)",
+                    text_color="#F39C12"))
+                return
             self.after(0, lambda: self._downloads_status_lbl.configure(
                 text=f"Descarga #{result_number} enviada a aMule (revísalo en la cola de aMule)",
                 text_color=SUCCESS_COLOR))
@@ -15571,12 +16014,70 @@ class App(_AppBase):
 
         details = self.tmdb.get_tv_details(tmdb_id)
         first_air_date = details.get("first_air_date", "") or ""
-        if source == "jellyfin":
-            present = get_jellyfin_episodes(self.config_data.get("jellyfin_host", ""),
-                                            self.config_data.get("jellyfin_api_key", ""), server_id)
-        else:
-            present = get_plex_episodes(self.config_data.get("plex_host", ""),
-                                        self.config_data.get("plex_token", ""), server_id)
+        # Fuente de verdad: FTP con un único listado (no Jellyfin/Plex, que aún cree que los borrados siguen ahí)
+        present = None
+        try:
+            from core.ftp_categories import choose_category
+            from core.api_client import MediaInfo
+            dummy = MediaInfo(title=name, media_type="tv", tmdb_id=tmdb_id, season=1, episode=1)
+            # Localizar carpeta(s) de la serie en FTP y listar una sola vez (todas las que casan, como Prodigiosa en 2 carpetas)
+            own_ftp_single = self._new_ftp_client()
+            try:
+                own_ftp_single.connect(
+                    self.config_data.get("ftp_host", ""), int(self.config_data.get("ftp_port", 21)),
+                    self.config_data.get("ftp_user", ""), self.config_data.get("ftp_password", ""),
+                    self.config_data.get("ftp_use_tls", False))
+                if own_ftp_single.is_connected():
+                    cats = self.config_data.get("ftp_categories", {"tv": [], "movie": [], "libro": []}).get("tv", [])
+                    present = set()
+                    from core.series_match import series_similarity, normalize_series_name
+                    norm_target = normalize_series_name(name)
+                    for cat in cats:
+                        root = cat.get("root", "")
+                        if not root:
+                            continue
+                        try:
+                            dirs = own_ftp_single.list_dirs(root) or []
+                        except Exception:
+                            continue
+                        for d in dirs:
+                            if series_similarity(norm_target, normalize_series_name(d), strict=False) >= 0.85 or norm_target in normalize_series_name(d) or normalize_series_name(d) in norm_target:
+                                series_path = f"{root.rstrip('/')}/{d}"
+                                try:
+                                    subdirs = own_ftp_single.list_dirs(series_path) or []
+                                except Exception:
+                                    subdirs = []
+                                candidates = [series_path] + [f"{series_path.rstrip('/')}/{sd}" for sd in subdirs if sd.lower().startswith("temporada")]
+                                for p in candidates:
+                                    try:
+                                        files = own_ftp_single.list_files(p) or []
+                                        for fn in files:
+                                            from core.api_client import detect_episode as _det
+                                            det = _det(fn)
+                                            if det and det.get("season") and det.get("episode"):
+                                                present.add((det["season"], det["episode"]))
+                                    except Exception:
+                                        continue
+                    if not present:
+                        # No se encontró nada en FTP para esta serie → vacía (todo falta) o None si FTP falló
+                        present = set()
+                else:
+                    present = None
+            finally:
+                try:
+                    own_ftp_single.disconnect()
+                except Exception:
+                    pass
+        except Exception:
+            present = None
+        if present is None:
+            # Fallback a Jellyfin/Plex solo si FTP no respondió (evita falsos huecos por FTP caído)
+            if source == "jellyfin":
+                present = get_jellyfin_episodes(self.config_data.get("jellyfin_host", ""),
+                                                self.config_data.get("jellyfin_api_key", ""), server_id)
+            else:
+                present = get_plex_episodes(self.config_data.get("plex_host", ""),
+                                            self.config_data.get("plex_token", ""), server_id)
         if present is None:
             return [r], None   # sin dato fiable ahora mismo -- se deja la fila tal cual
 
@@ -17663,6 +18164,12 @@ class App(_AppBase):
                 hover_color=("gray85", "#2b2b2b"),
                 state="normal" if entry.media_info else "disabled",
                 command=lambda e=entry: self._toggle_entry_favorite(e))
+            attach_tooltip(fav_btn, lambda e=entry: (
+                "Quitar de favoritos" if self._entry_is_favorite(e) else
+                "Añadir a favoritos: lo verás en tu lista personal"))
+            # Para que el tooltip aparezca también con el botón deshabilitado (sin media_info)
+            if fav_btn.cget("state") == "disabled":
+                attach_tooltip(c, lambda e=entry: "Identifica el archivo primero para poder añadirlo a favoritos")
             fav_btn.pack(fill="both", expand=True)
 
             # Reservar (ver core/reservations.py) solo tiene sentido una vez
@@ -17684,6 +18191,8 @@ class App(_AppBase):
                 "Soltar la reserva: deja de estar protegido del borrado."
                 if self._entry_is_reserved(e) else
                 "Reservar: lo protege del borrado para todos, no solo para ti. Ocupa cuota."))
+            if lock_btn.cget("state") == "disabled":
+                attach_tooltip(c, lambda e=entry: "Solo se puede reservar algo que ya esté identificado y subido.")
             lock_btn.pack(fill="both", expand=True)
 
             # Autocompletar la serie (⚡) -- mismo interruptor que el de

@@ -63,6 +63,25 @@ def _find_amulecmd(custom_path: str) -> Optional[str]:
     return None
 
 
+def hash_in_shared_output(output: str, hash_hex: str) -> bool:
+    """True si el hash MD4 (hex, 32 chars) aparece en la salida de
+    `amulecmd show shared` -- es decir, aMule ya lo tiene en
+    compartidos/completados y no lo volverá a bajar aunque se le pida.
+
+    Comparación insensible a mayúsculas; cualquier salida vacía, hash
+    inválido o ausencia devuelve False (no se puede afirmar nada)."""
+    if not output or not hash_hex or len(hash_hex) != 32:
+        return False
+    try:
+        h = hash_hex.lower()
+    except Exception:
+        return False
+    try:
+        return h in output.lower()
+    except Exception:
+        return False
+
+
 class AmuleSession:
     """Mantiene una sesión interactiva de amulecmd abierta.
     Search + Results + Download deben compartir la misma sesión."""

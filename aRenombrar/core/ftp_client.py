@@ -10,12 +10,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Callable
 
-from core.speed_ewma import SpeedEWMA
-
-#: Constante de tiempo del suavizado de la velocidad mostrada, en segundos.
-#: 2 s deja la cifra quieta sin dejar de reaccionar a un cambio de verdad.
-_SPEED_SMOOTHING_TAU = 2.0
-
 
 class FTPClient:
     def __init__(self):
@@ -556,10 +550,9 @@ class FTPClient:
         t_window = [time.monotonic()]
         sent_window = [0]
         speed_last = [0.0]
-        # La velocidad que se enseña va suavizada: la cruda de cada tramo da
-        # botes (y encima engaña: pesaba igual un tramo corto con ráfaga que
-        # uno largo) -- ver core/speed_ewma.py.
-        speed_media = SpeedEWMA(_SPEED_SMOOTHING_TAU)
+        # La velocidad que se enseña es la cruda de cada tramo (bytes del
+        # tramo / tiempo del tramo), sin suavizar -- a petición del usuario,
+        # que prefiere ver la velocidad actual aunque fluctúe.
 
         # speed_limit_kbs puede ser int o callable que devuelve KB/s
         def _get_speed_limit() -> int:
@@ -633,8 +626,7 @@ class FTPClient:
             now = time.monotonic()
             window_elapsed = now - t_window[0]
             if window_elapsed >= REPORT_INTERVAL:
-                speed_last[0] = speed_media.update(
-                    (sent[0] - sent_window[0]) / window_elapsed, now)
+                speed_last[0] = (sent[0] - sent_window[0]) / window_elapsed
                 t_window[0] = now
                 sent_window[0] = sent[0]
                 if progress_cb:

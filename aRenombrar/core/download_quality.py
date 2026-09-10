@@ -7,7 +7,8 @@ cuenta el score (de mayor a menor peso):
 
   * Idioma/audio: español/castellano/spanish/spa (patrón "spa"); se
     penaliza fuerte V.O.S. (original + subtítulos, sin doblaje), italiano y
-    catalán para que el castellano gane siempre que exista. El italiano SIN
+    catalán SIN español para que el castellano gane siempre que exista (con
+    pista en español también, no se penaliza). El italiano SIN
     español se excluye por completo (is_italian_only), igual que el porno:
     si lo único disponible es italiano, no se descarga nada.
   * Calidad de imagen: 4K/2160p > 1080p > 720p > SD
@@ -28,8 +29,9 @@ from core.series_match import normalize_series_name, series_similarity
 
 _LANG_RE = re.compile(r"\b(?:spa|spanish|español|espanol|castellano|latino|dual)\b",
                       re.IGNORECASE)
-# Catalán: el usuario NO quiere nada en catalán, así que un release que lo
-# delate se penaliza fuerte para que jamás gane a uno en español. "cat" suelto
+# Catalán SIN español: un release solo en catalán se penaliza fuerte para
+# que jamás gane a uno en español. Con pista en español también (dual), no
+# se penaliza. "cat" suelto
 # NO cuenta (aparece en "categoría", "cat-1", "Catwoman"...), pero sí:
 #   * el idioma por su nombre (català/catalan/catalá/catala),
 #   * vosc ("versió original subtitulada en català"),
@@ -361,10 +363,19 @@ def _size_range_for_resolution(name: str, is_movie: bool = False) -> tuple[float
     return (80 * 1024**2, 700 * 1024**2) if is_episode else (80 * 1024**2, 2 * 1024**3)
 
 
+def _median_typical_size(sizes: list[int]) -> int | None:
+    if not sizes:
+        return None
+    s = sorted(sizes)
+    n = len(s)
+    return int(s[n // 2] if n % 2 == 1 else (s[n // 2 - 1] + s[n // 2]) // 2)
+
+
 def score_download(result: AmuleSearchResult,
                    query: str = "",
                    expected_year: int = None,
-                   is_movie: bool = False) -> float:
+                   is_movie: bool = False,
+                   typical_size: int | None = None) -> float:
     """Da una puntuación (mejor = más grande) para un resultado.
 
     *query* es la consulta con la que se buscó (p.ej. "Los Simpsons 2x04").
@@ -473,11 +484,11 @@ def score_download(result: AmuleSearchResult,
     # Idioma/audio español
     if _LANG_RE.search(name):
         score += 18.0
-    # Catalán: penalización fuerte. Un release catalán no debe ganar ni
-    # siquiera cuando suma el español ("castellano + català" en dual audio:
-    # el doblaje sigue siendo catalán, el usuario no lo quiere). Se resta
-    # más de lo que puede sumar calidad+fuentes+idioma para que nunca gane.
-    if _CAT_RE.search(name):
+    # Catalán SIN español: penalización fuerte. Un release solo en catalán
+    # no debe ganar a uno en español. Si además trae español (dual
+    # "castellano+català", subs en ambos), no se penaliza: la pista en
+    # español es lo que importa y esos releases son válidos.
+    if _CAT_RE.search(name) and not _LANG_RE.search(name):
         score -= 60.0
     # Italiano: penalización cuando trae español (dual) — si es solo italiano
     # ya se excluyó arriba. Mantiene -60 para que no gane a castellano.
@@ -506,8 +517,17 @@ def score_download(result: AmuleSearchResult,
     # de un grupo genérico y del idioma/resolución individuales, para que un
     # release fiable gane a otro del mismo título sin esa señal (real: el
     # usuario da prioridad a estos grupos al elegir qué bajar).
+    # Si el tamaño es atípico (>2× o <0.5× del típico de la serie), el grupo no compensa.
     if _P2P_TRUSTED_RE.search(name):
-        score += 25.0
+        _sz_trusted = _size_bytes(result)
+        if _sz_trusted and typical_size and typical_size > 0 and not is_movie:
+            _ratio_trusted = _sz_trusted / typical_size if typical_size else 1
+            if _ratio_trusted < 0.5 or _ratio_trusted > 2.0:
+                score += 5.0
+            else:
+                score += 25.0
+        else:
+            score += 25.0
 
     # Hints de fuente/codificación
     lower = name.lower()
@@ -537,15 +557,24 @@ def score_download(result: AmuleSearchResult,
     if result.complete:
         score += 4.0
 
-    # Tamaño: penaliza tanto aire de nada como descargas absurdas. La
-    # penalización por exceso crece con lo desproporcionado que sea el
-    # tamaño: un release muy grande (17 GB de una película vieja, p.ej.)
-    # cuesta más en disco/cuota de lo que aporta en calidad, y debe perder
-    # contra un encode ligero del mismo título aunque tenga algo menos de
-    # calidad o de fuentes (real: el botón ⬇ de "Scary Movie" elegía un
-    # archivo de 17 GB porque el tamaño solo restaba -2).
+    # Tamaño: si hay tamaño típico de la serie/temporada en el servidor (mediana del bucket más frecuente),
+    # penaliza desvíos 0.6×–1.4× como proporcionado (Los Simpson 400 MB típico vs 1,5 GB → 3,75× → -40).
+    # Si no hay típico, usa rango fijo por resolución.
+    # Cuando solo uno lleva GrupoTS/hispashare y el otro no, el tamaño pesa más que el grupo si es outlier.
     size = _size_bytes(result)
-    if size:
+    if size and typical_size and typical_size > 0 and not is_movie:
+        ratio = size / typical_size
+        if 0.7 <= ratio <= 1.4:
+            score += 2.0
+        elif ratio < 0.3 or ratio > 3.0:
+            score -= 50.0
+        elif ratio < 0.5 or ratio > 2.0:
+            score -= 32.0
+        elif ratio < 0.6 or ratio > 1.8:
+            score -= 15.0
+        else:  # 0.5–0.6 o 1.8–2.0
+            score -= 10.0
+    elif size:
         lo, hi = _size_range_for_resolution(name, is_movie)
         if lo <= size <= hi:
             score += 3.0
@@ -567,6 +596,91 @@ def score_download(result: AmuleSearchResult,
     return score
 
 
+def explain_score(result: AmuleSearchResult, query: str = "", expected_year: int = None,
+                  is_movie: bool = False, typical_size: int | None = None) -> str:
+    """Desglose legible de por qué score_download dio esa puntuación. Para tooltip."""
+    if result is None:
+        return "Sin resultado"
+    name = result.name or ""
+    lines = [f"Archivo: {name[:60]}", f"Query: '{query}'" + (f" año {expected_year}" if expected_year else "")]
+    # Coincidencia episodio/año/serie
+    exp = _parse_season_episode(query)
+    act = _parse_season_episode(name)
+    if exp:
+        lines.append(f"Episodio query {exp} vs result {act} {'✓' if exp==act else '✗'}")
+        if exp and act and exp != act:
+            lines.append("  → penalización episodio distinto -40")
+        elif exp and act and exp == act:
+            if not _same_series_title(query, name):
+                lines.append("  → serie distinta → excluido (0)")
+            else:
+                lines.append("  → episodio coincide +50")
+    if expected_year:
+        years = _years_in_name(name)
+        if years:
+            lines.append(f"Año en nombre {years} vs esperado {expected_year} {'✓' if expected_year in years else '✗'}")
+    # Idioma
+    if _LANG_RE.search(name):
+        lines.append("Idioma castellano/spa → +18")
+    if _CAT_RE.search(name) and not _LANG_RE.search(name):
+        lines.append("Catalán (sin español) → -60")
+    elif _CAT_RE.search(name):
+        lines.append("Catalán + español → sin penalización")
+    if _ITA_RE.search(name) and not _LANG_RE.search(name):
+        lines.append("Italiano ITA → excluido" if is_italian_only(name) else "Italiano ITA → -60")
+    # Resolución
+    for rx, w in _RES_WEIGHTS:
+        if rx.search(name):
+            lines.append(f"Resolución {rx.pattern[:15]} → +{w}")
+            break
+    ext = _ext(name)
+    if ext in _EXT_WEIGHTS:
+        lines.append(f"Contenedor .{ext} → +{_EXT_WEIGHTS[ext]}")
+    if _GRUPOS_RE.search(name):
+        lines.append("Grupo genérico → +3")
+    if _P2P_TRUSTED_RE.search(name):
+        # Ver si es outlier para no dar +25 completo
+        _sz = _size_bytes(result)
+        if _sz and typical_size and not is_movie:
+            _ratio = _sz / typical_size if typical_size else 1
+            if _ratio < 0.5 or _ratio > 2.0:
+                lines.append("GrupoTS/hispashare → +5 (outlier tamaño, no +25)")
+            else:
+                lines.append("GrupoTS/hispashare → +25")
+        else:
+            lines.append("GrupoTS/hispashare → +25")
+    # Fuentes
+    s = int(result.sources or 0)
+    lines.append(f"Fuentes {s} → +{min(s,10)*1.5 + min(max(s-10,0),20)*0.7 + min(max(s-30,0),70)*0.3 + (5 if s>100 else 0) + (5 if s>150 else 0):.1f} (capped)")
+    if result.complete:
+        lines.append("Completo → +4")
+    # Tamaño
+    size = _size_bytes(result)
+    if size and typical_size and not is_movie:
+        ratio = size / typical_size
+        lines.append(f"Tamaño {size/1024/1024:.0f} MB vs típico {typical_size/1024/1024:.0f} MB ratio {ratio:.2f}")
+        if 0.7 <= ratio <= 1.4:
+            lines.append("  → tamaño proporcionado +2")
+        elif ratio < 0.3 or ratio > 3.0:
+            lines.append("  → desproporcionado -50")
+        elif ratio < 0.5 or ratio > 2.0:
+            lines.append("  → desproporcionado -32")
+        elif ratio < 0.6 or ratio > 1.8:
+            lines.append("  → desproporcionado -15")
+        else:
+            lines.append("  → desproporcionado -10")
+    elif size:
+        lo, hi = _size_range_for_resolution(name, is_movie)
+        lines.append(f"Tamaño {size/1024/1024:.0f} MB rango {lo/1024/1024:.0f}-{hi/1024/1024:.0f} MB")
+        if lo <= size <= hi:
+            lines.append("  → en rango +3")
+        elif size > hi:
+            lines.append(f"  → sobre rango x{size/hi:.1f} penalizado")
+    # Total
+    lines.append(f"Total score: {score_download(result, query, expected_year, is_movie, typical_size):.1f} (umbral {MIN_BEST_SCORE})")
+    return "\n".join(lines)
+
+
 # Umbral mínimo para considerar un resultado "candidato recomendable" --
 # por debajo de él no se destaca NINGÚN resultado (best_result devuelve
 # None), por si la lista no trae nada que de verdad coincida con la
@@ -578,7 +692,7 @@ MIN_BEST_SCORE = 15.0
 
 
 def best_result(results: list, query: str = "", expected_year: int = None,
-                is_movie: bool = False) -> AmuleSearchResult | None:
+                is_movie: bool = False, typical_size: int | None = None) -> AmuleSearchResult | None:
     """Devuelve el resultado (elemento de la lista) con mayor score, o None
     si la lista está vacía O si ninguno alcanza el mínimo (ver
     MIN_BEST_SCORE) -- así, cuando no hay ningún resultado que coincida de
@@ -608,9 +722,9 @@ def best_result(results: list, query: str = "", expected_year: int = None,
     if not candidates:
         return None
     best = candidates[0]
-    best_score = score_download(best, query, expected_year, is_movie)
+    best_score = score_download(best, query, expected_year, is_movie, typical_size)
     for r in candidates[1:]:
-        s = score_download(r, query, expected_year, is_movie)
+        s = score_download(r, query, expected_year, is_movie, typical_size)
         if s > best_score:
             best, best_score = r, s
     if best_score < MIN_BEST_SCORE:
