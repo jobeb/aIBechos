@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: aRenombrar
+        working-directory: aIBechos
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,7 +21,7 @@ jobs:
           python3 -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
       - name: Compilar con PyInstaller
-        run: pyinstaller aRenombrar.spec
+        run: pyinstaller aIBechos.spec
       - name: Leer versión de core/version.py
         id: version
         run: |
@@ -29,9 +29,9 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
       - name: Empaquetar en tar.gz
         run: |
-          cp aRenombrar.desktop IconoSinFondo.png dist/aIBechos/
+          cp aIBechos.desktop IconoSinFondo.png dist/aIBechos/
           tar -C dist -czf "aIBechos_${{ steps.version.outputs.version }}_linux.tar.gz" aIBechos
       - uses: actions/upload-artifact@v4
         with:
           name: aIBechos-linux
-          path: aRenombrar/aIBechos_${{ steps.version.outputs.version }}_linux.tar.gz
+          path: aIBechos/aIBechos_${{ steps.version.outputs.version }}_linux.tar.gz

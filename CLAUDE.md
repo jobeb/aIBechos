@@ -8,10 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Running the app
 
-All commands are run from the `aRenombrar/` subdirectory:
+All commands are run from the `aIBechos/` subdirectory:
 
 ```bash
-cd aRenombrar
+cd aIBechos
 python main.py               # launch normally (Windows: `python`, macOS/Linux: usually `python3`)
 python diagnostico.py        # launch with diagnostics written to diagnostico.log
 python crear_acceso_directo.py  # create a Desktop shortcut (Windows only)
@@ -19,31 +19,31 @@ python crear_acceso_directo.py  # create a Desktop shortcut (Windows only)
 
 Install dependencies with `pip install -r requirements.txt` (all installer scripts — `instalar.bat`/`instalar.ps1` on Windows, `instalar_mac.sh` on macOS — install from this same file; don't hand-list packages in those scripts, it drifts and silently drops deps like `keyring`, which is a hard, unguarded import in `config.py` — missing it means the app won't even open).
 
-Unit tests cover the pure `core/` logic (no tkinter) in `aRenombrar/tests/`:
+Unit tests cover the pure `core/` logic (no tkinter) in `aIBechos/tests/`:
 
 ```bash
-cd aRenombrar
+cd aIBechos
 pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
 ## Building the executable
 
-From inside `aRenombrar/`:
+From inside `aIBechos/`:
 
 ```bash
 pip install -r requirements.txt
-pyinstaller aRenombrar.spec
+pyinstaller aIBechos.spec
 # Windows → dist/aIBechos/aIBechos.exe
 # macOS   → dist/aIBechos.app (BUNDLE block in the spec, only added when built on macOS)
 ```
 
-The spec bundles `customtkinter`, `PIL`, `tkinterdnd2`, `pystray`, `py7zr`, and `rarfile` assets, and picks the icon by platform (`iconoPrincipal.ico` on Windows, `iconoPrincipal.icns` on macOS — both must be present in `aRenombrar/`; regenerate the `.icns` from `IconoSinFondo.png` with `Image.open(...).save('iconoPrincipal.icns')` if the source art changes, no macOS-only tool needed). `py7zr`/`rarfile` are pure-Python (no binary bundled) — `.rar` extraction still needs `unrar`/`unar`/`bsdtar` installed on the end user's system; if absent, extraction fails with a clear message instead of crashing.
+The spec bundles `customtkinter`, `PIL`, `tkinterdnd2`, `pystray`, `py7zr`, and `rarfile` assets, and picks the icon by platform (`iconoPrincipal.ico` on Windows, `iconoPrincipal.icns` on macOS — both must be present in `aIBechos/`; regenerate the `.icns` from `IconoSinFondo.png` with `Image.open(...).save('iconoPrincipal.icns')` if the source art changes, no macOS-only tool needed). `py7zr`/`rarfile` are pure-Python (no binary bundled) — `.rar` extraction still needs `unrar`/`unar`/`bsdtar` installed on the end user's system; if absent, extraction fails with a clear message instead of crashing.
 
 ## Architecture
 
 ```
-aRenombrar/
+aIBechos/
 ├── main.py          # entry point — creates and starts App
 ├── config.py        # Config class, persists to %APPDATA%\aIBechos\config.json
 ├── core/
@@ -140,7 +140,7 @@ Nothing constructs a client directly — all ~50 call sites go through
 `App._new_ftp_client()` (which reads the setting) or `core/transfer.py::make_client()`.
 `AutoWatcher` receives it as its `ftp_factory`. `paramiko` is imported *inside*
 `connect()` so FTP users don't pay for loading `cryptography` at startup, which
-also means it must stay listed in `hiddenimports` in `aRenombrar.spec` — a
+also means it must stay listed in `hiddenimports` in `aIBechos.spec` — a
 function-level import is invisible to PyInstaller, and without it SFTP would
 fail only in the installed build, never when running from source.
 

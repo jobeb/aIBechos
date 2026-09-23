@@ -1,30 +1,30 @@
 # Build / distribución
-aRenombrar/build/
-aRenombrar/dist/
-aRenombrar/__pycache__/
-aRenombrar/**/__pycache__/
+aIBechos/build/
+aIBechos/dist/
+aIBechos/__pycache__/
+aIBechos/**/__pycache__/
 *.pyc
 *.pyo
 *.spec.bak
 
 # Logs de diagnóstico y de ejecución local (contienen IPs/rutas del
 # equipo del usuario -- nunca deben acabar en el repo)
-aRenombrar/diagnostico.log
+aIBechos/diagnostico.log
 /*.log
 /*.log.*
 
 # Artefactos de build ya descargados a mano (instaladores/.dmg de
 # prueba) -- no pertenecen al repo, son binarios grandes
-aRenombrar/macos_dl/
+aIBechos/macos_dl/
 /release_assets/
 
 # Marcador de lanzar.vbs -- evita reinstalar dependencias en cada
 # arranque si requirements.txt no ha cambiado
-aRenombrar/.deps_installed
+aIBechos/.deps_installed
 
 # Config local (contiene contraseñas FTP y API keys)
 # El archivo real vive en %APPDATA%\aIBechos\config.json
-aRenombrar/auto_processed.json
+aIBechos/auto_processed.json
 
 # Entornos virtuales
 .venv/

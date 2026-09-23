@@ -10,7 +10,7 @@ jobs:
     runs-on: macos-latest
     defaults:
       run:
-        working-directory: aRenombrar
+        working-directory: aIBechos
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +24,7 @@ jobs:
           pip install -r requirements.txt pyinstaller
 
       - name: Compilar con PyInstaller
-        run: pyinstaller aRenombrar.spec
+        run: pyinstaller aIBechos.spec
 
       - name: Leer versión de core/version.py
         id: version
@@ -42,4 +42,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: aIBechos-macos
-          path: aRenombrar/aIBechos_${{ steps.version.outputs.version }}.dmg
+          path: aIBechos/aIBechos_${{ steps.version.outputs.version }}.dmg
