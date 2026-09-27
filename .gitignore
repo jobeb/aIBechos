@@ -3,6 +3,10 @@ aIBechos/build/
 aIBechos/dist/
 aIBechos/__pycache__/
 aIBechos/**/__pycache__/
+build/
+dist/
+aIBechos/installer_output/
+aIBechos/macos-artifact/
 *.pyc
 *.pyo
 *.spec.bak
@@ -12,10 +16,17 @@ aIBechos/**/__pycache__/
 aIBechos/diagnostico.log
 /*.log
 /*.log.*
+**/*.log
+**/*.log.*
+aIBechos/*.log
+aIBechos/error.log
 
 # Artefactos de build ya descargados a mano (instaladores/.dmg de
 # prueba) -- no pertenecen al repo, son binarios grandes
 aIBechos/macos_dl/
+aIBechos/*.zip
+aIBechos/*.7z
+/*.zip
 /release_assets/
 
 # Marcador de lanzar.vbs -- evita reinstalar dependencias en cada

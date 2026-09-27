@@ -138,6 +138,34 @@ def _is_annotation_remainder(a: str, b: str, normalized_remainder: str) -> bool:
     return bool(remainder_words) and remainder_words <= bracket_words
 
 
+def sibling_blocks_folder(show_name: str, folder_name: str, all_show_names) -> bool:
+    """True si *folder_name* es EXACTAMENTE (una vez normalizado) la carpeta
+    de OTRA serie conocida distinta de *show_name* -- en ese caso la carpeta
+    es de esa otra serie y *show_name* no debe reclamarla por parecido, por
+    alto que sea.
+
+    Caso real: en "Episodios que faltan", la fila de "Dragon Ball Daima"
+    absorbía la carpeta "Dragon Ball" (0.90 en modo laxo, por ser prefijo
+    literal) y mostraba sus T2-T9 como temporadas en el servidor de una
+    serie que solo tiene una -- y al revés, la fila de "Dragon Ball" tragaba
+    la carpeta de Daima. Ningún umbral separa este par del caso legítimo
+    ("Prodigiosa: Las aventuras de Ladybug" / "Miraculous...", 0.80): la
+    diferencia no es el parecido, sino que la carpeta ajena tiene dueño
+    exacto conocido.
+
+    La coincidencia exacta de la PROPIA serie nunca bloquea (si la carpeta
+    normalizada es igual al propio título, es suya). Sin *all_show_names*
+    (vacío o None) no hay con qué comparar y no se bloquea nada -- mismo
+    comportamiento que antes de este guardián."""
+    norm_folder = normalize_series_name(folder_name)
+    if not norm_folder or norm_folder == normalize_series_name(show_name):
+        return False
+    for other in all_show_names or ():
+        if normalize_series_name(other) == norm_folder:
+            return True
+    return False
+
+
 def best_match(desired: str, candidates, min_ratio: float = 0.55,
                strict: bool = False, allow_annotation: bool = False):
     """Devuelve (mejor_candidato, ratio) entre *candidates*, o (None, 0.0)

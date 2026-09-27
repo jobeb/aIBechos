@@ -23,6 +23,7 @@ INTERNAL_FLAGS = (
     "_keyring_service_migrated",
     "_shared_data_migrated",
     "_autostart_identity_migrated",
+    "_kagome_block_migrated",
 )
 
 # Versión del FORMATO de exportación/importación de configuración (gui/app.py
@@ -314,22 +315,64 @@ DEFAULTS = {
     # Ej: {"That Time I Got Reincarnated as a Slime": "Slime {temporada}x{episodio:02d}"}
     # Si el template no contiene {temporada}/{episodio}, se añade " {temporada}x{episodio:02d}" solo.
     "series_search_patterns": {},
-    # Grupos proveedores de confianza para descargas (lista AUTORITATIVA,
-    # se edita en Ajustes → Servidor → Proveedores, un grupo por línea,
-    # texto plano). Valores por defecto = los built-in de siempre
+    # Proveedores de confianza para descargas (lista AUTORITATIVA y completa:
+    # todo proveedor que puntúe aparece aquí, sin fijos ocultos; se edita en
+    # Ajustes → Servidor → Preferencias descargas, apartado Proveedores, un
+    # grupo por línea, texto plano). Valores iniciales = los de siempre
     # (MISMA lista que core/download_quality._BUILTIN_TRUSTED -- mantener
     # sincronizadas); sus releases ganan +25 al elegir qué descargar
     # (+5 si el tamaño es atípico). Compartida por todo el grupo (ver
     # core/server_config.py).
     "p2p_trusted_groups": ["exploradoresp2p", "grupots", "hispashare",
                            "hispashare.org", "nocturniap2p"],
-    # Marcas/grupos EXTRA de idioma NO deseados (misma edición en
-    # Ajustes). Un release que contenga alguna se EXCLUYE como el
+    # Proveedores/marcas bloqueadas (misma edición en Ajustes, apartado
+    # Proveedores). Un release que contenga alguna se EXCLUYE como el
     # francés/alemán (aunque sea lo único disponible), SALVO que traiga
-    # además español. Los vetos de idioma built-in (VOSTFR/FR/ITA/GER/
-    # PT/VOS...) siguen fijos en el código y se muestran como referencia
-    # (líneas "#") en el propio box. Compartida por todo el grupo.
-    "p2p_blocked_groups": [],
+    # además español. Incluye "kagome" (grupo italiano: antes era veto fijo
+    # del motor, ahora es una entrada normal y editable). Los filtros de
+    # idioma del motor (VOSTFR/FR/ITA/GER/PT/VOS...) van aparte, en el
+    # apartado Idioma de la misma subpestaña, no mezclados en estas listas.
+    # Compartida por todo el grupo.
+    "p2p_blocked_groups": ["kagome"],
+    # Marcadores editables de idioma para descargas (listas AUTORITATIVAS en
+    # lo que añaden: se SUMAN al motor inteligente fijo de cada idioma, ver
+    # core/download_quality.set_filter_lists y BUILTIN_LANG_MARKERS, que son
+    # estos mismos valores iniciales). Se editan en Ajustes → Servidor →
+    # Preferencias descargas, apartado Idioma, uno por línea. Un release que
+    # contenga alguno se EXCLUYE como el francés (salvo con español además),
+    # salvo el catalán, que solo penaliza fuerte. Compartidas por el grupo.
+    "p2p_lang_vos": ["vos", "vose", "vosi", "versión original",
+                     "version original"],
+    "p2p_lang_fr": ["vostfr", "vosta", "truefrench", "vff", "vf", "fr",
+                    "f.r.", "french", "francais", "français", "vq"],
+    "p2p_lang_it": ["ita", "italian", "italiano", "italiana"],
+    "p2p_lang_de": ["german", "deutsch", "ger"],
+    "p2p_lang_pt": ["portuguese", "portugués", "portugues", "brasileiro",
+                    "brasileira", "dublado", "legendado"],
+    # OJO: "cat" suelto NO vale aquí (falsea con "categoría", "Catwoman"...);
+    # el "[Cat]"/"Cat.Subs" lo sigue cazando el motor fijo.
+    "p2p_lang_ca": ["catalán", "catalan", "catalá", "catala", "català",
+                    "vosc"],
+    # Otros filtros editables (apartado Otros filtros, misma subpestaña):
+    # adultos (excluyen siempre, motor _PORN_RE + esta lista), muestras y
+    # capturas de cine (penalizan, motor + estas listas) y extensiones
+    # no-vídeo (penalizan, motor + esta lista, sin punto). Compartidos.
+    "p2p_blocked_adult": ["xxx", "porn", "porno", "hardcore", "milf",
+                          "hentai", "onlyfans", "bondage", "jav",
+                          "creampie", "gangbang", "bigboobs", "bigtits"],
+    "p2p_blocked_sample": ["sample", "muestra", "preview", "trailer",
+                           "demo"],
+    "p2p_blocked_scr": ["cam", "screener", "dvdscr", "telecine", "telesync",
+                        "hdtc"],
+    "p2p_blocked_exts": ["cue", "db", "emulecollection", "epub", "gif",
+                         "idx", "ini", "jpeg", "jpg", "log", "magnet",
+                         "md5", "nfo", "pdf", "png", "sfv", "srt", "sub",
+                         "torrent", "txt"],
+    # Pesos personalizados de la puntuación de descargas (solo los cambiados;
+    # vacío = valores de fábrica, ver SCORE_WEIGHT_DEFAULTS en
+    # core/download_quality). Se editan en la sección Puntuación de la misma
+    # subpestaña. Compartidos por todo el grupo.
+    "p2p_score_weights": {},
     # Sistema de reintentos inteligentes para archivos que fallan continuamente
     # (por ejemplo, en emule o cuando TMDB no tiene el título).
     # Si está activado, el watcher esperará un tiempo creciente antes de volver
@@ -414,6 +457,25 @@ class Config:
         # (aunque esté vacío a propósito) no se vuelve a tocar.
         if "ftp_categories" not in self._data:
             self._migrate_ftp_categories()
+
+        # "kagome" era veto fijo italiano del motor y ahora es una entrada
+        # normal de bloqueados: añadirla una sola vez a listas ya guardadas
+        # (las nuevas ya traen el valor inicial de DEFAULTS). Si el usuario
+        # la quita después, la marca impide que vuelva sola.
+        if "_kagome_block_migrated" not in self._data:
+            try:
+                blocked = self._data.get("p2p_blocked_groups", [])
+                if isinstance(blocked, list) and not any(
+                        str(x or "").strip().lower() == "kagome" for x in blocked):
+                    self._data["p2p_blocked_groups"] = [*blocked, "kagome"]
+                    self.save()
+            except Exception:
+                pass
+            self._data["_kagome_block_migrated"] = True
+            try:
+                self.save()
+            except Exception:
+                pass
 
     def _migrate_keyring_service(self):
         """Trae las credenciales del llavero guardadas con el nombre antiguo.

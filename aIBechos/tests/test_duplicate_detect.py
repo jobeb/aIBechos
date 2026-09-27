@@ -7,6 +7,42 @@ def _tv_info(season=1, episode=6):
                       year="2024", season=season, episode=episode, genre_ids=[])
 
 
+def _tv_info_with_title(title, season=1, episode=1):
+    return MediaInfo(tmdb_id=999, media_type="tv", title=title, original_title=title,
+                     year="2024", season=season, episode=episode, genre_ids=[])
+
+
+def test_tv_same_episode_number_of_a_sibling_series_is_not_duplicate():
+    # Bug real: al subir "Dragon Ball Daima" 1x01 la app decía que ya había
+    # otro archivo para el mismo contenido, cuando en el servidor no había
+    # ni carpeta de la serie. La resolución de carpeta había fusionado Daima
+    # con "Dragon Ball" (prefijo literal) y aquí solo se comparaba S/E, así
+    # que el 1x01 ajeno casaba. Series distintas con igual S/E no son
+    # duplicado aunque compartan carpeta.
+    info = _tv_info_with_title("Dragon Ball Daima", season=1, episode=1)
+    existing = ["Dragon Ball 1x01.mkv", "Dragon Ball 1x02.mkv"]
+    assert find_duplicate(existing, info,
+                          current_filename="Dragon Ball Daima 1x01.mkv") is None
+
+
+def test_tv_same_episode_same_series_under_different_release_name_still_detected():
+    info = _tv_info_with_title("Dragon Ball Daima", season=1, episode=1)
+    existing = ["Dragon Ball Daima 1x01 OtroGrupo WEB-DL.mkv"]
+    dup = find_duplicate(existing, info,
+                         current_filename="Dragon Ball Daima 1x01.mkv")
+    assert dup == "Dragon Ball Daima 1x01 OtroGrupo WEB-DL.mkv"
+
+
+def test_tv_duplicate_with_original_title_in_parentheses_still_detected():
+    # La guarda de título no debe romper la reutilización legítima con el
+    # título original entre paréntesis (patrón de anotación).
+    info = _tv_info_with_title("Desencanto", season=1, episode=3)
+    existing = ["Desencanto (Disenchantment) 1x03.mkv"]
+    dup = find_duplicate(existing, info,
+                         current_filename="Desencanto 1x03.mkv")
+    assert dup == "Desencanto (Disenchantment) 1x03.mkv"
+
+
 def _movie_info():
     return MediaInfo(tmdb_id=1, media_type="movie", title="Pelicula",
                       original_title="Pelicula", year="2024", genre_ids=[])

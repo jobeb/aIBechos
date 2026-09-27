@@ -50,7 +50,7 @@ from core import shared_data
 from core.amule_client import AmuleSearchResult
 from core.ec_client import EcClient, EcConnectionError, EcAuthError, EcProtocolError
 from core.auto_watcher import AutoWatcher
-from core.series_match import best_match, match_names_exclusively, normalize_series_name, series_similarity
+from core.series_match import best_match, match_names_exclusively, normalize_series_name, series_similarity, sibling_blocks_folder
 from core import remote_presence as rp
 from core import auto_complete_state
 from core.download_quality import best_result, explain_score
@@ -451,11 +451,6 @@ class _SeriesMatchDialog(ctk.CTkToplevel):
         self.grab_set()
         self.lift()
         self.attributes("-topmost", True)
-        self.update_idletasks()
-        pw = parent.winfo_rootx() + parent.winfo_width() // 2
-        ph = parent.winfo_rooty() + parent.winfo_height() // 2
-        dw, dh = 440, 200
-        self.geometry(f"{dw}x{dh}+{pw - dw//2}+{ph - dh//2}")
 
         ctk.CTkLabel(self, text="Ya existe una carpeta con un nombre parecido en el FTP.",
                      font=ctk.CTkFont(size=13, weight="bold"), wraplength=390).pack(padx=24, pady=(20, 8))
@@ -473,6 +468,17 @@ class _SeriesMatchDialog(ctk.CTkToplevel):
         ctk.CTkButton(bf, text="No, crear carpeta nueva", width=170,
                       fg_color="transparent", border_width=1,
                       command=lambda: self._close("no")).pack(side="left", padx=6)
+
+        # El alto se calcula a partir del contenido ya empaquetado (igual que
+        # _OverwriteDialog): con la altura fija de antes (200) el texto
+        # ocupaba más de lo previsto y los botones quedaban aplastados con
+        # el texto fuera de vista. Centrado en la ventana padre.
+        self.update_idletasks()
+        dw = max(440, self.winfo_reqwidth())
+        dh = self.winfo_reqheight()
+        pw = parent.winfo_rootx() + parent.winfo_width() // 2
+        ph = parent.winfo_rooty() + parent.winfo_height() // 2
+        self.geometry(f"{dw}x{dh}+{pw - dw//2}+{ph - dh//2}")
 
         self.protocol("WM_DELETE_WINDOW", lambda: self._close("no"))
         self.wait_window()
@@ -2436,10 +2442,33 @@ class App(_AppBase):
             # temprana). Si muere, _ensure lo repara.
             self.after(700, self._ensure_auto_watcher_consistent)
 
+    def _after_from_worker(self, func, delay_ms: int = 0, timeout_s: float = 3.0):
+        """Programa *func* en el hilo de la GUI desde un hilo de fondo.
+
+        self.after() desde otro hilo falla con RuntimeError ("main thread
+        is not in main loop") si el hilo principal está en ese momento
+        dentro de una llamada Tcl larga en vez de en el bucle de eventos --
+        típico al abrir la app (restaurando la tabla fila a fila) justo
+        cuando el modo automático arranca su primer escaneo, lo que se veía
+        como un "Error en escaneo" que asustaba sin motivo aunque luego todo
+        funcionara. Reintentar unos segundos lo resuelve solo: el evento
+        llega con un poco de retraso en vez de perderse."""
+        deadline = _time.monotonic() + timeout_s
+        while True:
+            try:
+                self.after(delay_ms, func)
+                return
+            except RuntimeError:
+                if _time.monotonic() >= deadline:
+                    _log.warning("Callback de hilo de fondo descartado: "
+                                 "hilo principal ocupado tras %.1fs", timeout_s)
+                    return
+                _time.sleep(0.05)
+
     def _on_auto_event(self, tipo, msg):
         colors = {"info": ACCENT, "ok": SUCCESS_COLOR,
                   "skip": WARNING_COLOR, "error": ERROR_COLOR}
-        self.after(0, lambda: self._set_status(msg, colors.get(tipo, ACCENT)))
+        self._after_from_worker(lambda: self._set_status(msg, colors.get(tipo, ACCENT)))
 
     def _on_auto_file_event(self, path, tipo, new_name=None, progress=None, speed=None,
                              media_info=None, confidence=None, reason=None, renamed_on_disk=True,
@@ -2575,7 +2604,7 @@ class App(_AppBase):
                 if self._selected_entry is entry:
                     self._update_detail(entry)
 
-        self.after(0, _update)
+        self._after_from_worker(_update)
 
     # Navegación unificada (barra de pestañas segmentada en el header,
     # ver _build_header) -- las 4 vistas (Archivos/Episodios/Historial/
@@ -6234,7 +6263,18 @@ class App(_AppBase):
                 else:
                     candidate, ratio = best_match(desired, existing, min_ratio=0.55)
                     if candidate:
-                        if ratio >= 0.90:
+                        # Reutilizar en silencio SOLO con coincidencia de alta
+                        # confianza en modo estricto + anotación (igual que
+                        # _find_category_with_existing_folder): el modo laxo
+                        # da 0.90 a cualquier prefijo literal, y eso fusionó
+                        # "Dragon Ball Daima" con la carpeta "Dragon Ball"
+                        # (serie distinta, sin carpeta propia en el servidor)
+                        # para luego denunciar su 1x01 como duplicado del
+                        # 1x01 de la otra serie. Por debajo del 0.90 estricto
+                        # se pregunta como siempre, no se fusiona solo.
+                        strict_ratio = series_similarity(
+                            desired, candidate, strict=True, allow_annotation=True)
+                        if strict_ratio >= 0.90:
                             chosen = candidate
                         else:
                             if entry is not None:
@@ -7132,7 +7172,7 @@ class App(_AppBase):
         self._build_ftp_categories_section(server_tabs.add("Categorías"))
         self._build_media_servers_section(server_tabs.add("Servidores de medios"))
         self._build_reservation_quota_tab(server_tabs.add("Reservas"))
-        self._build_providers_tab(server_tabs.add("Proveedores"))
+        self._build_download_prefs_tab(server_tabs.add("Preferencias descargas"))
 
         ctk.CTkLabel(panel, text=f"aIBechos v{__version__}",
                      text_color=PENDING_COLOR, font=self._cfg_font_desc).grid(
@@ -7547,59 +7587,209 @@ class App(_AppBase):
         self._reservation_quota_entry.pack(side="left")
 
     def _providers_box_text(self, kind: str) -> str:
-        """Texto inicial del box de proveedores: los de confianza son la
-        lista tal cual (autoritaria, editable del todo); los bloqueados
-        llevan delante las líneas "#" de referencia con los vetos fijos
-        del sistema (ver BUILTIN_BLOCKED_REFERENCE_LINES), que al guardar
-        se ignoran (ver parse_provider_lines)."""
-        try:
-            from core.download_quality import BUILTIN_BLOCKED_REFERENCE_LINES
-        except Exception:
-            BUILTIN_BLOCKED_REFERENCE_LINES = ()
+        """Texto inicial de un box de proveedores: la lista tal cual, entera
+        y editable (autoritaria, sin fijos ocultos). Los filtros de idioma
+        del motor ya no se mezclan aquí: viven en su propio apartado
+        "Idioma" (ver LANGUAGE_FILTERS_INFO). Las líneas "#" antiguas se
+        siguen ignorando al guardar (ver parse_provider_lines)."""
         if kind == "blocked":
-            fixed = [str(l) for l in (BUILTIN_BLOCKED_REFERENCE_LINES or [])]
-            extra = [str(x) for x in (self.config_data.get("p2p_blocked_groups", []) or [])]
-            return "\n".join(fixed + extra)
-        return "\n".join(str(x) for x in (self.config_data.get("p2p_trusted_groups", []) or []))
+            return self._list_box_text("p2p_blocked_groups")
+        return self._list_box_text("p2p_trusted_groups")
 
-    def _build_providers_tab(self, tab):
-        """Listas de proveedores de P2P (ver core/download_quality):
-        grupos de confianza (bonus al elegir qué descargar) y marcas de
-        idioma bloqueadas (no se descargan). Configuración de SERVIDOR:
-        igual para todo el que use aIBechos contra este FTP (ver
-        core/server_config.py) -- se sincroniza sola al arrancar y el
-        botón "Publicar" la impone a todos. El aMule de CADA equipo
-        (host/puerto) sigue en Cliente, esto es solo criterio de grupo."""
+    def _list_box_text(self, config_key: str) -> str:
+        """Texto inicial de un box de lista (uno por línea) desde config."""
+        try:
+            return "\n".join(str(x) for x in (self.config_data.get(config_key, []) or []))
+        except Exception:
+            return ""
+
+    def _lang_box_text(self) -> str:
+        """Texto inicial del campo único de Idioma (secciones [kind]) desde
+        config (ver format_lang_box)."""
+        try:
+            from core.download_quality import LANG_CONFIG_KEYS, format_lang_box
+            langs = {kind: (self.config_data.get(ckey, []) or [])
+                     for kind, ckey in LANG_CONFIG_KEYS.items()}
+            return format_lang_box(langs)
+        except Exception:
+            return ""
+
+    # (kind, etiqueta, clave de config) del apartado Otros filtros.
+    _OTHER_BOX_DEFS = (
+        ("adult", "Adultos (excluye)", "p2p_blocked_adult"),
+        ("sample", "Muestras/trailers", "p2p_blocked_sample"),
+        ("scr", "Cine/screeners", "p2p_blocked_scr"),
+        ("exts", "Ext. no-vídeo", "p2p_blocked_exts"),
+    )
+
+    def _weight_entry_text(self, key: str) -> str:
+        """Valor efectivo de un peso para su casilla (cambiado o fábrica)."""
+        try:
+            from core.download_quality import SCORE_WEIGHT_DEFAULTS
+            factory = SCORE_WEIGHT_DEFAULTS.get(key, 0)
+            overrides = self.config_data.get("p2p_score_weights", {}) or {}
+            if isinstance(overrides, dict) and key in overrides:
+                return str(overrides[key])
+            return str(factory)
+        except Exception:
+            return ""
+
+    def _reset_score_weights_to_factory(self):
+        """Rellena las casillas de Puntuación con los valores de fábrica."""
+        try:
+            from core.download_quality import SCORE_WEIGHT_DEFAULTS
+            for _key, _entry in (getattr(self, "_weight_entries", None) or {}).items():
+                try:
+                    _entry.delete(0, "end")
+                    _entry.insert(0, str(SCORE_WEIGHT_DEFAULTS.get(_key, "")))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _build_download_prefs_tab(self, tab):
+        """Preferencias de descargas P2P (ver core/download_quality):
+        Proveedores, Idioma (un solo campo por secciones), Otros filtros
+        y Puntuación. Configuración de SERVIDOR: igual para todo el que
+        use aIBechos contra este FTP (ver core/server_config.py) -- se
+        sincroniza sola al arrancar y el botón "Publicar" la impone a
+        todos. El aMule de CADA equipo (host/puerto) sigue en Cliente,
+        esto es solo criterio de grupo."""
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         scroll.pack(fill="both", expand=True)
-        fr = ctk.CTkFrame(scroll)
-        fr.pack(fill="both", expand=True, padx=0, pady=(0, 8))
+        body = ctk.CTkFrame(scroll)
+        body.pack(fill="both", expand=True, padx=0, pady=(0, 8))
+        ctk.CTkLabel(body, text="Preferencias descargas",
+                     font=self._cfg_font_title).pack(pady=(12, 6))
+        ctk.CTkLabel(body,
+                     text="Qué proveedores puntúan, qué marcas se excluyen, qué idiomas no se descargan "
+                          "y cuánto puntúa cada cosa. Vale para todos los clientes de este servidor.",
+                     font=self._cfg_font_desc, text_color=PENDING_COLOR, wraplength=600).pack(pady=(0, 4))
+
+        def _card(title, desc):
+            """Una tarjeta por apartado: título + descripción + contenido,
+            separada de la anterior por aire vertical."""
+            card = ctk.CTkFrame(body)
+            card.pack(fill="x", expand=True, padx=0, pady=(10, 0))
+            ctk.CTkLabel(card, text=title,
+                         font=ctk.CTkFont(size=13, weight="bold")).pack(
+                anchor="w", padx=12, pady=(10, 2))
+            if desc:
+                ctk.CTkLabel(card, text=desc, font=self._cfg_font_desc,
+                             text_color=PENDING_COLOR, wraplength=600,
+                             justify="left").pack(anchor="w", padx=12, pady=(0, 4))
+            inner = ctk.CTkFrame(card, fg_color="transparent")
+            inner.pack(fill="x", expand=True, padx=6, pady=(0, 10))
+            return inner
+
+        # ── Apartado Proveedores (dos columnas) ──
+        fr = _card("Proveedores", None)
+        fr.grid_columnconfigure(0, weight=1)
         fr.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(fr, text="Proveedores de descargas",
-                     font=self._cfg_font_title).grid(
-            row=0, column=0, columnspan=2, pady=(12, 6))
-        ctk.CTkLabel(fr,
-                     text="Qué grupos son de confianza y qué marcas de idioma no se descargan. "
-                          "Vale para todos los clientes de este servidor. Uno por línea, texto plano.",
-                     font=self._cfg_font_desc, text_color=PENDING_COLOR, wraplength=600).grid(
-            row=1, column=0, columnspan=2, pady=(0, 10))
-        ctk.CTkLabel(fr, text="De confianza (+25):").grid(
-            row=2, column=0, sticky="ne", padx=10, pady=6)
-        self._trusted_groups_box = ctk.CTkTextbox(fr, width=300, height=110)
-        self._trusted_groups_box.grid(row=2, column=1, padx=10, pady=6, sticky="ew")
+        ctk.CTkLabel(fr, text="De confianza (+25)").grid(
+            row=0, column=0, sticky="w", padx=10, pady=(6, 0))
+        ctk.CTkLabel(fr, text="Bloqueados (no descargar)").grid(
+            row=0, column=1, sticky="w", padx=10, pady=(6, 0))
+        self._trusted_groups_box = ctk.CTkTextbox(fr, height=110)
+        self._trusted_groups_box.grid(row=1, column=0, padx=10, pady=6, sticky="ew")
         self._trusted_groups_box.insert("1.0", self._providers_box_text("trusted"))
-        attach_tooltip(self._trusted_groups_box, lambda: "Grupos de confianza (esta lista es la que vale: "
+        attach_tooltip(self._trusted_groups_box, lambda: "Proveedores de confianza (esta lista es la que vale, entera: "
                        "quitar uno le quita el bonus).\nSus releases ganan +25 al elegir qué descargar.\n"
                        "Uno por línea, sin comas ni regex: se busca el texto tal cual.")
-        ctk.CTkLabel(fr, text="Bloqueados (no descargar):").grid(
-            row=3, column=0, sticky="ne", padx=10, pady=6)
-        self._blocked_groups_box = ctk.CTkTextbox(fr, width=300, height=150)
-        self._blocked_groups_box.grid(row=3, column=1, padx=10, pady=6, sticky="ew")
+        self._blocked_groups_box = ctk.CTkTextbox(fr, height=110)
+        self._blocked_groups_box.grid(row=1, column=1, padx=10, pady=6, sticky="ew")
         self._blocked_groups_box.insert("1.0", self._providers_box_text("blocked"))
-        attach_tooltip(self._blocked_groups_box, lambda: "Marcas/grupos de idioma no deseado.\n"
+        attach_tooltip(self._blocked_groups_box, lambda: "Proveedores/marcas que no se quieren.\n"
                        "Un release que los contenga NO se descarga aunque sea lo único disponible.\n"
-                       "Si trae además español, se permite. Las líneas '#' son fijas del sistema "
-                       "(siempre activas); añade las tuyas debajo, una por línea.")
+                       "Si trae además español, se permite. Uno por línea.")
+        # ── Apartado Idioma: UN solo campo con secciones [kind] ──
+        fr = _card("Idioma",
+                   "El motor siempre excluye estos idiomas sin pista en español "
+                   "(VOS, francés/VOSTFR, italiano, alemán, portugués) y penaliza "
+                   "el catalán. Tus marcadores se AÑADEN por secciones [vos] [fr] [it] "
+                   "[de] [pt] [ca], uno por línea. No toques las líneas [..].")
+        self._lang_box = ctk.CTkTextbox(fr, height=240)
+        self._lang_box.pack(fill="x", expand=True, padx=10, pady=6)
+        self._lang_box.insert("1.0", self._lang_box_text())
+        attach_tooltip(self._lang_box, lambda: "Todos los idiomas juntos, por secciones.\n"
+                       "Cada marcador se suma al motor de su idioma.\n"
+                       "Uno por línea, sin comas ni regex.")
+        # ── Apartado Otros filtros (2×2) ──
+        fr = _card("Otros filtros",
+                   "Adultos excluye siempre; muestras y cine penalizan; "
+                   "extensiones no-vídeo penalizan (sin punto). Tus listas se suman al motor.")
+        fr.grid_columnconfigure(0, weight=1)
+        fr.grid_columnconfigure(1, weight=1)
+        self._other_filter_boxes = {}
+        _defs = list(self._OTHER_BOX_DEFS)
+        _row = 0
+        for _i in range(0, len(_defs), 2):
+            for _col, (_kind, _label, _ckey) in enumerate(_defs[_i:_i + 2]):
+                ctk.CTkLabel(fr, text=_label).grid(
+                    row=_row, column=_col, sticky="w", padx=10, pady=(6, 0))
+            _row += 1
+            for _col, (_kind, _label, _ckey) in enumerate(_defs[_i:_i + 2]):
+                _box = ctk.CTkTextbox(fr, height=80)
+                _box.grid(row=_row, column=_col, padx=10, pady=6, sticky="ew")
+                _box.insert("1.0", self._list_box_text(_ckey))
+                attach_tooltip(_box, lambda _l=_label: f"Marcadores extra de {_l}.\n"
+                               "Se suman al motor.\nUno por línea, sin comas ni regex.")
+                self._other_filter_boxes[_kind] = _box
+            _row += 1
+        # ── Sección Puntuación (pesos en 3 columnas) ──
+        fr = _card("Puntuación",
+                   "Cuánto suma o resta cada cosa al elegir qué descargar. "
+                   "Vacío o texto no numérico = valor de fábrica.")
+        _reset_btn = ctk.CTkButton(fr, text="Restablecer valores", width=160,
+                                   command=self._reset_score_weights_to_factory)
+        _reset_btn.pack(anchor="e", padx=10, pady=(0, 6))
+        attach_tooltip(_reset_btn, lambda: "Vuelve a los valores de fábrica en las casillas.\n"
+                       "Se aplica al guardar Ajustes.")
+        _wfr = ctk.CTkFrame(fr, fg_color="transparent")
+        _wfr.pack(fill="x", expand=True, padx=4)
+        for _c in range(6):
+            _wfr.grid_columnconfigure(_c, weight=0 if _c % 2 == 0 else 1)
+        self._weight_entries = {}
+        try:
+            from core.download_quality import (
+                SCORE_WEIGHT_DEFAULTS, SCORE_WEIGHT_LABELS,
+                SCORE_WEIGHT_TIPS, SCORE_GROUP_TIPS)
+        except Exception:
+            SCORE_WEIGHT_DEFAULTS, SCORE_WEIGHT_LABELS = {}, {}
+            SCORE_WEIGHT_TIPS, SCORE_GROUP_TIPS = {}, {}
+        _wrow, _wcol, _last_group = 0, 0, None
+        for _wkey in SCORE_WEIGHT_DEFAULTS:
+            _group, _wlabel = SCORE_WEIGHT_LABELS.get(_wkey, ("Otros", _wkey))
+            if _group != _last_group:
+                if _wcol != 0:
+                    _wrow += 1  # cerrar la fila parcial antes de la cabecera,
+                    _wcol = 0   # si no, la cabecera pisa los campos (ver captura)
+                _gh = ctk.CTkLabel(_wfr, text=_group,
+                                   font=ctk.CTkFont(size=12, weight="bold"))
+                _gh.grid(row=_wrow, column=0, columnspan=6,
+                         pady=(2, 0) if _wrow == 0 else (16, 2),
+                         sticky="w", padx=6)
+                attach_tooltip(_gh, lambda _g=_group: SCORE_GROUP_TIPS.get(_g, _g))
+                _wrow += 1
+                _last_group = _group
+            _tip = SCORE_WEIGHT_TIPS.get(_wkey, _wkey)
+            _wl = ctk.CTkLabel(_wfr, text=_wlabel)
+            _wl.grid(row=_wrow, column=_wcol * 2, sticky="e", padx=(6, 4), pady=2)
+            attach_tooltip(_wl, lambda _t=_tip: _t)
+            _entry = ctk.CTkEntry(_wfr, width=70)
+            _entry.grid(row=_wrow, column=_wcol * 2 + 1, sticky="ew", padx=(0, 8), pady=2)
+            _entry.insert(0, self._weight_entry_text(_wkey))
+            attach_tooltip(_entry, lambda _t=_tip, _k=_wkey: f"{_t}\nValor de fábrica: {SCORE_WEIGHT_DEFAULTS.get(_k, '')}")
+            self._weight_entries[_wkey] = _entry
+            _wcol += 1
+            if _wcol >= 3:
+                _wcol = 0
+                _wrow += 1
+
+    def _build_providers_tab(self, tab):
+        """Alias antiguo: ahora la subpestaña se llama Preferencias descargas
+        y separa Proveedores e Idioma (ver _build_download_prefs_tab)."""
+        return self._build_download_prefs_tab(tab)
 
     def _build_watch_sync_config_tab(self, tab):
         """Configuración de "Sincronizar visionado" (Cliente, no
@@ -13965,6 +14155,10 @@ class App(_AppBase):
                 return None
             # Buscar carpeta de la serie por similitud en todas las categorías TV
             norm_target = normalize_series_name(series_name)
+            # sibling_blocks_folder: no reclamar por parecido la carpeta
+            # exacta de otra serie conocida (caso Dragon Ball Daima /
+            # Dragon Ball) -- ver _match_ftp_folders, mismo guardián.
+            _sibling_names = self._known_series_names_from_cache() | {series_name}
             cat, folder_name = None, None
             for c in self.config_data.get("ftp_categories", {"tv": []}).get("tv", []):
                 root_try = c.get("root", "")
@@ -13974,7 +14168,7 @@ class App(_AppBase):
                     dirs = own_ftp.list_dirs(root_try) or []
                     for d in dirs:
                         nd = normalize_series_name(d)
-                        if series_similarity(norm_target, nd, strict=False) >= 0.85 or norm_target in nd or nd in norm_target:
+                        if (series_similarity(norm_target, nd, strict=False) >= 0.85 or norm_target in nd or nd in norm_target) and not sibling_blocks_folder(series_name, d, _sibling_names):
                             cat, folder_name = c, d
                             break
                     if cat:
@@ -16570,8 +16764,9 @@ class App(_AppBase):
                 if own_ftp_single.is_connected():
                     cats = self.config_data.get("ftp_categories", {"tv": [], "movie": [], "libro": []}).get("tv", [])
                     present = set()
-                    from core.series_match import series_similarity, normalize_series_name
+                    from core.series_match import series_similarity, normalize_series_name, sibling_blocks_folder
                     norm_target = normalize_series_name(name)
+                    _sibling_names = self._known_series_names_from_cache() | {name}
                     for cat in cats:
                         root = cat.get("root", "")
                         if not root:
@@ -16581,7 +16776,11 @@ class App(_AppBase):
                         except Exception:
                             continue
                         for d in dirs:
-                            if series_similarity(norm_target, normalize_series_name(d), strict=False) >= 0.85 or norm_target in normalize_series_name(d) or normalize_series_name(d) in norm_target:
+                            # sibling_blocks_folder: la carpeta exacta de otra
+                            # serie conocida no se reclama por parecido (caso
+                            # Dragon Ball Daima / Dragon Ball) -- ver
+                            # _match_ftp_folders, mismo guardián.
+                            if (series_similarity(norm_target, normalize_series_name(d), strict=False) >= 0.85 or norm_target in normalize_series_name(d) or normalize_series_name(d) in norm_target) and not sibling_blocks_folder(name, d, _sibling_names):
                                 series_path = f"{root.rstrip('/')}/{d}"
                                 try:
                                     subdirs = own_ftp_single.list_dirs(series_path) or []
@@ -17229,7 +17428,9 @@ class App(_AppBase):
             # siguen apareciendo en pantalla.
             pre_cross_check = results
             results = self._cross_check_results_with_ftp(pre_cross_check, cancel_event=cancel_event,
-                                                          progress_cb=progress_cb)
+                                                          progress_cb=progress_cb,
+                                                          all_show_names={s.get("name", "") for _, s in shows
+                                                                          if s.get("name", "")})
             # Sin esto, la corrección del cruce FTP (p.ej. Dragon Ball GT:
             # 3 episodios que sí estaban en el servidor pero Jellyfin no
             # los tenía bien indexados) solo vivía en esta sesión --
@@ -17495,7 +17696,8 @@ class App(_AppBase):
                             progress_cb(i, len(fallback_folders), f"cruzando con el FTP: {folder}")
         return index
 
-    def _cross_check_results_with_ftp(self, results: list, cancel_event=None, progress_cb=None) -> list:
+    def _cross_check_results_with_ftp(self, results: list, cancel_event=None, progress_cb=None,
+                                        all_show_names=None) -> list:
         """Para las series que YA salieron con algún hueco (según Jellyfin/
         Plex), comprueba también el listado real del FTP -- por si el
         propio servidor de medios falló al indexar algo que sí está físi-
@@ -17553,7 +17755,8 @@ class App(_AppBase):
                 _log.info("Cruce FTP: '%s' sin lista completa de episodios en caché, no se recalcula", r["name"])
                 continue   # sin la lista completa de episodios de TMDB no se puede recalcular el hueco
             ftp_present = self._match_ftp_present(ftp_index, r["name"], r.get("folder_name"),
-                                                  known_year=self._missing_ep_known_year(r))
+                                                  known_year=self._missing_ep_known_year(r),
+                                                  all_show_names=all_show_names)
             if ftp_present is None:
                 _log.info("Cruce FTP: '%s' no se encontró en ninguna carpeta del FTP con confianza suficiente",
                           r["name"])
@@ -17644,7 +17847,8 @@ class App(_AppBase):
 
             matched_folders, _best, _ratio = self._match_ftp_folders(
                 shallow_index, result["name"], result.get("folder_name"),
-                known_year=self._missing_ep_known_year(result))
+                known_year=self._missing_ep_known_year(result),
+                all_show_names=self._known_series_names_from_cache())
             if not matched_folders:
                 _log.info("Cruce FTP (individual): '%s' no se encontró en ninguna categoría del FTP",
                           result["name"])
@@ -17693,8 +17897,22 @@ class App(_AppBase):
         return result
 
     @staticmethod
+    def _known_series_names_from_cache() -> set:
+        """Nombres de todas las series que conoce la caché de "Episodios que
+        faltan" (no solo las que tienen hueco ahora) -- universo para
+        sibling_blocks_folder en los cruces individuales, donde no hay lista
+        completa de series a mano como en el escaneo completo."""
+        try:
+            from core.missing_episodes_cache import load_cache
+            cache = load_cache() or {}
+        except Exception:
+            return set()
+        return {e.get("name") for e in cache.values()
+                if isinstance(e, dict) and e.get("name")}
+
+    @staticmethod
     def _match_ftp_folders(ftp_index: dict, show_name: str, known_folder_name: str = None,
-                           known_year: str = None):
+                           known_year: str = None, all_show_names=None):
         """Devuelve (lista de (root, nombre_de_carpeta), mejor_candidato,
         mejor_ratio) de TODAS las carpetas del índice FTP que corresponden
         a *show_name* con la confianza de _match_ftp_present (nombre real
@@ -17734,7 +17952,18 @@ class App(_AppBase):
                     continue
                 ratio = series_similarity(show_name, folder_name)
                 if ratio >= _FTP_PRESENT_MIN_RATIO:
-                    matched.append((root, folder_name))
+                    if all_show_names and sibling_blocks_folder(show_name, folder_name, all_show_names):
+                        # La carpeta es EXACTAMENTE la de otra serie conocida
+                        # (caso real: "Dragon Ball Daima" absorbía "Dragon
+                        # Ball", 0.90 en modo laxo por prefijo literal, y
+                        # mostraba sus T2-T9 como temporadas en el servidor
+                        # de una serie de una sola temporada) -- el parecido
+                        # no basta para reclamar carpeta ajena con dueño.
+                        _log.info("Cruce FTP: '%s' no reclama la carpeta '%s' "
+                                  "(es la carpeta exacta de otra serie conocida)",
+                                  show_name, folder_name)
+                    else:
+                        matched.append((root, folder_name))
                 elif ratio > best_ratio:
                     best_candidate, best_ratio = folder_name, ratio
 
@@ -17746,7 +17975,7 @@ class App(_AppBase):
 
     @staticmethod
     def _match_ftp_present(ftp_index: dict, show_name: str, known_folder_name: str = None,
-                           known_year: str = None):
+                           known_year: str = None, all_show_names=None):
         """Busca *show_name* entre todas las carpetas de todas las
         categorías del índice FTP (misma confianza que
         _find_category_with_existing_folder: nombre real ya conocido si
@@ -17758,9 +17987,16 @@ class App(_AppBase):
         real lleva el año de estreno para distinguir un remake del
         original y show_name no lo trae). Devuelve el set de episodios
         encontrados en esa carpeta, o None si no hay ninguna coincidencia
-        de esa confianza."""
+        de esa confianza.
+
+        *all_show_names* (nombres de TODAS las series conocidas, no solo
+        la que se cruza) activa el guardián de series hermanas: una carpeta
+        reclamada solo por parecido no se une si es exactamente la de otra
+        serie conocida (ver sibling_blocks_folder). Sin él, None por
+        defecto, el comportamiento es el de antes."""
         matched, best_candidate, best_ratio = App._match_ftp_folders(
-            ftp_index, show_name, known_folder_name, known_year)
+            ftp_index, show_name, known_folder_name, known_year,
+            all_show_names=all_show_names)
 
         if not matched:
             if best_candidate:
@@ -17970,8 +18206,9 @@ class App(_AppBase):
         _set_entry(self._ftp_retries_entry, self.config_data.get("ftp_retries", 3))
         _set_entry(self._reservation_quota_entry, self.config_data.get("reservation_quota_gb", 100))
 
-        # Boxes de proveedores (tab Servidor → Proveedores): pueden no
-        # existir si el panel aún no se construyó (ver _build_ui diferida).
+        # Boxes de proveedores, idioma (campo único) y otros filtros (tab
+        # Servidor → Preferencias descargas): pueden no existir si el panel
+        # aún no se construyó (ver _build_ui diferida).
         for _box, _kind in ((getattr(self, "_trusted_groups_box", None), "trusted"),
                             (getattr(self, "_blocked_groups_box", None), "blocked")):
             if _box is not None:
@@ -17980,6 +18217,27 @@ class App(_AppBase):
                     _box.insert("1.0", self._providers_box_text(_kind))
                 except Exception:
                     pass
+        _lang_box = getattr(self, "_lang_box", None)
+        if _lang_box is not None:
+            try:
+                _lang_box.delete("1.0", "end")
+                _lang_box.insert("1.0", self._lang_box_text())
+            except Exception:
+                pass
+        for _kind, _label, _ckey in self._OTHER_BOX_DEFS:
+            _box = (getattr(self, "_other_filter_boxes", None) or {}).get(_kind)
+            if _box is not None:
+                try:
+                    _box.delete("1.0", "end")
+                    _box.insert("1.0", self._list_box_text(_ckey))
+                except Exception:
+                    pass
+        for _wkey, _entry in (getattr(self, "_weight_entries", None) or {}).items():
+            try:
+                _entry.delete(0, "end")
+                _entry.insert(0, self._weight_entry_text(_wkey))
+            except Exception:
+                pass
 
         _set_entry(self._api_key_entry, self.config_data.get("tmdb_api_key", ""))
         self._lang_combo.set(self.config_data.get("language", "es-ES"))
@@ -21370,6 +21628,9 @@ class App(_AppBase):
             "p2p_trusted_groups": self._provider_list_from_box(self._trusted_groups_box),
             "p2p_blocked_groups": self._provider_list_from_box(self._blocked_groups_box),
 
+            **self._collect_download_filter_lists(),
+            "p2p_score_weights": self._collect_score_weights(),
+
             "unstuck_enabled":              self._unstuck_switch.get() in (True, "1", 1),
             "unstuck_max_retries":          unstuck_max,
             "unstuck_backoff_base_minutes": unstuck_base,
@@ -21387,6 +21648,59 @@ class App(_AppBase):
             return parse_provider_lines(box.get("1.0", "end-1c"))
         except Exception:
             return []
+
+    def _collect_download_filter_lists(self) -> dict:
+        """Listas de Idioma (campo único por secciones) y Otros filtros
+        desde sus boxes (los que existan; el panel puede no estar
+        construido aún)."""
+        out = {}
+        try:
+            from core.download_quality import LANG_CONFIG_KEYS, parse_lang_box
+            _box = getattr(self, "_lang_box", None)
+            if _box is not None:
+                try:
+                    _parsed = parse_lang_box(_box.get("1.0", "end-1c"))
+                except Exception:
+                    _parsed = {}
+                for _kind, _ckey in (LANG_CONFIG_KEYS or {}).items():
+                    out[_ckey] = list((_parsed or {}).get(_kind, []))
+            for _kind, _label, _ckey in self._OTHER_BOX_DEFS:
+                _box = (getattr(self, "_other_filter_boxes", None) or {}).get(_kind)
+                if _box is not None:
+                    out[_ckey] = self._provider_list_from_box(_box)
+        except Exception:
+            pass
+        return out
+
+    def _collect_score_weights(self) -> dict:
+        """Pesos cambiados respecto a fábrica (lo no numérico o igual a
+        fábrica no se guarda)."""
+        out = {}
+        try:
+            from core.download_quality import SCORE_WEIGHT_DEFAULTS
+        except Exception:
+            return out
+        try:
+            for _key, _factory in (SCORE_WEIGHT_DEFAULTS or {}).items():
+                _entry = (getattr(self, "_weight_entries", None) or {}).get(_key)
+                if _entry is None:
+                    continue
+                try:
+                    _raw = _entry.get().strip().replace(",", ".")
+                    _val = float(_raw)
+                    import math
+                    if not math.isfinite(_val):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    if float(_val) != float(_factory):
+                        out[_key] = _val
+                except (TypeError, ValueError):
+                    pass
+        except Exception:
+            pass
+        return out
 
     def _settings_dirty(self) -> bool:
         """True si algún campo de Ajustes difiere de lo último guardado."""
@@ -21440,17 +21754,29 @@ class App(_AppBase):
         return new_name
 
     def _apply_provider_lists(self, data) -> None:
-        """Pasa las listas de proveedores (Ajustes → Servidor →
-        Proveedores) al scoring de descargas. *data* es config_data o el
-        dict recién recogido de Ajustes (ambos responden a .get)."""
+        """Pasa las listas de descargas (Ajustes → Servidor → Preferencias
+        descargas: Proveedores, Idioma, Otros filtros y Puntuación) al
+        scoring. *data* es config_data o el dict recién recogido de
+        Ajustes (ambos responden a .get)."""
         try:
-            from core.download_quality import set_provider_lists
+            from core.download_quality import (
+                set_provider_lists, set_filter_lists, set_score_weights,
+                LANG_CONFIG_KEYS)
             if hasattr(data, "get"):
                 trusted = data.get("p2p_trusted_groups", [])
                 blocked = data.get("p2p_blocked_groups", [])
+                langs = {kind: data.get(ckey, []) for kind, ckey in LANG_CONFIG_KEYS.items()}
+                adult = data.get("p2p_blocked_adult", [])
+                sample = data.get("p2p_blocked_sample", [])
+                scr = data.get("p2p_blocked_scr", [])
+                exts = data.get("p2p_blocked_exts", [])
+                weights = data.get("p2p_score_weights", {})
             else:
                 trusted, blocked = [], []
+                langs, adult, sample, scr, exts, weights = {}, [], [], [], [], {}
             set_provider_lists(trusted, blocked)
+            set_filter_lists(langs, adult, sample, scr, exts)
+            set_score_weights(weights)
         except Exception:
             pass
 

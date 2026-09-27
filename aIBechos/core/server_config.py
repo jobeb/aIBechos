@@ -71,10 +71,11 @@ Categorías incluidas y por qué:
   cualquiera que reserve espacio contra este servidor (ver
   core/reservations.py), no una cuota distinta según quién la configuró
   en su propio equipo.
-- p2p_trusted_groups / p2p_blocked_groups: qué grupos proveedores son de
-  confianza y qué marcas de idioma no se descargan (ver
+- p2p_trusted_groups / p2p_blocked_groups: qué proveedores son de
+  confianza y qué marcas no se descargan (ver
   core/download_quality.set_provider_lists, Ajustes → Servidor →
-  Proveedores) -- si cada cliente llevara las suyas, el mismo capítulo
+  Preferencias descargas, apartado Proveedores; los filtros de Idioma van
+  en su propio apartado, no mezclados) -- si cada cliente llevara las suyas, el mismo capítulo
   se descargaría en idiomas distintos según quién pulsó el botón.
   OJO: amule_host/amule_port/amule_password NO van aquí (cada equipo
   tiene su propio aMule); solo las listas, que son criterio de grupo.
@@ -142,6 +143,16 @@ SHARED_CONFIG_KEYS = (
     # Listas de proveedores de P2P (ver core/download_quality) -- mismo
     # motivo que las plantillas: decisión de grupo, no de cada equipo.
     "p2p_trusted_groups", "p2p_blocked_groups",
+    # Listas de idioma y otros filtros de descargas (ver
+    # core/download_quality.set_filter_lists, Ajustes → Servidor →
+    # Preferencias descargas, apartados Idioma / Otros filtros) y pesos de
+    # la puntuación (ver set_score_weights, sección Puntuación): mismo
+    # motivo -- si cada cliente llevara los suyos, el mismo capítulo se
+    # descargaría con criterios distintos según quién pulsó el botón.
+    "p2p_lang_vos", "p2p_lang_fr", "p2p_lang_it",
+    "p2p_lang_de", "p2p_lang_pt", "p2p_lang_ca",
+    "p2p_blocked_adult", "p2p_blocked_sample", "p2p_blocked_scr",
+    "p2p_blocked_exts", "p2p_score_weights",
 )
 
 

@@ -1,3 +1,5 @@
+import pytest
+
 from core.download_quality import (score_download, best_result, is_adult_content,
                                    is_italian_only, is_vos_content, is_french_content,
                                    is_german_only, is_portuguese_only,
@@ -404,18 +406,15 @@ def test_cat_token_alone_is_not_catalan():
     assert score_download(_r(1, "Serie S01E01 catwoman.mkv")) >= 0
 
 
-def test_catalan_with_spanish_not_penalized():
-    """Con pista en español también ("castellano + català" en dual), no se
-    penaliza: lo que importa es que trae español. Solo el catalán sin
-    español resta."""
-    cat_dual = score_download(_r(1, "Los Simpsons 2x04 castellano+català 1080p",
-                                  sources=30, complete=True), "Los Simpsons 2x04")
-    es_only = score_download(_r(2, "Los Simpsons 2x04 castellano 720p",
-                                 sources=3, complete=False), "Los Simpsons 2x04")
-    assert cat_dual > es_only
-    # Y el catalán sin español sigue perdiendo contra el mismo release
-    cat_only = score_download(_r(1, "Los Simpsons 2x04 català 1080p",
-                                  sources=30, complete=True), "Los Simpsons 2x04")
+def test_catalan_with_spanish_penalized_once():
+    """Simplificación de Puntuación (peso único No español): catalán con
+    español resta una sola vez (-60), igual que cualquier otro idioma con
+    español. El catalán sin español sigue perdiendo contra el mismo
+    release en español."""
+    cat_dual = score_download(_r(1, "Serie 1x01 catalan castellano 1080p.mkv"), "Serie 1x01")
+    es_only = score_download(_r(2, "Serie 1x01 castellano 1080p.mkv"), "Serie 1x01")
+    assert es_only - cat_dual == 60.0
+    cat_only = score_download(_r(1, "Serie 1x01 catalan 1080p.mkv"), "Serie 1x01")
     assert es_only > cat_only
 
 
@@ -833,3 +832,256 @@ def test_vos_explicito_con_dual_sigue_elegible():
     name = "Serie 1x01 VOSE Dual Spa-Eng 720p.mkv"
     assert not is_vos_content(name)
     assert best_result([_r(1, name)], "Serie 1x01") is not None
+
+
+# ---- Listas editables de idioma y otros filtros (híbrido motor+listas) ----
+
+def _reset_download_filters():
+    from core.download_quality import (
+        set_filter_lists, set_score_weights, set_provider_lists,
+        LANG_KINDS, _BUILTIN_TRUSTED)
+    set_filter_lists(langs={k: [] for k in LANG_KINDS},
+                     adult=[], sample=[], scr=[], exts=[])
+    set_score_weights(None)
+    set_provider_lists(trusted=list(_BUILTIN_TRUSTED), blocked=[])
+
+
+def test_user_lang_marker_excludes_like_builtin():
+    """Un marcador de la lista editable de idioma excluye como el motor,
+    salvo con español además (misma regla)."""
+    from core.download_quality import set_filter_lists, is_french_content
+    set_filter_lists(langs={"fr": ["chti"]}, adult=None, sample=None,
+                     scr=None, exts=None)
+    try:
+        name = "Serie 1x01 chti 720p.mkv"
+        assert is_french_content(name)
+        assert score_download(_r(1, name), "Serie 1x01") == 0.0
+        assert best_result([_r(1, name)], "Serie 1x01") is None
+        dual = "Serie 1x01 chti castellano 720p.mkv"
+        assert not is_french_content(dual)
+        assert best_result([_r(1, dual)], "Serie 1x01") is not None
+    finally:
+        _reset_download_filters()
+    assert not is_french_content("Serie 1x01 chti 720p.mkv")
+
+
+def test_user_vos_marker_needs_no_dual():
+    """Un marcador VOS de la lista editable excluye; con dual se permite."""
+    from core.download_quality import set_filter_lists, is_vos_content
+    set_filter_lists(langs={"vos": ["ovni-subs"]}, adult=None, sample=None,
+                     scr=None, exts=None)
+    try:
+        assert is_vos_content("Serie 1x01 OVNI-SUBS 720p.mkv")
+        assert not is_vos_content("Serie 1x01 OVNI-SUBS Dual 720p.mkv")
+    finally:
+        _reset_download_filters()
+
+
+def test_user_catalan_marker_penalizes_once():
+    """Un marcador catalán de la lista editable resta una sola vez (-60,
+    peso No español), con o sin español además."""
+    from core.download_quality import set_filter_lists
+    set_filter_lists(langs={"ca": ["barretina"]}, adult=None, sample=None,
+                     scr=None, exts=None)
+    try:
+        solo = score_download(_r(1, "Serie 1x01 barretina 720p.mkv"), "Serie 1x01")
+        limpio = score_download(_r(1, "Serie 1x01 720p.mkv"), "Serie 1x01")
+        assert solo < limpio
+        dual = score_download(_r(1, "Serie 1x01 barretina castellano 720p.mkv"), "Serie 1x01")
+        solo_es = score_download(_r(1, "Serie 1x01 castellano 720p.mkv"), "Serie 1x01")
+        assert solo_es - dual == 60.0
+    finally:
+        _reset_download_filters()
+
+
+def test_user_adult_marker_excludes():
+    """Un marcador adulto de la lista editable excluye como el motor."""
+    from core.download_quality import set_filter_lists, is_adult_content
+    set_filter_lists(langs=None, adult=["miadulto"], sample=None, scr=None,
+                     exts=None)
+    try:
+        name = "Serie 1x01 MiAdulto 1080p.mkv"
+        assert is_adult_content(name)
+        assert score_download(_r(1, name), "Serie 1x01") == 0.0
+        assert best_result([_r(1, name)], "Serie 1x01") is None
+    finally:
+        _reset_download_filters()
+    assert not is_adult_content("Serie 1x01 MiAdulto 1080p.mkv")
+
+
+def test_user_sample_scr_markers_penalize():
+    """Muestras y cams de las listas editables restan como el motor."""
+    from core.download_quality import set_filter_lists
+    base = score_download(_r(1, "Serie 1x01 720p.mkv"), "Serie 1x01")
+    set_filter_lists(langs=None, adult=None, sample=["avance"],
+                     scr=["cinecutre"], exts=None)
+    try:
+        assert score_download(_r(1, "Serie 1x01 avance 720p.mkv"), "Serie 1x01") < base
+        assert score_download(_r(1, "Serie 1x01 cinecutre 720p.mkv"), "Serie 1x01") < base
+    finally:
+        _reset_download_filters()
+
+
+def test_user_ext_marker_penalizes():
+    """Una extensión de la lista editable penaliza como las del motor."""
+    from core.download_quality import set_filter_lists
+    set_filter_lists(langs=None, adult=None, sample=None, scr=None,
+                     exts=["wmv"])
+    try:
+        wmv = score_download(_r(1, "Serie 1x01.wmv"), "Serie 1x01")
+        mkv = score_download(_r(1, "Serie 1x01.mkv"), "Serie 1x01")
+        assert wmv < mkv
+    finally:
+        _reset_download_filters()
+
+
+def test_kagome_is_plain_blocked_not_italian():
+    """Kagome ya no es italiano fijo del motor: sin ITA ni título en
+    italiano no excluye por idioma; excluye por la lista de bloqueados."""
+    from core.download_quality import (
+        set_provider_lists, is_italian_only, is_user_blocked,
+        _BUILTIN_TRUSTED)
+    assert not is_italian_only("Serie 1x01 720p Kagome.mkv")
+    set_provider_lists(trusted=None, blocked=["kagome"])
+    try:
+        assert is_user_blocked("Serie 1x01 720p Kagome.mkv")
+        assert score_download(_r(1, "Serie 1x01 720p Kagome.mkv"), "Serie 1x01") == 0.0
+    finally:
+        set_provider_lists(trusted=list(_BUILTIN_TRUSTED), blocked=[])
+
+
+def test_weights_override_flips_ranking():
+    """Cambiar un peso invierte el ranking (español manda por defecto;
+    restándole, gana la resolución)."""
+    from core.download_quality import set_score_weights
+    a = _r(1, "Serie 1x01 720p castellano.mkv", sources=5, complete=True)
+    b = _r(2, "Serie 1x01 1080p.mkv", sources=5, complete=True)
+    assert best_result([a, b], "Serie 1x01").number == 1
+    set_score_weights({"spanish": -50.0})
+    try:
+        assert best_result([a, b], "Serie 1x01").number == 2
+    finally:
+        set_score_weights(None)
+    assert best_result([a, b], "Serie 1x01").number == 1
+
+
+def test_weights_garbage_ignored():
+    """Claves desconocidas y valores no numéricos no rompen ni cambian nada."""
+    from core.download_quality import set_score_weights
+    before = score_download(_r(1, "Serie 1x01 720p castellano.mkv"), "Serie 1x01")
+    set_score_weights({"spanish": "mucho", "noexiste": 5, "res_1080": float("nan"),
+                       "trusted": True, "non_spanish": float("inf")})
+    try:
+        after = score_download(_r(1, "Serie 1x01 720p castellano.mkv"), "Serie 1x01")
+        assert after == before
+    finally:
+        set_score_weights(None)
+
+
+def test_min_best_score_threshold_is_configurable():
+    """Con el umbral por las nubes nada se destaca; al restaurarlo, sí."""
+    from core.download_quality import set_score_weights
+    bueno = _r(1, "Serie 1x01 1080p castellano.mkv", sources=10, complete=True)
+    assert best_result([bueno], "Serie 1x01") is not None
+    set_score_weights({"min_best_score": 10000.0})
+    try:
+        assert best_result([bueno], "Serie 1x01") is None
+    finally:
+        set_score_weights(None)
+    assert best_result([bueno], "Serie 1x01") is not None
+
+
+# ---- Puntuación simplificada (pesos únicos) ----
+
+def test_non_spanish_penalizes_only_once():
+    """Varios idiomas con español restan una sola vez (-60), no una por
+    idioma: el peso No español es único."""
+    dual = score_download(_r(1, "Serie 1x01 ITA GER castellano 1080p.mkv"), "Serie 1x01")
+    solo_es = score_download(_r(2, "Serie 1x01 castellano 1080p.mkv"), "Serie 1x01")
+    assert solo_es - dual == 60.0
+
+
+def test_trusted_provider_always_full_bonus():
+    """Sin bonus reducido por tamaño atípico: la confianza siempre da +25
+    (el tamaño ya penaliza por su cuenta)."""
+    a = _r(1, "Serie 1x01 grupots 720p.mkv", size="500 MB", sources=5, complete=True)
+    b = _r(2, "Serie 1x01 otrogrupo 720p.mkv", size="500 MB", sources=5, complete=True)
+    tiny = 100 * 1024 * 1024
+    sa = score_download(a, "Serie 1x01", typical_size=tiny)
+    sb = score_download(b, "Serie 1x01", typical_size=tiny)
+    assert sa - sb == 25.0
+
+
+def test_size_has_single_bad_band():
+    """Tamaño simplificado: proporcionado suma, desviado resta EN PROPORCIÓN
+    al desvío (|size/típico − 1| × peso Desviado); en rango suma, fuera
+    resta (una banda)."""
+    from core.download_quality import set_score_weights  # noqa: F401
+    tipico = 500 * 1024 * 1024
+    ok = score_download(_r(1, "Serie 1x01 720p.mkv", size="500 MB"), "Serie 1x01",
+                        typical_size=tipico)
+    poco = score_download(_r(1, "Serie 1x01 720p.mkv", size="800 MB"), "Serie 1x01",
+                          typical_size=tipico)
+    mucho = score_download(_r(1, "Serie 1x01 720p.mkv", size="50 MB"), "Serie 1x01",
+                           typical_size=tipico)
+    # 800 MB (ratio 1.6, desvío 60% → -18) resta menos que 50 MB
+    # (ratio 0.1, desvío 90% → -27): proporcional, no banda fija.
+    assert ok > poco > mucho
+    assert ok - poco == pytest.approx(20.0)  # +2 frente a -30×0.6
+    assert ok - mucho == pytest.approx(29.0)  # +2 frente a -30×0.9
+    gordo = score_download(_r(1, "Serie 1x01 1080p.mkv", size="5 GB"), "Serie 1x01")
+    flaco = score_download(_r(1, "Serie 1x01 1080p.mkv", size="5 MB"), "Serie 1x01")
+    normal = score_download(_r(1, "Serie 1x01 1080p.mkv", size="1500 MB"), "Serie 1x01")
+    assert gordo == flaco < normal
+
+
+# ---- Campo único de Idioma (secciones [kind]) ----
+
+def test_lang_box_roundtrip():
+    """format → parse devuelve las mismas listas por idioma."""
+    from core.download_quality import parse_lang_box, format_lang_box
+    langs = {"vos": ["vos", "mi-marca"], "fr": ["vostfr"], "it": [],
+             "de": ["ger"], "pt": [], "ca": ["vosc"]}
+    parsed = parse_lang_box(format_lang_box(langs))
+    assert parsed == langs
+
+
+def test_lang_box_headers_case_and_labels():
+    """Cabeceras insensibles a mayúsculas y con etiqueta detrás valen."""
+    from core.download_quality import parse_lang_box
+    parsed = parse_lang_box("[FR] Francés\nvostfr\n[It] Italiano\nita\n")
+    assert parsed["fr"] == ["vostfr"]
+    assert parsed["it"] == ["ita"]
+    assert parsed["de"] == []
+
+
+def test_lang_box_ignores_comments_unknown_and_prelude():
+    """Comentarios, secciones desconocidas y líneas previas se ignoran;
+    duplicados (sin importar mayúsculas) fuera."""
+    from core.download_quality import parse_lang_box
+    parsed = parse_lang_box(
+        "suelto sin sección\n"
+        "# comentario\n"
+        "[xx] Desconocido\n"
+        "basura\n"
+        "[fr]\n"
+        "vostfr\n"
+        "VOSTFR\n"
+        "vostfr \n")
+    assert parsed["fr"] == ["vostfr"]
+    for kind in ("vos", "it", "de", "pt", "ca"):
+        assert parsed[kind] == []
+
+
+def test_lang_box_marks_flow_into_engine():
+    """Lo parseado del campo único alimenta al motor como las listas."""
+    from core.download_quality import (
+        parse_lang_box, set_filter_lists, is_french_content, LANG_KINDS)
+    langs = parse_lang_box("[fr] Francés\nchti\n")
+    set_filter_lists(langs=langs, adult=None, sample=None, scr=None,
+                     exts=None)
+    try:
+        assert is_french_content("Serie 1x01 chti 720p.mkv")
+    finally:
+        set_filter_lists(langs={k: [] for k in LANG_KINDS}, adult=[],
+                         sample=[], scr=[], exts=[])

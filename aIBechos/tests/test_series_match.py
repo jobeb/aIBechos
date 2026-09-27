@@ -4,6 +4,7 @@ from core.series_match import (
     best_match,
     best_match_with_year,
     match_names_exclusively,
+    sibling_blocks_folder,
 )
 
 
@@ -143,8 +144,7 @@ def test_similarity_only_one_side_has_year_does_not_trigger_year_check():
     assert series_similarity("Coco", "Coco (2017)") >= 0.90
 
 
-def test_similarity_strict_mode_blocks_unrelated_titles_sharing_a_prefix_word():
-    # "Animal" y "Animal Crackers" son peliculas DISTINTAS, no la misma
+def test_similarity_strict_mode_blocks_unrelated_titles_sharing_a_prefix_word():    # "Animal" y "Animal Crackers" son peliculas DISTINTAS, no la misma
     # con o sin subtitulo -- en modo estricto (usado para liberar
     # espacio, donde un falso positivo puede llevar a mostrar datos de
     # visionado equivocados) no debe dispararse el impulso de subcadena.
@@ -153,6 +153,47 @@ def test_similarity_strict_mode_blocks_unrelated_titles_sharing_a_prefix_word():
     # detectar duplicados de subida con otro nombre de release) SÍ sigue
     # dandose el impulso -- ese comportamiento existente no debe romperse.
     assert series_similarity("Animal", "Animal Crackers") >= 0.90
+
+
+def test_similarity_franchise_sibling_series_stays_below_silent_folder_reuse():
+    # Bug real: "Dragon Ball Daima" se fusionaba en silencio con la carpeta
+    # "Dragon Ball" (prefijo literal -> 0.90 en modo laxo) y su 1x01 se
+    # denunciaba como duplicado del 1x01 ajeno, sin haber ni carpeta propia
+    # en el servidor. En modo estricto + anotación (el que autoriza
+    # reutilizar carpeta sin preguntar) debe quedar por debajo del 0.90.
+    assert series_similarity("Dragon Ball Daima", "Dragon Ball",
+                             strict=True, allow_annotation=True) < 0.90
+
+
+# ── sibling_blocks_folder (carpeta exacta de otra serie conocida) ─────────
+
+_DAIMA_SIBLINGS = {"Dragon Ball", "Dragon Ball Daima", "Dragon Ball Super"}
+
+
+def test_sibling_blocks_folder_with_exact_owner():
+    # Caso real: la fila de Daima absorbía la carpeta "Dragon Ball" por
+    # parecido (0.90) y mostraba sus T2-T9 como presentes.
+    assert sibling_blocks_folder("Dragon Ball Daima", "Dragon Ball", _DAIMA_SIBLINGS) is True
+
+
+def test_sibling_does_not_block_own_exact_folder():
+    assert sibling_blocks_folder("Dragon Ball", "Dragon Ball", _DAIMA_SIBLINGS) is False
+    assert sibling_blocks_folder("Dragon Ball Daima", "Dragon Ball Daima", _DAIMA_SIBLINGS) is False
+
+
+def test_sibling_does_not_block_unrelated_folder():
+    assert sibling_blocks_folder("Dragon Ball Daima", "Otra Serie", _DAIMA_SIBLINGS) is False
+    assert sibling_blocks_folder("Dragon Ball Daima", "Dragon Ball", {"Dragon Ball Daima"}) is False
+
+
+def test_sibling_without_known_names_blocks_nothing():
+    assert sibling_blocks_folder("Dragon Ball Daima", "Dragon Ball", None) is False
+    assert sibling_blocks_folder("Dragon Ball Daima", "Dragon Ball", set()) is False
+
+
+def test_sibling_compares_normalized():
+    # Mayúsculas/acentos no deben colar la carpeta ajena como "distinta".
+    assert sibling_blocks_folder("Dragon Ball Daima", "dragon ball", {"DRAGON BALL"}) is True
 
 
 def test_similarity_strict_mode_still_allows_same_year_release_name_variants():

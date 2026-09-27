@@ -100,6 +100,12 @@ def test_shared_config_keys_pins_the_exact_set():
         # core/server_config.py. amule_host/port/password siguen siendo de
         # cliente a propósito (cada equipo tiene su propio aMule).
         "p2p_trusted_groups", "p2p_blocked_groups",
+        # Listas de idioma y otros filtros + pesos de puntuación: mismo
+        # motivo (mismo criterio de descarga lo pulse quien lo pulse).
+        "p2p_lang_vos", "p2p_lang_fr", "p2p_lang_it",
+        "p2p_lang_de", "p2p_lang_pt", "p2p_lang_ca",
+        "p2p_blocked_adult", "p2p_blocked_sample", "p2p_blocked_scr",
+        "p2p_blocked_exts", "p2p_score_weights",
     }
 
 

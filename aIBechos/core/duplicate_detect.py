@@ -33,11 +33,29 @@ def find_duplicate(existing_filenames: list, media_info, current_filename: str) 
         target_episode = media_info.episode
         if target_season is None or target_episode is None:
             return None
+        target_title = media_info.title or ""
         for name in others:
             if not is_video_file(name):
                 continue
             det = detect_episode(name)
             if det.get("season") == target_season and det.get("episode") == target_episode:
+                # El episodio coincide, pero hay que comprobar que también
+                # es la MISMA serie: esta función asume que la carpeta
+                # remota ya es la correcta, y si la resolución de carpeta
+                # fusionó dos series hermanas ("Dragon Ball Daima" -> carpeta
+                # "Dragon Ball", por ser prefijo literal) cualquier 1x01 de
+                # la serie equivocada se denunciaba como duplicado aunque la
+                # serie real no tuviera ni carpeta en el servidor. En modo
+                # estricto + anotación ese par da ~0.79, por debajo del 0.90
+                # que sí alcanzan la misma serie con otro nombre de release
+                # (títulos idénticos tras limpiar -> 1.0) o con el título
+                # original entre paréntesis. Sin título conocido se mantiene
+                # el comportamiento de antes (solo S/E).
+                if target_title:
+                    existing_title = det.get("title", "")
+                    if series_similarity(target_title, existing_title,
+                                         strict=True, allow_annotation=True) < 0.90:
+                        continue
                 _log.info("Duplicado TV: %s T%sE%s coincide con existente '%s'",
                           media_info.title, target_season, target_episode, name)
                 return name

@@ -1240,7 +1240,18 @@ class AutoWatcher:
             if sanitized_desired in existing:
                 chosen = sanitized_desired
             else:
-                candidate, ratio = best_match(desired, existing, min_ratio=0.90)
+                # En modo estricto + anotación, igual que la GUI (ver
+                # gui/app.py::_resolve_series_folder): el modo laxo da 0.90
+                # a cualquier prefijo literal y fusionó "Dragon Ball Daima"
+                # con la carpeta "Dragon Ball" (serie distinta), para luego
+                # omitir su 1x01 como "duplicado" del 1x01 ajeno. Sin nadie
+                # para contestar un diálogo, ante la duda se crea carpeta
+                # nueva (dirección segura: subir de más, nunca bloquear de
+                # menos); la reutilización legítima ("Desencanto" ->
+                # "Desencanto (Disenchantment)", año suelto...) sigue casando
+                # en estricto. Ver core/series_match.py.
+                candidate, ratio = best_match(desired, existing, min_ratio=0.90,
+                                              strict=True, allow_annotation=True)
                 if candidate:
                     chosen = candidate
                     _log.info("Carpeta de serie reutilizada (%.0f%% parecido): '%s' -> '%s'",

@@ -381,3 +381,34 @@ def test_sin_credenciales_antiguas_no_pasa_nada(tmp_path, monkeypatch):
     cfg = Config()
     assert cfg.get("ftp_password") == ""
     assert fake_kr.get_password(APP_NAME, "ftp_password") is None
+
+
+def test_kagome_se_añade_a_bloqueados_una_sola_vez(tmp_path, monkeypatch):
+    """Kagome era veto fijo italiano del motor y ahora es entrada normal de
+    bloqueados: las listas ya guardadas la reciben una vez, y si el usuario
+    la quita después no vuelve sola."""
+    cfg_file, _ = _isolated_config(tmp_path, monkeypatch)
+    cfg_file.write_text(json.dumps({"p2p_blocked_groups": ["otro"]}), encoding="utf-8")
+    cfg = Config()
+    assert cfg.get("p2p_blocked_groups") == ["otro", "kagome"]
+
+    cfg2 = Config()  # simula reabrir: no duplica
+    assert cfg2.get("p2p_blocked_groups") == ["otro", "kagome"]
+
+    cfg2.set("p2p_blocked_groups", ["otro"])  # el usuario la quita...
+    cfg2.save()
+    assert Config().get("p2p_blocked_groups") == ["otro"]  # ...y no vuelve
+
+
+def test_nuevas_listas_de_descargas_traen_valores_iniciales(tmp_path, monkeypatch):
+    """Las listas de idioma/otros filtros y los pesos existen desde el
+    primer arranque (fábrica), sin migraciones aparte."""
+    _isolated_config(tmp_path, monkeypatch)
+    cfg = Config()
+    assert "vostfr" in cfg.get("p2p_lang_fr")
+    assert "ita" in cfg.get("p2p_lang_it")
+    assert "xxx" in cfg.get("p2p_blocked_adult")
+    assert "sample" in cfg.get("p2p_blocked_sample")
+    assert "srt" in cfg.get("p2p_blocked_exts")
+    assert cfg.get("p2p_score_weights") == {}
+    assert "kagome" in cfg.get("p2p_blocked_groups")
