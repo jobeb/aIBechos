@@ -75,6 +75,7 @@ class StatsView:
         self._build_category_leaderboards_panel(body)
         self._build_streaks_panel(body)
         self._build_deleters_panel(body)
+        self._build_slimmers_panel(body)
         self._build_contribution_panel(body)
         self._build_timeline_panel(body)
         self._build_recent_panel(body)
@@ -134,6 +135,13 @@ class StatsView:
         self._deleters_rows_fr = ctk.CTkFrame(self._deleters_frame, fg_color="transparent", height=1)
         self._deleters_rows_fr.pack(fill="x", padx=14, pady=(0, 12))
 
+    def _build_slimmers_panel(self, parent):
+        self._slimmers_frame = self._panel_frame(parent, "🪶 Top adelgazadores")
+        # height=1: ver el comentario en _build_size_panel sobre por qué
+        # (CTkFrame pide 200px por defecto si se queda sin hijos).
+        self._slimmers_rows_fr = ctk.CTkFrame(self._slimmers_frame, fg_color="transparent", height=1)
+        self._slimmers_rows_fr.pack(fill="x", padx=14, pady=(0, 12))
+
     def _build_contribution_panel(self, parent):
         self._contribution_frame = self._panel_frame(parent, "⭐ Tu contribución")
         self._contribution_lbl = ctk.CTkLabel(self._contribution_frame, text="", anchor="w", justify="left")
@@ -175,6 +183,7 @@ class StatsView:
         self._refresh_category_leaderboards()
         self._refresh_streaks()
         self._refresh_deleters()
+        self._refresh_slimmers()
         self._refresh_contribution()
         self._refresh_timeline()
         self._refresh_recent()
@@ -254,12 +263,13 @@ class StatsView:
     def _render_leaderboard_rows(self, rows_fr, top, accent_color, value_key="total_bytes",
                                   format_value=None, name_suffix=None):
         """Filas puesto+nombre+barra+valor, compartidas por "Top 10
-        subidores", "Top borradores", "Racha de subidas" y los paneles de
-        "Top subidores" por categoría -- lo que cambia entre ellos es
-        dónde se pintan, de qué color sale el primer puesto, qué campo del
-        entry se usa como valor (bytes subidos, días de racha...) y cómo
-        se formatea. `top` ya viene ordenado/limitado (ver
-        core.upload_stats.top_uploaders / core.deletion_stats.top_deleters
+        subidores", "Top borradores", "Top adelgazadores", "Racha de
+        subidas" y los paneles de "Top subidores" por categoría -- lo que
+        cambia entre ellos es dónde se pintan, de qué color sale el primer
+        puesto, qué campo del entry se usa como valor (bytes subidos,
+        días de racha...) y cómo se formatea. `top` ya viene
+        ordenado/limitado (ver core.upload_stats.top_uploaders /
+        core.deletion_stats.top_deleters / core.slim_stats.top_slimmers
         / core.streaks.top_streaks). `name_suffix(entry)`, si se da,
         añade texto extra tras el nombre (usado para la insignia de hito,
         ver core/milestones.py)."""
@@ -360,6 +370,19 @@ class StatsView:
                          text_color=PENDING_COLOR).pack(pady=8)
             return
         self._render_leaderboard_rows(self._deleters_rows_fr, top, WARNING_COLOR)
+
+    def _refresh_slimmers(self):
+        from gui.app import SUCCESS_COLOR, PENDING_COLOR
+        from core.slim_stats import top_slimmers
+
+        for w in self._slimmers_rows_fr.winfo_children():
+            w.destroy()
+        top = top_slimmers(self.app._shared_slim_stats, limit=10)
+        if not top:
+            ctk.CTkLabel(self._slimmers_rows_fr, text="Nadie ha adelgazado nada todavía.",
+                         text_color=PENDING_COLOR).pack(pady=8)
+            return
+        self._render_leaderboard_rows(self._slimmers_rows_fr, top, SUCCESS_COLOR)
 
     def _refresh_contribution(self):
         from gui.app import PENDING_COLOR, _fmt_size

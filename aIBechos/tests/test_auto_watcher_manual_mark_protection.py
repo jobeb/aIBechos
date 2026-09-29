@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import core.auto_watcher as autowatcher_mod
 from core.auto_watcher import AutoWatcher, _PROTECTED_STATUSES
 from core.api_client import MediaInfo
+from core.path_key import canon_path
 
 
 @pytest.fixture()
@@ -64,8 +65,8 @@ def test_low_confidence_marks_baja_confianza_when_nothing_protected(tmp_path, db
     watcher._process(original)
 
     db = json.loads(db_path.read_text(encoding="utf-8"))
-    assert db[str(original)]["status"] == "baja_confianza"
-    assert str(original) not in watcher._in_progress
+    assert db[canon_path(str(original))]["status"] == "baja_confianza"
+    assert canon_path(str(original)) not in watcher._in_progress
 
 
 def test_low_confidence_does_not_overwrite_manual_identification(tmp_path, db_path):
@@ -75,7 +76,9 @@ def test_low_confidence_does_not_overwrite_manual_identification(tmp_path, db_pa
     pisar la marca manual en disco."""
     original = tmp_path / "Serie Completamente Distinta 1x01.mkv"
     original.write_bytes(b"contenido")
-    key = str(original)
+    # Las claves en disco van canónicas (ver core/path_key.py): así las
+    # escribe la GUI (App._db_key) y así las lee el watcher.
+    key = canon_path(str(original))
 
     db_path.write_text(json.dumps({
         key: {"status": "identificado_manual", "new_name": "Trollhunters (2016).mkv", "ts": 0}
@@ -108,7 +111,7 @@ def test_already_protected_file_aborts_before_any_tmdb_call_or_event(tmp_path, d
     quedara quieta de verdad."""
     original = tmp_path / "Serie Completamente Distinta 1x01.mkv"
     original.write_bytes(b"contenido")
-    key = str(original)
+    key = canon_path(str(original))
 
     db_path.write_text(json.dumps({
         key: {"status": "identificado_manual", "new_name": "Trollhunters (2016).mkv", "ts": 0}
@@ -138,7 +141,7 @@ def test_marking_one_file_does_not_erase_a_different_files_manual_mark(tmp_path,
     como "nuevos" archivos que ya se habían subido a mano."""
     original = tmp_path / "Serie Completamente Distinta 1x01.mkv"
     original.write_bytes(b"contenido")
-    key = str(original)
+    key = canon_path(str(original))
 
     watcher = _make_watcher(tmp_path)
     # self._processed en memoria NO tiene todavía la marca del otro
@@ -146,7 +149,7 @@ def test_marking_one_file_does_not_erase_a_different_files_manual_mark(tmp_path,
     # no mientras _process() está en marcha.
     assert watcher._processed == {}
 
-    other_key = str(tmp_path / "Otra Serie Ya Subida A Mano.mkv")
+    other_key = canon_path(str(tmp_path / "Otra Serie Ya Subida A Mano.mkv"))
     db_path.write_text(json.dumps({
         other_key: {"status": "subido", "new_name": "Otra Serie.mkv", "ts": 0}
     }), encoding="utf-8")

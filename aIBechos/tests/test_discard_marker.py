@@ -16,6 +16,7 @@ import pytest
 
 from core import auto_watcher
 from core.auto_watcher import _PROTECTED_STATUSES, mark_discarded
+from core.path_key import canon_path
 
 
 @pytest.fixture
@@ -41,11 +42,32 @@ def _watcher_sees(p, key):
     return w._should_process(key, "loquesea.mkv")
 
 
+def test_load_db_migra_claves_a_canonicas_y_fusiona_colisiones(db):
+    """La base de sesiones anteriores guarda la caja que trajera cada
+    ruta: al leer se unifica a clave canónica (ver core/path_key.py) para
+    que esas marcas sigan casando. En colisión gana la más reciente."""
+    import time as _t
+    db.write_text(json.dumps({
+        r"C:\vigilada\Serie 1x01.mkv": {"status": "subido", "new_name": "", "ts": 100.0},
+        r"c:\vigilada\serie 1x01.mkv": {"status": "duplicado", "new_name": "", "ts": 200.0},
+        r"C:\vigilada\otra.mkv": {"status": "subido", "new_name": "", "ts": 50.0},
+    }), encoding="utf-8")
+
+    w = auto_watcher.AutoWatcher.__new__(auto_watcher.AutoWatcher)
+    data = w._load_db()
+
+    assert data[canon_path(r"C:\vigilada\Serie 1x01.mkv")]["status"] == "duplicado"
+    assert data[canon_path(r"C:\vigilada\otra.mkv")]["status"] == "subido"
+    assert len(data) == 2
+
+
 def test_escribe_la_marca_en_un_archivo_sin_entrada_previa(db):
+    # Las claves en disco van canónicas (ver core/path_key.py): da igual
+    # la caja con la que llegue la ruta.
     key = r"C:\vigilada\peli.mkv"
 
     assert mark_discarded(key) is True
-    assert _read(db)[key]["status"] == "descartado"
+    assert _read(db)[canon_path(key)]["status"] == "descartado"
 
 
 def test_el_watcher_deja_de_procesarlo(db):
@@ -61,7 +83,7 @@ def test_el_watcher_deja_de_procesarlo(db):
 def test_pisa_un_estado_de_fallo_no_protegido(db):
     """El caso real: un archivo que el watcher reintenta porque no lo
     identifica es justo el que el usuario acaba quitando a mano."""
-    key = r"C:\vigilada\parodia inexistente.mkv"
+    key = canon_path(r"C:\vigilada\parodia inexistente.mkv")
     db.write_text(json.dumps({key: {"status": "sin_resultados", "attempts": 2}}),
                   encoding="utf-8")
 
@@ -74,7 +96,7 @@ def test_pisa_un_estado_de_fallo_no_protegido(db):
 def test_no_pisa_un_estado_protegido(db, protegido):
     """Un archivo ya subido/identificado a mano ya hace que el watcher lo
     ignore, y su estado lleva información que no conviene perder."""
-    key = r"C:\vigilada\ya gestionado.mkv"
+    key = canon_path(r"C:\vigilada\ya gestionado.mkv")
     db.write_text(json.dumps({key: {"status": protegido, "new_name": "X.mkv"}}),
                   encoding="utf-8")
 
@@ -102,7 +124,7 @@ def test_sobrevive_a_que_el_watcher_marque_despues_un_fallo(db):
     """Secuencia real: el watcher está procesando el archivo (ya borró su
     entrada para reintentarlo) cuando el usuario pulsa la ✕. El resultado
     tardío de ese hilo NO debe borrar la marca."""
-    key = r"C:\vigilada\en curso.mkv"
+    key = canon_path(r"C:\vigilada\en curso.mkv")
     mark_discarded(key)
 
     w = auto_watcher.AutoWatcher.__new__(auto_watcher.AutoWatcher)
@@ -119,7 +141,7 @@ def test_sobrevive_a_que_el_watcher_marque_despues_un_fallo(db):
 def test_una_subida_correcta_si_puede_pisar_el_descarte(db):
     """Al revés que el anterior: si el archivo acaba subiéndose de verdad,
     ese sí es un estado que debe prevalecer."""
-    key = r"C:\vigilada\acaba subiendose.mkv"
+    key = canon_path(r"C:\vigilada\acaba subiendose.mkv")
     mark_discarded(key)
 
     w = auto_watcher.AutoWatcher.__new__(auto_watcher.AutoWatcher)
@@ -136,4 +158,4 @@ def test_un_json_corrupto_no_impide_marcar(db):
     db.write_text("{esto no es json", encoding="utf-8")
 
     assert mark_discarded(r"C:\vigilada\x.mkv") is True
-    assert _read(db)[r"C:\vigilada\x.mkv"]["status"] == "descartado"
+    assert _read(db)[canon_path(r"C:\vigilada\x.mkv")]["status"] == "descartado"

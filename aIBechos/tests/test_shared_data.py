@@ -10,10 +10,12 @@ from core.appdirs import APP_NAME, LEGACY_APP_NAME
 from core import shared_data
 
 
-def test_estan_los_trece_archivos_compartidos():
+def test_estan_los_catorce_archivos_compartidos():
     """Si alguno se pierde por el camino, esos datos dejan de compartirse."""
-    assert len(shared_data.SHARED_DATA_FILES) == 13
+    assert len(shared_data.SHARED_DATA_FILES) == 14
     assert shared_data.filename("auto_series") == f"{APP_NAME}_auto_series.json"
+    assert shared_data.filename("estadisticas_adelgazadores") == \
+        f"{APP_NAME}_estadisticas_adelgazadores.json"
 
 
 def test_el_nombre_lleva_delante_el_de_la_aplicacion():

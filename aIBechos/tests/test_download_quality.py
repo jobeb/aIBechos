@@ -655,19 +655,35 @@ def test_trusted_list_is_authoritative():
     assert is_trusted_provider("Serie 1x01 Hispashare.org 720p.mkv")
 
 
-def test_user_blocked_group_excluded_unless_spanish():
+def test_user_blocked_group_excluded_even_with_spanish():
     """Una marca extra bloqueada (Ajustes → Servidor → Proveedores)
-    excluye como el francés, salvo con español además."""
+    excluye SIEMPRE, también con español además: la marca dice quién
+    lo hizo, no en qué idioma está (y el "español" a veces son solo
+    subtítulos). Real: "Dragon.Ball.Daima.1x05.Jap.SUB.Esp-Spa...
+    by.Skuallo" se descargaba con skuallo bloqueado porque el "Spa"
+    de subtítulos contaba como español y cancelaba el veto."""
     from core.download_quality import set_provider_lists, is_user_blocked
-    set_provider_lists(trusted=None, blocked=["mallocgroup"])
+    set_provider_lists(trusted=None, blocked=["mallocgroup", "skuallo"])
     try:
         name = "Serie 1x01 mallocgroup 720p.mkv"
         assert is_user_blocked(name)
         assert score_download(_r(1, name), "Serie 1x01") == 0.0
         assert best_result([_r(1, name)], "Serie 1x01") is None
         dual = "Serie 1x01 mallocgroup castellano 720p.mkv"
-        assert not is_user_blocked(dual)
-        assert best_result([_r(1, dual)], "Serie 1x01") is not None
+        assert is_user_blocked(dual)
+        assert score_download(_r(1, dual), "Serie 1x01") == 0.0
+        assert best_result([_r(1, dual)], "Serie 1x01") is None
+        subs = ("Dragon.Ball.Daima.1x05.Jap.SUB.Esp-Spa.1080p.AAC.20."
+                "H265.by.Skuallo.mkv")
+        assert is_user_blocked(subs)
+        assert best_result(
+            [_r(1, subs, size="800 MB", sources=10, complete=True)],
+            "Dragon Ball Daima 1x05") is None
+        from core.download_quality import explain_score, user_blocked_match
+        assert user_blocked_match(subs) == "Skuallo"
+        assert "Skuallo" in explain_score(
+            _r(1, subs, size="800 MB", sources=10, complete=True),
+            "Dragon Ball Daima 1x05")
     finally:
         set_provider_lists(trusted=None, blocked=[])
 

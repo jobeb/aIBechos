@@ -8,6 +8,7 @@ import pytest
 
 from core import auto_watcher
 from core.auto_watcher import _MAX_RETRY_ATTEMPTS, _PROTECTED_STATUSES
+from core.path_key import canon_path
 
 
 @pytest.fixture
@@ -37,7 +38,8 @@ def test_unidentifiable_file_stops_being_retried(watcher, monkeypatch):
     monkeypatch.setattr(watcher, "_save_entry", lambda k, e: None)
     monkeypatch.setattr(watcher, "_delete_entry", lambda k: None)
     monkeypatch.setattr(watcher, "_load_db", lambda: {})
-    key = "/vigilada/Parody Porn Wars 1 (Version Porno Star Wars).LoPaH.mp4"
+    # Las claves van canónicas (ver core/path_key.py).
+    key = canon_path("/vigilada/Parody Porn Wars 1 (Version Porno Star Wars).LoPaH.mp4")
 
     procesados = sum(_cycle(watcher, key) for _ in range(20))
 
@@ -53,7 +55,7 @@ def test_attempt_count_survives_the_entry_being_deleted(watcher, monkeypatch):
     monkeypatch.setattr(watcher, "_save_entry", lambda k, e: None)
     monkeypatch.setattr(watcher, "_delete_entry", lambda k: None)
     monkeypatch.setattr(watcher, "_load_db", lambda: {})
-    key = "/vigilada/otra.mp4"
+    key = canon_path("/vigilada/otra.mp4")
 
     _cycle(watcher, key)
     assert "attempts" not in watcher._processed[key]   # primer intento, aún sin reintentos
@@ -67,7 +69,7 @@ def test_success_does_not_carry_an_attempt_count(watcher, monkeypatch):
     monkeypatch.setattr(watcher, "_save_entry", lambda k, e: None)
     monkeypatch.setattr(watcher, "_delete_entry", lambda k: None)
     monkeypatch.setattr(watcher, "_load_db", lambda: {})
-    key = "/vigilada/buena.mp4"
+    key = canon_path("/vigilada/buena.mp4")
 
     _cycle(watcher, key)                       # falla una vez
     _cycle(watcher, key, status="subido")      # y a la siguiente se sube bien
@@ -79,7 +81,7 @@ def test_discarded_status_is_protected_so_the_watcher_leaves_it_alone(watcher):
     # Lo que escribe la GUI al quitar una fila a mano (ver
     # gui/app.py::_discard_from_auto_watcher).
     assert "descartado" in _PROTECTED_STATUSES
-    key = "/vigilada/no lo quiero.mp4"
+    key = canon_path("/vigilada/no lo quiero.mp4")
     watcher._processed[key] = {"status": "descartado"}
     assert watcher._should_process(key, "no lo quiero.mp4") is False
 
@@ -87,11 +89,11 @@ def test_discarded_status_is_protected_so_the_watcher_leaves_it_alone(watcher):
 def test_discard_marker_is_written_to_the_db(tmp_path, monkeypatch):
     """El marcador que escribe la GUI debe ser legible por el watcher."""
     db = tmp_path / "auto_processed.json"
-    db.write_text(json.dumps({"/x/ya subido.mp4": {"status": "subido"}}), encoding="utf-8")
+    db.write_text(json.dumps({canon_path("/x/ya subido.mp4"): {"status": "subido"}}), encoding="utf-8")
     monkeypatch.setattr(auto_watcher, "_processed_db_path", lambda: db)
 
     data = json.loads(db.read_text(encoding="utf-8"))
-    data["/x/descartado.mp4"] = {"status": "descartado", "new_name": "", "ts": 0}
+    data[canon_path("/x/descartado.mp4")] = {"status": "descartado", "new_name": "", "ts": 0}
     db.write_text(json.dumps(data), encoding="utf-8")
 
     w = auto_watcher.AutoWatcher.__new__(auto_watcher.AutoWatcher)
@@ -99,6 +101,6 @@ def test_discard_marker_is_written_to_the_db(tmp_path, monkeypatch):
     w._in_progress = set()
     w._pending_attempts = {}
     w._logged_skips = set()
-    assert w._should_process("/x/descartado.mp4", "descartado.mp4") is False
+    assert w._should_process(canon_path("/x/descartado.mp4"), "descartado.mp4") is False
     # y no debe haber pisado el estado del que ya estaba subido
-    assert w._processed["/x/ya subido.mp4"]["status"] == "subido"
+    assert w._processed[canon_path("/x/ya subido.mp4")]["status"] == "subido"

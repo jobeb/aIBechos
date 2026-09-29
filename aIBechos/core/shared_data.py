@@ -31,6 +31,7 @@ SHARED_DATA_FILES = {
     "estadisticas_usuarios":            "estadisticas_usuarios.json",
     "estadisticas_categorias":          "estadisticas_categorias.json",
     "estadisticas_borrados":            "estadisticas_borrados.json",
+    "estadisticas_adelgazadores":      "estadisticas_adelgazadores.json",
     "estadisticas_subidores_categoria": "estadisticas_subidores_categoria.json",
     "liberar_espacio":                  "liberar_espacio.json",
     "episodios_que_faltan":             "episodios_que_faltan.json",

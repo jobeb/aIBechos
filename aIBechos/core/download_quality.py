@@ -393,15 +393,36 @@ def is_user_trusted(name: str) -> bool:
     return is_trusted_provider(name)
 
 
+def user_blocked_match(name: str):
+    """Marca de la lista propia de bloqueados que aparece en *name*
+    (con guardas), o None. Para la etiqueta del explain."""
+    try:
+        n = name or ""
+        for rx in _USER_BLOCKED_RES:
+            m = rx.search(n)
+            if m:
+                return m.group(0)
+    except Exception:
+        pass
+    return None
+
+
 def is_user_blocked(name: str) -> bool:
     """True si el nombre contiene alguna marca extra bloqueada por el
-    usuario (ver set_provider_lists), SIN rastro de español: se excluye
-    igual que el francés (ver is_french_content). Con español además,
-    se permite (el audio es lo que importa)."""
+    usuario (ver set_provider_lists): se excluye SIEMPRE, aunque sea lo
+    único disponible y aunque traiga español además.
+
+    Sin excepción por español, a diferencia de los filtros de idioma
+    (ver is_french_content): la lista es de proveedores/marcas ("no
+    descargar"), no de idiomas -- la marca dice quién lo hizo, no en
+    qué idioma está. Además el "español" de _LANG_RE lo mismo es audio
+    que subtítulos (real: "Jap.SUB.Esp-Spa ... by.Skuallo" trae "Spa"
+    de subtítulos, y con la excepción el veto al grupo no se aplicaba
+    y ese release se descargaba igual)."""
     try:
-        if not name or _LANG_RE.search(name):
+        if not name:
             return False
-        return any(rx.search(name) for rx in _USER_BLOCKED_RES)
+        return user_blocked_match(name) is not None
     except Exception:
         return False
 
@@ -1334,8 +1355,9 @@ def explain_score(result: AmuleSearchResult, query: str = "", expected_year: int
         lines.append("V.O.S./VOSTFR explícito (sin dual) → excluido")
     if is_adult_content(name):
         lines.append("Contenido adulto → excluido")
-    if is_user_blocked(name):
-        lines.append("Marca bloqueada (lista propia en Ajustes) → excluido")
+    _block_hit = user_blocked_match(name)
+    if _block_hit:
+        lines.append(f"Marca bloqueada «{_block_hit}» (lista propia en Ajustes) → excluido")
     # Resolución
     for rx, wkey in _RES_WEIGHTS:
         if rx.search(name):

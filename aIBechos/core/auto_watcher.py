@@ -35,6 +35,7 @@ from core.ftp_categories import choose_category
 from core.upload_slots import UploadSlotManager
 from core.appdirs import app_data_dir
 from core.applog import get_logger
+from core.path_key import canon_path
 
 
 def _app_dir() -> Path:
@@ -88,9 +89,10 @@ def mark_discarded(path: str) -> bool:
                     db = json.loads(p.read_text(encoding="utf-8"))
                 except Exception:
                     db = {}
-            if db.get(path, {}).get("status", "") in _PROTECTED_STATUSES:
+            key = canon_path(path)
+            if db.get(key, {}).get("status", "") in _PROTECTED_STATUSES:
                 return False
-            db[path] = {"status": "descartado", "new_name": "", "ts": time.time()}
+            db[key] = {"status": "descartado", "new_name": "", "ts": time.time()}
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
             _log.info("Descartado a mano desde la lista: %s", Path(path).name)
@@ -114,8 +116,12 @@ DEFAULT_POLL = 10   # segundos entre escaneos (por defecto)
 # propósito: no es un fallo de identificación que pueda arreglarse en el
 # siguiente ciclo, es una decisión firme. Reintentarlo solo serviría para
 # volver a intentar clasificar porno solo, que es justo lo que no se quiere.
+# "en_cola_manual" lo escribe la GUI al encolar una tanda manual (ver
+# App._reserve_manual_entries): el archivo ya tiene dueño hasta que la
+# tanda lo sube o lo suelta (ver _unmark_auto_processed y
+# _cleanup_stale_uploading_marks, que lo limpian).
 _PROTECTED_STATUSES = ("subido", "renombrado", "identificado_manual", "subiendo", "duplicado",
-                       "descomprimido", "descartado", "adulto_omitido")
+                       "descomprimido", "descartado", "adulto_omitido", "en_cola_manual")
 
 # Veces que se reintenta un archivo que falló por causas NO protegidas
 # (sin_resultados, confianza insuficiente...) antes de dejarlo en paz.
@@ -139,6 +145,26 @@ _LOCKED_FILE_HINTS = (
 )
 
 
+def _upload_tick_due(last_pct, last_ts, pct, now,
+                      pct_step: float = 0.01, min_interval_s: float = 2.0) -> bool:
+    """¿Merece este tick de progreso un evento a la GUI? El callback de
+    subida dispara por bloque (miles de ticks por archivo): reenviarlos
+    todos saturaba el hilo principal con actualizaciones obsoletas -- la
+    fila se quedaba congelada en "Renombrado" y la barra no avanzaba -- y
+    encima frenaba la transferencia (cada reintento de entrega bloquea el
+    worker). Se emite el primero, los que avancen >=1% y como mucho uno
+    cada 2 s; el estado final lo da el evento "uploaded" (crítico, no se
+    pierde). Pura, testeable. last_pct None = primer tick (siempre)."""
+    try:
+        if last_pct is None:
+            return True
+        if float(pct) - float(last_pct) >= pct_step:
+            return True
+        return (float(now) - float(last_ts)) >= min_interval_s
+    except Exception:
+        return True
+
+
 class AutoWatcher:
     def __init__(self, folder: str, config, tmdb_client, ftp_client, on_event, on_file_event=None,
                  upload_slots=None, ftp_lock=None, ftp_factory=None,
@@ -154,7 +180,10 @@ class AutoWatcher:
           ver _save_history_entry, necesario para que el historial/las
           estadísticas compartidas no cuenten esta subida como 0 B),
           remote_full (ruta completa en el servidor, solo en "uploaded"),
-          heavy_remote_file (ruta del gordo borrado, solo en "slim_replaced")
+          heavy_remote_file (ruta del gordo borrado, solo en "slim_replaced"),
+          added_by (quién lanzó el adelgazamiento, del pendiente --
+          solo en "slim_replaced", para el ranking de adelgazadores),
+          saved_bytes (gordo − ligera en bytes, solo en "slim_replaced")
         upload_slots: UploadSlotManager compartido con la subida manual de la
           GUI, para que "Subidas simultáneas" limite el total real entre
           ambos orígenes. Si no se pasa (uso standalone/tests), se crea uno
@@ -284,7 +313,13 @@ class AutoWatcher:
     def _should_process(self, key: str, name: str) -> bool:
         """Comprueba _in_progress/_processed y decide si *key* debe
         procesarse ahora -- mismo criterio para vídeo/libro/cómic
-        (_process) y para archivos comprimidos (_process_archive)."""
+        (_process) y para archivos comprimidos (_process_archive).
+        La clave se unifica a canónica (ver core/path_key.py,
+        idempotente) porque no todos los llamadores la traen ya así."""
+        try:
+            key = canon_path(key)
+        except Exception:
+            pass
         if key in self._in_progress:
             self._log_skip_once(key, "en proceso", name)
             return False
@@ -365,7 +400,10 @@ class AutoWatcher:
                    len(media_items), len(archive_items), len(self._in_progress), len(self._processed))
 
         for item in media_items:
-            key = str(item)
+            # Clave canónica (ver core/path_key.py): os.walk puede traer
+            # otra caja que la marca que dejó la GUI para el MISMO archivo
+            # y sin esto no casan (duplicados, carreras).
+            key = canon_path(str(item))
             if not self._should_process(key, item.name):
                 continue
             _log.info("NUEVO ARCHIVO DETECTADO: %s", item.name)
@@ -388,7 +426,7 @@ class AutoWatcher:
             ).start()
 
         for item in archive_items:
-            key = str(item)
+            key = canon_path(str(item))
             if not self._should_process(key, item.name):
                 continue
             # No reserva turno de "Subidas simultáneas" -- un archivo
@@ -444,12 +482,12 @@ class AutoWatcher:
         vigilada (ver "auto_extract_archives" en Ajustes) -- a diferencia
         de _process, no reserva turno de "Subidas simultáneas": un archivo
         comprimido no se sube él mismo, solo se descomprime. El contenido
-        extraído queda como una carpeta hermana normal (ver
-        core/archive_extract.py); el SIGUIENTE ciclo de escaneo recursivo
-        lo descubre solo -- incluidos archivos comprimidos anidados dentro,
-        que se resuelven en ciclos sucesivos sin ninguna lógica especial de
-        recursión-de-extracción."""
-        key = str(path)
+          extraído queda como una carpeta hermana normal (ver
+          core/archive_extract.py); el SIGUIENTE ciclo de escaneo recursivo
+          lo descubre solo -- incluidos archivos comprimidos anidados dentro,
+          que se resuelven en ciclos sucesivos sin ninguna lógica especial de
+          recursión-de-extracción."""
+        key = canon_path(str(path))
         _log.info("--- Descomprimiendo: %s ---", path.name)
         try:
             if not self._is_stable(path):
@@ -519,7 +557,10 @@ class AutoWatcher:
     # ── Procesado de un archivo ────────────────────────────────────────────────
 
     def _process(self, path: Path, ticket: int = None):
-        key = str(path)
+        # Clave canónica (ver core/path_key.py): el Path que llega del
+        # escaneo puede traer otra caja que la marca que dejó la GUI para
+        # el MISMO archivo -- la identidad va por canon, el disco por path.
+        key = canon_path(str(path))
         _log.info("--- Procesando: %s ---", path.name)
         # El ticket ya viene reservado desde _scan() (de un solo hilo, sin
         # ninguna carrera). El finally de más abajo libera el ticket en
@@ -572,13 +613,13 @@ class AutoWatcher:
                 _log.warning("Contenido adulto detectado (%s), fuera del automático: %s",
                              motivo, path.name)
                 self.on_event("skip", f"Contenido adulto ({motivo}), no se clasifica solo: {path.name}")
-                self.on_file_event(key, "skip",
+                self.on_file_event(str(path), "skip",
                                     reason=f"Contenido para adultos detectado ({motivo}). "
                                            f"Clasifícalo a mano para que no acabe en una carpeta equivocada.")
                 self._mark(key, "adulto_omitido")
                 return
 
-            self.on_file_event(key, "start")
+            self.on_file_event(str(path), "start")
             self.on_event("info", f"Identificando: {path.name}")
 
             is_book  = is_book_file(str(path))
@@ -594,7 +635,7 @@ class AutoWatcher:
             if not detected.get("title"):
                 _log.warning("Sin patrón reconocible: %s", path.name)
                 self.on_event("skip", f"No identificado (sin patrón): {path.name}")
-                self.on_file_event(key, "skip",
+                self.on_file_event(str(path), "skip",
                                     reason="No se reconoció ningún patrón de serie/película en el nombre del archivo")
                 self._mark(key, "no_identificado")
                 return
@@ -612,13 +653,13 @@ class AutoWatcher:
                 if is_comic and self.comicvine is None:
                     _log.warning("Sin cliente de ComicVine configurado: %s", path.name)
                     self.on_event("skip", f"Sin cliente de ComicVine configurado: {path.name}")
-                    self.on_file_event(key, "skip", reason="AutoWatcher no tiene configurado ComicVine")
+                    self.on_file_event(str(path), "skip", reason="AutoWatcher no tiene configurado ComicVine")
                     self._mark(key, "sin_resultados")
                     return
                 if not is_comic and self.openlibrary_client is None and self.book_client is None:
                     _log.warning("Sin cliente de OpenLibrary/Google Books configurado: %s", path.name)
                     self.on_event("skip", f"Sin cliente de OpenLibrary/Google Books configurado: {path.name}")
-                    self.on_file_event(key, "skip",
+                    self.on_file_event(str(path), "skip",
                                         reason="AutoWatcher no tiene configurado OpenLibrary/Google Books")
                     self._mark(key, "sin_resultados")
                     return
@@ -631,7 +672,7 @@ class AutoWatcher:
                 if result.error:
                     _log.warning("%s: %s (%r)", result.error, path.name, result.used_query)
                     self.on_event("skip", f"{result.error}: {path.name}")
-                    self.on_file_event(key, "skip", reason=result.error)
+                    self.on_file_event(str(path), "skip", reason=result.error)
                     self._mark(key, "sin_resultados")
                     return
                 confidence = result.confidence
@@ -640,7 +681,7 @@ class AutoWatcher:
                 if min_conf > 0 and confidence < min_conf:
                     _log.warning("Confianza insuficiente (%d%% < %d%%): %s", confidence, min_conf, path.name)
                     self.on_event("skip", f"Confianza insuficiente ({confidence}% < {min_conf}%): {path.name}")
-                    self.on_file_event(key, "skip",
+                    self.on_file_event(str(path), "skip",
                                         reason=f"Confianza insuficiente ({confidence}% < {min_conf}%)")
                     self._mark(key, "baja_confianza")
                     return
@@ -701,7 +742,7 @@ class AutoWatcher:
                 if not results:
                     _log.warning("Sin resultados TMDB para: %s", path.name)
                     self.on_event("skip", f"Sin resultados TMDB: {path.name}")
-                    self.on_file_event(key, "skip",
+                    self.on_file_event(str(path), "skip",
                                         reason=f"Sin resultados en TMDB para '{detected['title']}'")
                     self._mark(key, "sin_resultados")
                     return
@@ -718,7 +759,7 @@ class AutoWatcher:
                                  confidence, min_conf, path.name, result_title)
                     self.on_event("skip",
                         f"Confianza insuficiente ({confidence}% < {min_conf}%): {path.name} → '{result_title}'")
-                    self.on_file_event(key, "skip",
+                    self.on_file_event(str(path), "skip",
                                         reason=f"Confianza insuficiente ({confidence}% < {min_conf}%) con '{result_title}'")
                     self._mark(key, "baja_confianza")
                     return
@@ -744,7 +785,7 @@ class AutoWatcher:
             if not new_name:
                 _log.error("No se pudo construir nombre para: %s", path.name)
                 self.on_event("skip", f"No se pudo construir el nombre: {path.name}")
-                self.on_file_event(key, "error",
+                self.on_file_event(str(path), "error",
                                     reason="No se pudo construir el nombre con la plantilla configurada")
                 self._mark(key, "error_nombre")
                 return
@@ -778,7 +819,7 @@ class AutoWatcher:
                     # se detectó mal el episodio) — sin esto la entrada se
                     # quedaba sin info de TMDB y no se podía hacer nada con
                     # ella desde la GUI salvo buscarla de cero otra vez.
-                    self.on_file_event(key, "error", new_name=new_name,
+                    self.on_file_event(str(path), "error", new_name=new_name,
                                         media_info=media_info, confidence=confidence,
                                         reason=f"Error al renombrar: {result_path}")
                     is_collision = result_path.startswith("Ya existe:")
@@ -790,13 +831,15 @@ class AutoWatcher:
             else:
                 _log.info("Renombrado en origen desactivado, se mantiene el nombre en disco: %s", path.name)
                 new_path = str(path)
-            self.on_file_event(key, "renamed", new_name=new_name,
+            self.on_file_event(str(path), "renamed", new_name=new_name,
                                 media_info=media_info, confidence=confidence,
                                 renamed_on_disk=rename_local)
 
             # Registrar el nuevo path en _in_progress INMEDIATAMENTE para que el
             # siguiente scan no lo detecte como un archivo nuevo y lance un segundo hilo.
-            new_key = new_path
+            # Canónico como key (ver core/path_key.py): _in_progress solo se
+            # compara contra claves canónicas.
+            new_key = canon_path(new_path)
             if new_key != key:
                 self._in_progress.add(new_key)
                 _log.debug("Nuevo path protegido en _in_progress: %s", Path(new_key).name)
@@ -813,9 +856,10 @@ class AutoWatcher:
                     self._in_progress.discard(new_key)
 
             # 5. Subir por FTP (serializado: self.ftp es una única conexión
-            # compartida por todos los hilos de _process)
+            # compartida por todos los hilos, ver _upload_to_ftp)
             ticket_handed_off = True
-            self._upload_to_ftp(key, new_name, media_info, season, new_path, _mark_both, _discard_both, ticket)
+            self._upload_to_ftp(key, new_name, media_info, season, new_path, _mark_both, _discard_both, ticket,
+                                original_name=path.name)
 
         except Exception as e:
             _log.exception("Error inesperado procesando: %s", path.name)
@@ -835,7 +879,18 @@ class AutoWatcher:
         except Exception:
             return 0
 
-    def _upload_to_ftp(self, key, new_name, media_info, season, new_path, _mark_both, _discard_both, ticket=None):
+    def _upload_to_ftp(self, key, new_name, media_info, season, new_path, _mark_both, _discard_both, ticket=None,
+                       original_name=None):
+        # original_name: nombre real del archivo al detectarlo (con su
+        # caja), para los casos que lo necesitan tal cual (subir con
+        # nombre original si rename_remote=False, marcas de contenido).
+        # key va en minúsculas en Windows (ver core/path_key.py) y no
+        # vale para mostrar ni para nombrar en remoto.
+        if not original_name:
+            try:
+                original_name = Path(new_path).name
+            except Exception:
+                original_name = ""
         """Construye la ruta remota y sube el archivo ya renombrado.
         Los pasos previos (comprobar/abrir conexión, resolver categoría,
         listar duplicados, espacio libre) van bajo self._ftp_lock: usan
@@ -851,7 +906,7 @@ class AutoWatcher:
         if not host:
             _log.info("FTP no configurado, archivo guardado como: %s", new_name)
             self.on_event("skip", f"FTP no configurado — guardado como: {new_name}")
-            self.on_file_event(key, "skip", new_name=new_name,
+            self.on_file_event(new_path, "skip", new_name=new_name,
                                 reason="FTP no configurado — el archivo se renombró pero no se subió")
             _mark_both("sin_ftp", new_name=new_name)
             self.upload_slots.release_ticket_unused(ticket)
@@ -870,7 +925,7 @@ class AutoWatcher:
                 if not ok2:
                     _log.error("FTP conexion fallida: %s", msg2)
                     self.on_event("error", f"FTP no disponible: {msg2}")
-                    self.on_file_event(key, "error", new_name=new_name, reason=f"FTP no disponible: {msg2}")
+                    self.on_file_event(new_path, "error", new_name=new_name, reason=f"FTP no disponible: {msg2}")
                     _mark_both("error_ftp", new_name=new_name)
                     self.upload_slots.release_ticket_unused(ticket)
                     return
@@ -888,17 +943,17 @@ class AutoWatcher:
             # que ya tenía, porque antes esta función se saltaba
             # directamente a choose_category (solo género) sin comprobar
             # si la serie ya existía en OTRA categoría.
-            # El nombre ORIGINAL (key), no new_path: si el archivo ya se
-            # renombró, el nombre limpio ya no conserva las marcas que
-            # delatan el contenido adulto.
+            # El nombre ORIGINAL (no la clave canónica ni new_path): si el
+            # archivo ya se renombró, el nombre limpio ya no conserva las
+            # marcas que delatan el contenido adulto.
             category, _existing_folder = self._find_category_with_existing_folder(
-                type_cats, media_info.title, original_name=Path(key).name)
+                type_cats, media_info.title, original_name=original_name)
             if category is None:
                 category = choose_category(media_info.genre_ids, type_cats)
             if category is None:
                 _log.error("Sin categoría FTP configurada para: %s (%s)", new_name, media_info.media_type)
                 self.on_event("error", f"Sin categoría FTP configurada: {new_name}")
-                self.on_file_event(key, "error", new_name=new_name,
+                self.on_file_event(new_path, "error", new_name=new_name,
                                     reason="Sin categoría FTP configurada para este tipo de contenido")
                 _mark_both("sin_categoria", new_name=new_name)
                 self.upload_slots.release_ticket_unused(ticket)
@@ -907,7 +962,7 @@ class AutoWatcher:
             if not root:
                 _log.error("Categoría '%s' sin ruta configurada: %s", category.get("name"), new_name)
                 self.on_event("error", f"Categoría '{category.get('name')}' sin ruta configurada: {new_name}")
-                self.on_file_event(key, "error", new_name=new_name,
+                self.on_file_event(new_path, "error", new_name=new_name,
                                     reason=f"Categoría '{category.get('name')}' sin ruta configurada")
                 _mark_both("sin_ruta", new_name=new_name)
                 self.upload_slots.release_ticket_unused(ticket)
@@ -931,17 +986,20 @@ class AutoWatcher:
             # se sube con el nombre ORIGINAL (el que tenía al detectarlo,
             # antes de cualquier renombrado local), aunque la carpeta se siga
             # organizando por serie/temporada según TMDB.
-            remote_filename = new_name if self.config.get("rename_remote", True) else Path(key).name
+            remote_filename = new_name if self.config.get("rename_remote", True) else original_name
 
             # Reemplazo por adelgazamiento (ver core/slim_pending.py): si
             # esta llegada es la versión ligera de un gordo pendiente
-            # (⬇ de Liberar espacio), borrar el gordo del servidor
-            # ANTES de subir, para que los chequeos de "ya existe" /
-            # duplicado de abajo no omitan la ligera. Solo se borra con la
-            # ligera ya completa en local y pesando <= 85% del gordo (lo
-            # garantiza find_match); si el borrado falla, NO se marca nada
-            # y se reintenta en el próximo ciclo, con el gordo intacto.
+            # (⬇ de Liberar espacio), el gordo se borra DESPUÉS de subir
+            # la ligera con éxito verificado, nunca antes. Solo se
+            # empareja con la ligera ya completa en local y pesando <=
+            # 85% del gordo (lo garantiza find_match); si la subida
+            # falla, el gordo sigue intacto y el pendiente se conserva
+            # para reintentar. El chequeo de duplicados de abajo deja
+            # pasar la ligera aunque el gordo aún esté (solo si es ÉL).
             _slimpend = None
+            _heavy_remote_size = -1   # medido antes de subir; -1 = sin medir (ver evento "slim_replaced")
+            _slim_heavy_gone = False  # el gordo ya no estaba al medir (ver rama de reemplazo)
             try:
                 from core.slim_pending import load_pending, find_match, consume as _consume_pending
                 try:
@@ -960,7 +1018,8 @@ class AutoWatcher:
                     _heavy_remote_size = self.ftp.get_remote_size(_heavy) if _heavy else None
                 except Exception:
                     _heavy_remote_size = -1
-                if _heavy_remote_size is None:
+                _slim_heavy_gone = _heavy_remote_size is None
+                if _slim_heavy_gone:
                     # El gordo ya no está (borrado a mano entre medias):
                     # consumir el pendiente y subir con normalidad.
                     _log.info("Reemplazo: el gordo ya no está en el servidor, se sube la ligera: %s", new_name)
@@ -970,36 +1029,20 @@ class AutoWatcher:
                     except Exception:
                         pass
                 else:
-                    _ok_del, _msg_del = (False, "sin ruta del gordo")
-                    try:
-                        if _heavy:
-                            _ok_del, _msg_del = self.ftp.delete_file(_heavy)
-                    except Exception as e:
-                        _ok_del, _msg_del = False, str(e)
-                    try:
-                        _gone = self.ftp.get_remote_size(_heavy) is None if _heavy else False
-                    except Exception:
-                        _gone = False
-                    if _ok_del and _gone:
-                        try:
-                            _consume_pending(_slimpend)
-                        except Exception:
-                            pass
-                        _log.info("Sustituido: borrado gordo %s (%s), subiendo ligera %s",
-                                  _heavy, _heavy_remote_size, new_name)
-                        self.on_event("info", f"Sustituido: borrado el gordo, subiendo ligera: {new_name}")
-                        self.on_file_event(key, "renamed", new_name=new_name,
-                                            reason=f"Reemplazo de versión pesada ({_heavy})")
-                    else:
-                        _log.warning("No se pudo borrar el gordo %s (%s): se reintentará",
-                                     _heavy, _msg_del)
-                        self.on_event("error", f"No se pudo borrar el gordo ({_heavy}): {_msg_del} "
-                                               "-- se reintentará en el próximo ciclo")
-                        self.on_file_event(key, "skip", new_name=new_name,
-                                            reason=f"No se pudo borrar el gordo del servidor: {_msg_del}")
-                        _discard_both()
-                        self.upload_slots.release_ticket_unused(ticket)
-                        return
+                    # El gordo se borra DESPUÉS de subir la ligera con
+                    # éxito verificado, nunca antes: borrar primero
+                    # dejaba al servidor sin ninguna de las dos versiones
+                    # si la subida fallaba a medias (visto con temporadas
+                    # enteras adelgazadas de golpe). El chequeo de
+                    # duplicados de más abajo deja pasar la ligera aunque
+                    # el gordo aún esté (ver _slim_heavy_basename).
+                    _log.info("Reemplazo: %s es la ligera de %s (%s), se sube primero",
+                              new_name, _heavy, _heavy_remote_size)
+                    self.on_event("info", f"Reemplazo: subiendo ligera {new_name} "
+                                          "(el gordo se borra después)")
+                    self.on_file_event(new_path, "renamed", new_name=new_name,
+                                        reason=f"Reemplazo de versión pesada ({_heavy})",
+                                        is_slim=True)
 
             # "Ya existe en el servidor": si en la carpeta remota de destino
             # ya hay un archivo con EXACTAMENTE este mismo nombre y ya está
@@ -1023,7 +1066,7 @@ class AutoWatcher:
             if remote_size is not None and remote_size >= local_size:
                 _log.info("Ya existe en el servidor, se omite: %s (ya existe %s)", new_name, remote_filename)
                 self.on_event("skip", f"Ya existe en el servidor ({remote_filename}): {new_name}")
-                self.on_file_event(key, "skip", new_name=new_name,
+                self.on_file_event(new_path, "skip", new_name=new_name,
                                     reason=f"Ya existe en el servidor: {remote_filename}")
                 _mark_both("duplicado", new_name=new_name)
                 self.upload_slots.release_ticket_unused(ticket)
@@ -1038,10 +1081,22 @@ class AutoWatcher:
             from core.duplicate_detect import find_duplicate
             existing_files = self.ftp.list_files(remote_path)
             dup = find_duplicate(existing_files, media_info, remote_filename)
+            if dup and _slimpend is not None and not _slim_heavy_gone:
+                # El "duplicado" puede ser el propio gordo a reemplazar,
+                # que sigue ahí a propósito hasta que la ligera esté
+                # subida (ver arriba): solo se deja pasar si es ÉL (mismo
+                # nombre que el pendiente), no otro archivo cualquiera.
+                try:
+                    _heavy_base = Path(_slimpend.get("heavy_remote_file", "") or "").name
+                except Exception:
+                    _heavy_base = ""
+                if _heavy_base and dup == _heavy_base:
+                    _log.info("Reemplazo: el duplicado es el gordo pendiente (%s), se continúa", dup)
+                    dup = None
             if dup:
                 _log.info("Duplicado detectado, se omite: %s (ya existe %s)", new_name, dup)
                 self.on_event("skip", f"Duplicado (ya existe {dup}): {new_name}")
-                self.on_file_event(key, "skip", new_name=new_name,
+                self.on_file_event(new_path, "skip", new_name=new_name,
                                     reason=f"Ya existe otro archivo para este mismo contenido: {dup}")
                 _mark_both("duplicado", new_name=new_name)
                 self.upload_slots.release_ticket_unused(ticket)
@@ -1071,7 +1126,7 @@ class AutoWatcher:
                 _log.error("Sin espacio en el disco de destino para %s (libre: %s, necesita: %s)",
                            new_name, free, local_size)
                 self.on_event("error", f"Disco lleno en el servidor: {new_name}")
-                self.on_file_event(key, "error", new_name=new_name,
+                self.on_file_event(new_path, "error", new_name=new_name,
                                     reason=f"Disco lleno en el servidor (libre: {free/(1024**3):.1f} GB)")
                 _mark_both("disco_lleno", new_name=new_name)
                 self.upload_slots.release_ticket_unused(ticket)
@@ -1086,7 +1141,8 @@ class AutoWatcher:
             # pudiera transferir de verdad a la vez -- el evento "uploading"
             # de verdad se dispara más abajo, solo tras conseguir turno.
             _log.info("En cola: %s → %s/%s", new_name, remote_path, remote_filename)
-            self.on_file_event(key, "queued", new_name=new_name)
+            self.on_file_event(new_path, "queued", new_name=new_name,
+                               is_slim=(_slimpend is not None))
 
         # A PROPÓSITO fuera de self._ftp_lock: "Subidas simultáneas" es un
         # cupo GLOBAL compartido con la subida manual (ver
@@ -1099,20 +1155,31 @@ class AutoWatcher:
         # conexión"...) aunque no hubiera ninguna transferencia en marcha --
         # visto de verdad: el indicador de espacio se quedaba sin
         # actualizarse mientras el automático llevaba un rato en marcha.
+        # Estrangulado (ver _upload_tick_due): sin esto cada bloque
+        # disparaba un evento y el hilo principal se pasaba la subida
+        # entera digiriendo progreso obsoleto en vez de pintar.
+        _tick_state = {"pct": None, "ts": 0.0}
+
         def _progress_cb(sent, total, speed):
             pct = sent / total if total > 0 else 0.0
-            self.on_file_event(key, "uploading", new_name=new_name, progress=pct, speed=speed)
+            now = time.time()
+            if not _upload_tick_due(_tick_state["pct"], _tick_state["ts"], pct, now):
+                return
+            _tick_state["pct"], _tick_state["ts"] = pct, now
+            self.on_file_event(new_path, "uploading", new_name=new_name, progress=pct, speed=speed,
+                               is_slim=(_slimpend is not None))
 
         if not self.upload_slots.acquire(cancel_event=self._stop, ticket=ticket):
             _log.info("Subida cancelada esperando turno: %s", new_name)
             self.on_event("info", "Subida cancelada por parada del modo automático")
-            self.on_file_event(key, "skip", new_name=new_name,
+            self.on_file_event(new_path, "skip", new_name=new_name,
                                 reason="Subida cancelada al detener el modo automático")
             _discard_both()
             return
         _log.info("Subiendo: %s → %s/%s", new_name, remote_path, remote_filename)
         self.on_event("info", f"Subiendo: {new_name}")
-        self.on_file_event(key, "uploading", new_name=new_name, progress=0.0, speed=0.0)
+        self.on_file_event(new_path, "uploading", new_name=new_name, progress=0.0, speed=0.0,
+                           is_slim=(_slimpend is not None))
         try:
             # Conexión PROPIA para la transferencia real, NO self.ftp: ese es
             # el canal de control compartido (correcto para las operaciones
@@ -1156,18 +1223,76 @@ class AutoWatcher:
             # (ver gui/app.py, evento "uploaded"), así que de 500 registros
             # 241 no sabían dónde había quedado el archivo -- justo el dato
             # que hace falta para poder ofrecer "borrar también del servidor".
-            self.on_file_event(key, "uploaded", new_name=new_name, size=local_size,
-                                 remote_full=f"{remote_path}/{remote_filename}")
+            self.on_file_event(new_path, "uploaded", new_name=new_name, size=local_size,
+                                 remote_full=f"{remote_path}/{remote_filename}",
+                                 is_slim=(_slimpend is not None))
             _mark_both("subido", new_name=new_name)
+            if _slimpend is not None and not _slim_heavy_gone:
+                # Borrar el gordo AHORA que la ligera está confirmada en
+                # el servidor (nunca antes: ver el match de más arriba).
+                # Comando rápido en la conexión compartida, como el resto
+                # de operaciones de control (ver with self._ftp_lock).
+                _heavy = _slimpend.get("heavy_remote_file", "")
+                _ok_del, _msg_del = (False, "sin ruta del gordo")
+                _gone = False
+                try:
+                    with self._ftp_lock:
+                        try:
+                            if _heavy:
+                                _ok_del, _msg_del = self.ftp.delete_file(_heavy)
+                        except Exception as e:
+                            _ok_del, _msg_del = False, str(e)
+                        try:
+                            _gone = self.ftp.get_remote_size(_heavy) is None if _heavy else False
+                        except Exception:
+                            _gone = False
+                except Exception as e:
+                    _ok_del, _msg_del, _gone = False, str(e), False
+                if _ok_del and _gone:
+                    try:
+                        _consume_pending(_slimpend)
+                    except Exception:
+                        pass
+                    _log.info("Sustituido: ligera subida, borrado gordo %s (%s)",
+                              _heavy, _heavy_remote_size)
+                    self.on_event("info", f"Sustituido: borrado el gordo, ligera en servidor: {new_name}")
+                else:
+                    # La ligera YA está subida (no se pierde nada), pero el
+                    # gordo sigue ahí: se consume el pendiente para no dejar
+                    # un estado a medias que nunca se reintentaría (la
+                    # ligera local se elimina tras el OK igual que siempre)
+                    # y se avisa para borrarlo a mano; Liberar espacio lo
+                    # seguirá listando como gordo.
+                    _log.warning("Ligera subida pero no se pudo borrar el gordo %s (%s): bórralo a mano",
+                                 _heavy, _msg_del)
+                    self.on_event("error", f"Ligera subida, pero no se pudo borrar el gordo ({_heavy}): {_msg_del}")
+                    try:
+                        _consume_pending(_slimpend)
+                    except Exception:
+                        pass
+                    _slimpend = None
             if _slimpend is not None:
-                # Esta subida era un reemplazo por adelgazamiento (el
-                # gordo se borró —o ya no estaba— antes de subir): avisar
-                # a la GUI para que refresque esa serie en Liberar
-                # espacio sin repetir el análisis completo (ver
+                # Esta subida era un reemplazo por adelgazamiento (gordo
+                # borrado tras confirmar la ligera —o ya no estaba—):
+                # avisar a la GUI para que refresque esa serie en Liberar
+                # espacio sin repetir el análisis completo y sume el
+                # ahorro al ranking de adelgazadores (ver
                 # gui/app.py::_on_auto_file_event "slim_replaced").
                 try:
-                    self.on_file_event(key, "slim_replaced", new_name=new_name,
-                                       heavy_remote_file=_slimpend.get("heavy_remote_file", ""))
+                    _heavy_size = _heavy_remote_size
+                    if not isinstance(_heavy_size, int) or _heavy_size < 0:
+                        try:
+                            _heavy_size = int(_slimpend.get("heavy_size") or 0)
+                        except (TypeError, ValueError):
+                            _heavy_size = 0
+                    try:
+                        _light_size = int(local_size or 0)
+                    except (TypeError, ValueError):
+                        _light_size = 0
+                    self.on_file_event(new_path, "slim_replaced", new_name=new_name,
+                                       heavy_remote_file=_slimpend.get("heavy_remote_file", ""),
+                                       added_by=_slimpend.get("added_by", "") or "",
+                                       saved_bytes=max(0, _heavy_size - _light_size))
                 except Exception:
                     pass
             from core.media_server_refresh import trigger_refresh
@@ -1177,13 +1302,13 @@ class AutoWatcher:
         elif msg3 == "cancelado":
             _log.info("Subida cancelada: %s", new_name)
             self.on_event("info", "Subida cancelada por parada del modo automático")
-            self.on_file_event(key, "skip", new_name=new_name,
+            self.on_file_event(new_path, "skip", new_name=new_name,
                                 reason="Subida cancelada al detener el modo automático")
             _discard_both()
         else:
             _log.error("FTP upload fallido: %s | %s", new_name, msg3)
             self.on_event("error", f"Error FTP al subir {new_name}: {msg3}")
-            self.on_file_event(key, "error", new_name=new_name, reason=f"Error FTP al subir: {msg3}")
+            self.on_file_event(new_path, "error", new_name=new_name, reason=f"Error FTP al subir: {msg3}")
             _mark_both("error_ftp", new_name=new_name)
 
     # ── Carpeta de serie en el FTP ─────────────────────────────────────────────
@@ -1263,6 +1388,13 @@ class AutoWatcher:
     # ── Persistencia ───────────────────────────────────────────────────────────
 
     def _mark(self, key: str, status: str, new_name: str = None):
+        # Clave canónica (ver core/path_key.py): la GUI escribe las suyas
+        # ya canónicas (ver App._db_key) y el escaneo también; por si algún
+        # llamador trae otra forma, se unifica aquí (idempotente).
+        try:
+            key = canon_path(key)
+        except Exception:
+            pass
         if status not in _PROTECTED_STATUSES:
             # No pisar en disco un estado protegido que la GUI ya haya
             # fijado a mano MIENTRAS este archivo se procesaba por su
@@ -1301,8 +1433,34 @@ class AutoWatcher:
     def _load_db(self) -> dict:
         try:
             p = _processed_db_path()
-            if p.exists():
-                return json.loads(p.read_text(encoding="utf-8"))
+            if not p.exists():
+                return {}
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                return {}
+            # Migrar claves a canónicas (ver core/path_key.py): la base de
+            # sesiones anteriores guarda la caja que trajera cada ruta y
+            # sin esto esas marcas no casarían nunca más (el watcher
+            # reprocesaría como nuevos archivos ya subidos). En colisión
+            # (mismo archivo dos veces) gana la marca más reciente.
+            merged = {}
+            for k, v in raw.items():
+                try:
+                    ck = canon_path(k)
+                except Exception:
+                    ck = k
+                prev = merged.get(ck)
+                if prev is None:
+                    merged[ck] = v
+                    continue
+                try:
+                    ts_new = float((v or {}).get("ts", 0) or 0)
+                    ts_old = float((prev or {}).get("ts", 0) or 0)
+                except (TypeError, ValueError):
+                    ts_new, ts_old = 0, 0
+                if ts_new >= ts_old:
+                    merged[ck] = v
+            return merged
         except Exception:
             pass
         return {}
@@ -1321,6 +1479,10 @@ class AutoWatcher:
         reiniciar la app, porque el _save_db() de OTRO archivo procesado
         casi a la vez pisaba el "subido" que la GUI acababa de escribir."""
         try:
+            key = canon_path(key)
+        except Exception:
+            pass
+        try:
             with _DB_LOCK:
                 db = self._load_db()
                 db[key] = entry
@@ -1332,6 +1494,10 @@ class AutoWatcher:
     def _delete_entry(self, key: str):
         """Mismo motivo que _save_entry -- fusión con disco en vez de
         volcar self._processed entero."""
+        try:
+            key = canon_path(key)
+        except Exception:
+            pass
         try:
             with _DB_LOCK:
                 db = self._load_db()

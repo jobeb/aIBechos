@@ -11,6 +11,7 @@ import pytest
 import core.auto_watcher as autowatcher_mod
 from core.auto_watcher import AutoWatcher, _PROTECTED_STATUSES
 from core.api_client import MediaInfo
+from core.path_key import canon_path
 
 
 @pytest.fixture(autouse=True)
@@ -110,7 +111,7 @@ def test_process_archive_marks_descomprimido_and_applies_post_action(tmp_path, m
 
     assert not archive.exists()   # "Eliminar original" tras descomprimir
     db = watcher._load_db()
-    assert db[str(archive)]["status"] == "descomprimido"
+    assert db[canon_path(str(archive))]["status"] == "descomprimido"
     assert "descomprimido" in _PROTECTED_STATUSES
 
 
@@ -126,7 +127,7 @@ def test_process_archive_leaves_file_intact_on_extraction_failure(tmp_path, monk
 
     assert archive.exists()   # no se aplica la acción post-proceso si falló
     db = watcher._load_db()
-    assert db[str(archive)]["status"] == "error_descomprimir"
+    assert db[canon_path(str(archive))]["status"] == "error_descomprimir"
 
 
 # ── Identificación de libros/cómics ──────────────────────────────────────
@@ -187,7 +188,7 @@ def test_process_marks_low_confidence_comic_for_review_instead_of_uploading(tmp_
 
     watcher._scan()
     deadline = time.monotonic() + 5
-    key = str(tmp_path / "Serie Rara #01.cbz")
+    key = canon_path(str(tmp_path / "Serie Rara #01.cbz"))
     while key not in watcher._load_db() and time.monotonic() < deadline:
         time.sleep(0.05)
 
@@ -202,7 +203,7 @@ def test_process_skips_book_when_no_clients_configured(tmp_path):
 
     watcher._scan()
     deadline = time.monotonic() + 5
-    key = str(tmp_path / "Un Libro.pdf")
+    key = canon_path(str(tmp_path / "Un Libro.pdf"))
     while key not in watcher._load_db() and time.monotonic() < deadline:
         time.sleep(0.05)
 

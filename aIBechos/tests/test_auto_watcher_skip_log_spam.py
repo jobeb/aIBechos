@@ -17,6 +17,7 @@ import logging
 import pytest
 
 from core import auto_watcher
+from core.path_key import canon_path
 
 
 @pytest.fixture
@@ -38,7 +39,8 @@ def _skip_lines(caplog):
 
 
 def test_un_archivo_ya_subido_solo_se_registra_una_vez(watcher, caplog):
-    key = r"C:\vigilada\serie 1x01.mkv"
+    # Las claves en memoria van canónicas (ver core/path_key.py).
+    key = canon_path(r"C:\vigilada\serie 1x01.mkv")
     watcher._processed[key] = {"status": "subido"}
 
     with caplog.at_level(logging.DEBUG, logger="aIBechos.auto"):
@@ -50,12 +52,12 @@ def test_un_archivo_ya_subido_solo_se_registra_una_vez(watcher, caplog):
 
 def test_cada_archivo_conserva_su_propia_linea(watcher, caplog):
     for n in (1, 2, 3):
-        watcher._processed[rf"C:\vigilada\serie 1x0{n}.mkv"] = {"status": "subido"}
+        watcher._processed[canon_path(rf"C:\vigilada\serie 1x0{n}.mkv")] = {"status": "subido"}
 
     with caplog.at_level(logging.DEBUG, logger="aIBechos.auto"):
         for _ in range(10):
             for n in (1, 2, 3):
-                watcher._should_process(rf"C:\vigilada\serie 1x0{n}.mkv",
+                watcher._should_process(canon_path(rf"C:\vigilada\serie 1x0{n}.mkv"),
                                         f"serie 1x0{n}.mkv")
 
     assert len(_skip_lines(caplog)) == 3
@@ -64,7 +66,7 @@ def test_cada_archivo_conserva_su_propia_linea(watcher, caplog):
 def test_si_cambia_el_motivo_se_vuelve_a_registrar(watcher, caplog):
     """Un motivo distinto sí es información nueva: "en proceso" -> "subido"
     cuenta la historia de un archivo que terminó, y eso debe quedar en el log."""
-    key = r"C:\vigilada\serie 1x01.mkv"
+    key = canon_path(r"C:\vigilada\serie 1x01.mkv")
     watcher._in_progress.add(key)
 
     with caplog.at_level(logging.DEBUG, logger="aIBechos.auto"):

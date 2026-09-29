@@ -132,6 +132,63 @@ def _status_label(status: str) -> str:
     return STATUS_LABELS.get(status, status.capitalize())
 
 
+def _store_cleanup_retree(trees: dict, cache: dict, ftp_path: str, tree: dict, now: float) -> None:
+    """Guarda un árbol recién listado (ver FTPClient.get_folder_tree) en
+    los DOS sitios que lee App._cleanup_ep_files: trees por carpeta (como
+    el análisis completo) y cache plana por ftp_path exacto (como el
+    listado bajo demanda). La segunda es la que salva cuando el servidor
+    devuelve claves relativas (LIST -R con "./x" en vez de la ruta
+    absoluta): esas nunca casan por prefijo con ftp_path y sin la caché
+    la expansión seguiría diciendo "No se pudo listar todavía" aunque el
+    reescaneo hubiera ido bien. Pura salvo los dicts que muta, testeable.
+    No lanza excepción."""
+    try:
+        flat = []
+        for folder, entries in (tree or {}).items():
+            if folder:
+                folder_files = []
+                for name, size in (entries or []):
+                    try:
+                        clean = (name, int(size or 0))
+                    except (TypeError, ValueError):
+                        continue
+                    folder_files.append(clean)
+                    flat.append((clean[0], clean[1], folder))
+                try:
+                    trees[folder] = folder_files
+                except Exception:
+                    pass
+            else:
+                for name, size in (entries or []):
+                    try:
+                        flat.append((name, int(size or 0), folder))
+                    except (TypeError, ValueError):
+                        pass
+        try:
+            cache[ftp_path] = (now, flat)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _file_status_text(entry) -> str:
+    """Texto de la columna Estado para una fila de Archivos: "Adelgazando"
+    en vez de "Subiendo" cuando el archivo viene de un adelgazamiento
+    (ver FileEntry.is_slim, lo marca el watcher al emparejar el
+    pendiente). El estado INTERNO no cambia ("subiendo"): filtros,
+    objetivos de subida, rankings y repos solo ven ese."""
+    try:
+        if getattr(entry, "status", "") == "subiendo" and getattr(entry, "is_slim", False):
+            return "Adelgazando"
+    except Exception:
+        pass
+    try:
+        return _status_label(entry.status)
+    except Exception:
+        return ""
+
+
 def _truncate(text, max_len):
     return text if len(text) <= max_len else text[:max_len - 1] + "..."
 
@@ -497,20 +554,15 @@ class _StaleUploadDialog(ctk.CTkToplevel):
     completa) bajo ese nombre viejo y erróneo. Ofrece borrarlo antes de
     subir la versión recién corregida a su nombre/ubicación definitiva.
     """
-    def __init__(self, parent, desired: str, stale: str):
+    def __init__(self, parent, desired: str, stale: str, show_all_buttons: bool = True):
         super().__init__(parent)
         parent._apply_icon(self)
-        self.result = None   # "delete_upload" | "no_delete" | None (cancelar subida)
+        self.result = None   # "delete_upload" | "no_delete" | "delete_upload_all" | "no_delete_all" | None (cancelar subida)
         self.title("Resto de subida anterior")
         self.resizable(False, False)
         self.grab_set()
         self.lift()
         self.attributes("-topmost", True)
-        self.update_idletasks()
-        pw = parent.winfo_rootx() + parent.winfo_width() // 2
-        ph = parent.winfo_rooty() + parent.winfo_height() // 2
-        dw, dh = 500, 280
-        self.geometry(f"{dw}x{dh}+{pw - dw//2}+{ph - dh//2}")
 
         ctk.CTkLabel(self,
                      text="Este archivo ya se subió con otro nombre (identificación anterior).",
@@ -531,17 +583,31 @@ class _StaleUploadDialog(ctk.CTkToplevel):
         ctk.CTkButton(bf, text="No borrar, subir", width=140,
                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=lambda: self._close("no_delete")).pack(side="left", padx=6)
-        bf2 = ctk.CTkFrame(self, fg_color="transparent")
-        bf2.pack(padx=24, pady=(0, 8))
-        ctk.CTkButton(bf2, text="Borrar resto y subir (todos)", width=160,
-                      fg_color=ERROR_COLOR, hover_color="#96281b",
-                      command=lambda: self._close("delete_upload_all")).pack(side="left", padx=6)
-        ctk.CTkButton(bf2, text="No borrar, subir (todos)", width=140,
-                      fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                      command=lambda: self._close("no_delete_all")).pack(side="left", padx=6)
+        if show_all_buttons:
+            # Solo tiene sentido si hay más de un archivo en la tanda actual
+            # — con uno solo, "todos" no aporta nada frente al botón normal
+            # (mismo criterio que _OverwriteDialog.show_all_button).
+            bf2 = ctk.CTkFrame(self, fg_color="transparent")
+            bf2.pack(padx=24, pady=(0, 8))
+            ctk.CTkButton(bf2, text="Borrar resto y subir (todos)", width=160,
+                          fg_color=ERROR_COLOR, hover_color="#96281b",
+                          command=lambda: self._close("delete_upload_all")).pack(side="left", padx=6)
+            ctk.CTkButton(bf2, text="No borrar, subir (todos)", width=140,
+                          fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                          command=lambda: self._close("no_delete_all")).pack(side="left", padx=6)
         ctk.CTkButton(self, text="Cancelar la subida", width=140,
                       fg_color="transparent", border_width=1,
                       command=lambda: self._close(None)).pack(pady=(0, 18))
+
+        # El alto se calcula a partir del contenido ya empaquetado (igual que
+        # _OverwriteDialog): con la altura fija de antes (280) al ocultar la
+        # fila "(todos)" quedaba un hueco vacío. Centrado en la ventana padre.
+        self.update_idletasks()
+        dw = max(500, self.winfo_reqwidth())
+        dh = self.winfo_reqheight()
+        pw = parent.winfo_rootx() + parent.winfo_width() // 2
+        ph = parent.winfo_rooty() + parent.winfo_height() // 2
+        self.geometry(f"{dw}x{dh}+{pw - dw//2}+{ph - dh//2}")
 
         self.protocol("WM_DELETE_WINDOW", lambda: self._close(None))
         self.wait_window()
@@ -928,6 +994,11 @@ class FileEntry:
         # distintos en cualquier comparación por igualdad de texto (duplica
         # filas al detectar el mismo archivo dos veces, y hace fallar la
         # búsqueda en auto_processed.json, cuyas claves siempre usan "\").
+        # La IDENTIDAD entre entradas/eventos/marcas va por path_key (ver
+        # core/path_key.py: ignora además la caja en Windows) — self.path
+        # se conserva tal cual para operar en disco. Propiedad calculada
+        # (no atributo) para que no se quede obsoleta cuando entry.path
+        # cambia (renombrados, post-proceso...).
         self.path         = str(Path(path))
         self.name         = Path(path).name
         self.ext          = get_extension(path)
@@ -950,6 +1021,19 @@ class FileEntry:
         self.remote_dir_override = None   # carpeta remota elegida a mano, sustituye a la calculada por categoría/género
         self._last_known_size_text = ""   # ver App._file_size_text -- último tamaño leído con éxito
         self._last_known_size_bytes = None   # ver App._update_status_bar -- caché para no re-stat()ear todo self.files en cada fila actualizada
+        self.is_slim = False   # viene de un adelgazamiento (ver evento "slim" del watcher): la fila muestra "Adelgazando"
+
+    @property
+    def path_key(self) -> str:
+        """Clave canónica de identidad de esta entrada (ver
+        core/path_key.py). Toda comparación entre entradas, eventos del
+        watcher y marcas de auto_processed.json debe usar esto, nunca
+        self.path directo (la caja varía según por dónde llegó la ruta)."""
+        try:
+            from core.path_key import canon_path
+            return canon_path(self.path)
+        except Exception:
+            return self.path or ""
 
     def to_dict(self) -> dict:
         status = self.status
@@ -987,6 +1071,7 @@ class FileEntry:
             # reinicio si no se persiste).
             "last_known_size_bytes": self._last_known_size_bytes,
             "ftp_progress": ftp_progress,
+            "is_slim": bool(getattr(self, "is_slim", False)),
         }
 
     @classmethod
@@ -995,6 +1080,7 @@ class FileEntry:
         entry.new_name   = d.get("new_name", "")
         entry.status     = d.get("status", "pendiente")
         entry.confidence = d.get("confidence", 0)
+        entry.is_slim    = bool(d.get("is_slim", False))
         entry.remote_dir_override = d.get("remote_dir_override")
         # Restaura la elección manual de _set_book_comic_type si difiere de
         # la que ya sale por extensión (is_comic_file en core/renamer.py) --
@@ -1042,23 +1128,32 @@ _STATUS_RANK = {
 
 
 def _dedupe_entries(entries: list) -> list:
-    """Colapsa entradas con el mismo entry.path (normalizado) en una sola —
-    puede haber duplicados en session.json de antes de normalizar
-    separadores de ruta (la misma ruta con "/" y con "\\" se guardaba como
-    dos archivos distintos). Se queda con la de estado más avanzado; en
+    """Colapsa entradas del mismo archivo (ver core/path_key.py:
+    ignora separadores y, en Windows, la caja) en una sola — puede
+    haber duplicados en session.json de antes de normalizar (la misma
+    ruta con "/" y con "\\", o con distinta caja, se guardaba como dos
+    archivos distintos). Se queda con la de estado más avanzado; en
     empate, con la que tenga media_info."""
+    from core.path_key import canon_path
     best = {}
     order = []
     for e in entries:
-        if e.path not in best:
-            best[e.path] = e
-            order.append(e.path)
+        try:
+            key = e.path_key
+        except Exception:
+            try:
+                key = canon_path(e.path)
+            except Exception:
+                key = e.path
+        if key not in best:
+            best[key] = e
+            order.append(key)
             continue
-        cur = best[e.path]
+        cur = best[key]
         rank_new = _STATUS_RANK.get(e.status, 0)
         rank_cur = _STATUS_RANK.get(cur.status, 0)
         if rank_new > rank_cur or (rank_new == rank_cur and e.media_info and not cur.media_info):
-            best[e.path] = e
+            best[key] = e
     return [best[k] for k in order]
 
 
@@ -1606,6 +1701,29 @@ class App(_AppBase):
         # aquí cumple lo que su docstring ya prometía -- "lista vacía si la
         # caché no está cargada todavía".
         self._genres_cache = {"tv": [], "movie": []}
+        # Estado de Ajustes que debe existir ANTES de construir su panel
+        # (ver _build_config_panel diferido por sub-pestaña): las sub-
+        # pestañas se construyen la primera vez que se seleccionan, pero
+        # _collect_settings/_reload_settings_widgets/_sync_category_widgets
+        # _to_data pueden correr con pestañas aún sin construir (p.ej. salir
+        # de Ajustes habiendo abierto solo "General") -- con pestaña sin
+        # construir sus valores son los guardados, nunca "sucios", y estos
+        # contenedores ya existen para que esas lecturas no cassetten con
+        # AttributeError. Los builders los rellenan al construirse.
+        try:
+            _saved_cats = self.config_data.get("ftp_categories", {}) or {}
+        except Exception:
+            _saved_cats = {}
+        self._categories = {mt: [dict(c) for c in (_saved_cats.get(mt, []) or [])]
+                            for mt in self._CATEGORY_TYPES}
+        self._cats_containers = {}
+        self._custom_links_widgets = {}
+        self._custom_links_rows_frame = {}
+        self._weight_entries = {}
+        self._other_filter_boxes = {}
+        self._config_built_tabs = set()   # claves de sub-pestaña ya construidas
+        self._config_tab_frames = {}      # clave -> (frame vacío, builder)
+        self._CONFIG_TAB_NAMES = {}       # nombre visible -> clave (ver _build_config_panel)
         self._startup_mark("  _build_config_panel() [diferida]")
 
         # Diálogos reabribles que se construyen una sola vez y se reutilizan
@@ -1632,6 +1750,7 @@ class App(_AppBase):
         self._last_upload_stats_sync_ts = 0.0
         self._last_category_stats_sync_ts = 0.0
         self._last_deletion_stats_sync_ts = 0.0
+        self._last_slim_stats_sync_ts = 0.0
         self._last_category_upload_stats_sync_ts = 0.0
         self._last_cleanup_candidates_sync_ts = 0.0
         self._last_missing_episodes_sync_ts = 0.0
@@ -1665,6 +1784,13 @@ class App(_AppBase):
         # en un solo contador no tendría sentido).
         from core.deletion_stats import load_local_cache as _load_deletion_stats_cache
         self._shared_deletion_stats = _load_deletion_stats_cache()
+
+        # Ranking de adelgazamientos por usuario (ver core/slim_stats.py,
+        # panel "Top adelgazadores" de Estadísticas) -- mismo criterio de
+        # persistencia que los de arriba, en otro archivo APARTE (adelgazar
+        # no es ni subir ni borrar, ver el docstring del módulo).
+        from core.slim_stats import load_local_cache as _load_slim_stats_cache
+        self._shared_slim_stats = _load_slim_stats_cache()
 
         # Ranking de subidas desglosado por categoría (ver
         # core/category_upload_stats.py, un panel "Top subidores" por
@@ -2442,7 +2568,8 @@ class App(_AppBase):
             # temprana). Si muere, _ensure lo repara.
             self.after(700, self._ensure_auto_watcher_consistent)
 
-    def _after_from_worker(self, func, delay_ms: int = 0, timeout_s: float = 3.0):
+    def _after_from_worker(self, func, delay_ms: int = 0, timeout_s: float = 3.0,
+                             critical: bool = False):
         """Programa *func* en el hilo de la GUI desde un hilo de fondo.
 
         self.after() desde otro hilo falla con RuntimeError ("main thread
@@ -2452,17 +2579,29 @@ class App(_AppBase):
         cuando el modo automático arranca su primer escaneo, lo que se veía
         como un "Error en escaneo" que asustaba sin motivo aunque luego todo
         funcionara. Reintentar unos segundos lo resuelve solo: el evento
-        llega con un poco de retraso en vez de perderse."""
+        llega con un poco de retraso en vez de perderse.
+
+        critical=True (estados finales: una fila quedaría desincronizada
+        para siempre si se pierde -- p.ej. "subido" descartado deja la fila
+        en "Renombrado" con el archivo ya borrado): reintenta hasta 60 s y,
+        si ni así entra, lo registra como error con detalle en vez de un
+        warning genérico."""
+        if critical:
+            timeout_s = max(timeout_s, 60.0)
         deadline = _time.monotonic() + timeout_s
         while True:
             try:
                 self.after(delay_ms, func)
-                return
+                return True
             except RuntimeError:
                 if _time.monotonic() >= deadline:
-                    _log.warning("Callback de hilo de fondo descartado: "
-                                 "hilo principal ocupado tras %.1fs", timeout_s)
-                    return
+                    if critical:
+                        _log.error("Callback CRÍTICO de hilo de fondo descartado tras %.1fs "
+                                   "(la fila puede quedar desincronizada): %r", timeout_s, func)
+                    else:
+                        _log.warning("Callback de hilo de fondo descartado: "
+                                     "hilo principal ocupado tras %.1fs", timeout_s)
+                    return False
                 _time.sleep(0.05)
 
     def _on_auto_event(self, tipo, msg):
@@ -2472,22 +2611,56 @@ class App(_AppBase):
 
     def _on_auto_file_event(self, path, tipo, new_name=None, progress=None, speed=None,
                              media_info=None, confidence=None, reason=None, renamed_on_disk=True,
-                             size=None, remote_full=None, heavy_remote_file=None):
+                             size=None, remote_full=None, heavy_remote_file=None,
+                             added_by=None, saved_bytes=None, is_slim=None):
         """Recibe eventos de archivo del AutoWatcher y actualiza la tabla."""
         path = str(Path(path))   # normalizar separadores antes de comparar/asignar
+        from core.path_key import canon_path as _canon
+        try:
+            _ev_key = _canon(path)
+        except Exception:
+            _ev_key = path
+
+        def _entry_key_of(e):
+            try:
+                return e.path_key
+            except Exception:
+                try:
+                    return _canon(e.path)
+                except Exception:
+                    return getattr(e, "path", "")
+
         def _update():
-            # Buscar entrada existente por path
-            entry = next((e for e in self.files if e.path == path), None)
+            # Buscar entrada existente por CLAVE canónica (ver
+            # core/path_key.py): el path tal como lo ve os.walk puede
+            # traer otra caja que el de la fila restaurada o añadida a
+            # mano del MISMO archivo — comparar strings tal cual la
+            # duplicaba en cada reinicio.
+            entry = next((e for e in self.files if _entry_key_of(e) == _ev_key), None)
             if entry is None:
                 # El archivo ya fue renombrado en un ciclo anterior (p.ej. la
                 # subida FTP falló y AutoWatcher lo reprocesa): el path en disco
                 # cambió pero sigue siendo el mismo archivo — buscarlo por el
                 # nombre con el que quedó tras el renombrado para no duplicar la fila.
                 fname = Path(path).name
-                entry = next((e for e in self.files
-                              if e.new_name == fname and e.status != "subido"), None)
+                try:
+                    import os as _os
+                    _fname_key = _os.path.normcase(fname)
+                    entry = next((e for e in self.files
+                                  if _os.path.normcase(e.new_name or "") == _fname_key
+                                  and e.status != "subido"), None)
+                except Exception:
+                    entry = next((e for e in self.files
+                                  if e.new_name == fname and e.status != "subido"), None)
                 if entry is not None:
                     entry.path = path
+            if entry is not None and is_slim:
+                # El watcher confirma que viene de un adelgazamiento: la
+                # fila lo mostrará como "Adelgazando" (ver _file_status_text).
+                try:
+                    entry.is_slim = True
+                except Exception:
+                    pass
 
             if tipo == "start":
                 if entry is None:
@@ -2506,8 +2679,22 @@ class App(_AppBase):
                 # core/slim_pending.py): la foto de Liberar espacio quedó
                 # obsoleta para esa serie -- re-listar SOLO su carpeta.
                 # Va antes del "entry is None" de abajo porque no necesita
-                # fila en Archivos.
+                # fila en Archivos. Además se suma el ahorro al ranking de
+                # adelgazadores (quien lo lanzó sale del pendiente; si el
+                # pendiente era antiguo y no trae autor, cae al nombre
+                # actual de Ajustes).
                 self._refresh_cleanup_item_after_replace(heavy_remote_file)
+                try:
+                    _slim_person = (added_by or "") or str(
+                        self.config_data.get("app_user_name", "") or "").strip()
+                    _slim_saved = int(saved_bytes or 0)
+                except (TypeError, ValueError):
+                    _slim_person, _slim_saved = "", 0
+                if _slim_person.strip() and _slim_saved > 0:
+                    try:
+                        self._push_slim_stat_to_ftp(_slim_person.strip(), _slim_saved, _time.time())
+                    except Exception:
+                        pass
                 return
 
             if entry is None:
@@ -2604,7 +2791,11 @@ class App(_AppBase):
                 if self._selected_entry is entry:
                     self._update_detail(entry)
 
-        self._after_from_worker(_update)
+        # Todo menos los ticks de progreso ("uploading", que se repiten
+        # solos al siguiente chunk) es crítico: si se descarta, la fila
+        # queda desincronizada para siempre (p.ej. "Renombrado" con el
+        # archivo ya subido y borrado).
+        self._after_from_worker(_update, critical=(tipo != "uploading"))
 
     # Navegación unificada (barra de pestañas segmentada en el header,
     # ver _build_header) -- las 4 vistas (Archivos/Episodios/Historial/
@@ -2821,6 +3012,7 @@ class App(_AppBase):
             self._sync_upload_stats_from_ftp()
             self._sync_category_stats_from_ftp()
             self._sync_deletion_stats_from_ftp()
+            self._sync_slim_stats_from_ftp()
             self._sync_category_upload_stats_from_ftp()
             self._stats_view.refresh_from_cache()
         elif view_key == "config":
@@ -4029,6 +4221,13 @@ class App(_AppBase):
         _reservations_remote_path."""
         return self._shared_data_path(shared_data.filename("estadisticas_borrados"))
 
+    def _slim_stats_remote_path(self) -> str:
+        """Ruta remota del ranking de adelgazamientos por usuario (ver
+        core/slim_stats.py, pestaña Estadísticas) -- archivo propio
+        dentro de la misma carpeta compartida, mismo motivo que
+        _reservations_remote_path."""
+        return self._shared_data_path(shared_data.filename("estadisticas_adelgazadores"))
+
     def _category_upload_stats_remote_path(self) -> str:
         """Ruta remota del ranking de subidas desglosado por categoría
         (ver core/category_upload_stats.py, pestaña Estadísticas) --
@@ -5003,6 +5202,107 @@ class App(_AppBase):
                 if not isinstance(remote_data, dict):
                     return
                 self.after(0, lambda: self._apply_synced_deletion_stats(remote_data))
+            finally:
+                own_ftp.disconnect()
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _push_slim_stat_to_ftp(self, person: str, saved_bytes: int, ts: float):
+        """Suma un adelgazamiento completado al ranking compartido (ver
+        core/slim_stats.py, pestaña Estadísticas) -- llamado desde
+        _on_auto_file_event al recibir "slim_replaced" del watcher (gordo
+        borrado + ligera subida). Archivo APARTE del ranking de subidas y
+        del de borrados (ver el docstring de core/slim_stats.py para el
+        motivo); mismo patrón lectura-modificación-escritura que
+        _push_upload_stat_to_ftp."""
+        remote_path = self._slim_stats_remote_path()
+        if not remote_path:
+            _log.info(
+                "Estadísticas: sin \"Carpeta compartida (datos)\" configurada -- "
+                "no se puede sumar el adelgazamiento de %r al ranking", person)
+            return
+        if not (person or "").strip() or int(saved_bytes or 0) <= 0:
+            return
+
+        def worker():
+            from core.slim_stats import add_slim
+            import json as _json
+            own_ftp = self._new_ftp_client()
+            try:
+                ok, _msg = own_ftp.connect(
+                    self.config_data.get("ftp_host", ""),
+                    int(self.config_data.get("ftp_port", 21)),
+                    self.config_data.get("ftp_user", ""),
+                    self.config_data.get("ftp_password", ""),
+                    self.config_data.get("ftp_use_tls", False))
+                if not ok:
+                    _log.warning(
+                        "Estadísticas: no se pudo conectar al FTP para sumar el adelgazamiento de %r (%s)",
+                        person, _msg)
+                    return
+                with self._stats_push_lock:
+                    from core.shared_data import read_shared_json
+                    remote_data, _is_new = read_shared_json(own_ftp, remote_path)
+                    if remote_data is None:
+                        return
+                    merged = add_slim(remote_data, person, saved_bytes, ts)
+                    data = _json.dumps(merged, ensure_ascii=False, indent=2).encode("utf-8")
+                    up_ok, _up_msg = own_ftp.upload_bytes(data, remote_path)
+                    if up_ok:
+                        _log.info("Estadísticas: adelgazamiento de %r sumado al ranking (%d bytes ahorrados)",
+                                  person, saved_bytes)
+                        self.after(0, lambda: self._apply_synced_slim_stats(merged))
+                    else:
+                        _log.warning(
+                            "Estadísticas: no se pudo subir el ranking de adelgazadores actualizado tras sumar a %r (%s)",
+                            person, _up_msg)
+            finally:
+                own_ftp.disconnect()
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_synced_slim_stats(self, merged: dict):
+        from core.slim_stats import save_local_cache as _save_slim_stats_cache
+        self._shared_slim_stats = merged
+        _save_slim_stats_cache(merged)
+        if self._stats_visible:
+            self._stats_view.refresh_from_cache()
+
+    _SLIM_STATS_SYNC_MIN_INTERVAL = 20   # segundos, ver _sync_slim_stats_from_ftp
+
+    def _sync_slim_stats_from_ftp(self):
+        """Refresca el mirror local del ranking de adelgazadores desde el
+        FTP en segundo plano -- mismo patrón y mismo freno que
+        _sync_upload_stats_from_ftp. Se llama al entrar en Estadísticas."""
+        now = _time.time()
+        if now - self._last_slim_stats_sync_ts < self._SLIM_STATS_SYNC_MIN_INTERVAL:
+            return
+        self._last_slim_stats_sync_ts = now
+
+        remote_path = self._slim_stats_remote_path()
+        if not remote_path:
+            return
+
+        def worker():
+            import json as _json
+            own_ftp = self._new_ftp_client()
+            try:
+                ok, _msg = own_ftp.connect(
+                    self.config_data.get("ftp_host", ""),
+                    int(self.config_data.get("ftp_port", 21)),
+                    self.config_data.get("ftp_user", ""),
+                    self.config_data.get("ftp_password", ""),
+                    self.config_data.get("ftp_use_tls", False))
+                if not ok:
+                    return
+                raw = own_ftp.download_bytes(remote_path)
+                if raw is None:
+                    return
+                try:
+                    remote_data = _json.loads(raw.decode("utf-8"))
+                except ValueError:
+                    return
+                if not isinstance(remote_data, dict):
+                    return
+                self.after(0, lambda: self._apply_synced_slim_stats(remote_data))
             finally:
                 own_ftp.disconnect()
         threading.Thread(target=worker, daemon=True).start()
@@ -6057,9 +6357,92 @@ class App(_AppBase):
         self._refresh_ftp_space()
         self._begin_ftp_upload(entries)
 
+    def _reserve_manual_entries(self, entries):
+        """Reserva temprana de una tanda manual frente al modo automático:
+        marca "en_cola_manual" en auto_processed.json (ver
+        core/auto_watcher.py::_PROTECTED_STATUSES) para que el watcher no
+        coja estos archivos mientras esperan turno. Sin esto, solo se
+        marcaba "subiendo" al empezar cada transferencia y el watcher
+        podía llevarse un encolado durante la espera (carpetas, diálogos,
+        turnos), compitiendo por el mismo archivo. Se libera al terminar
+        la tanda (ver epílogo de _queue_worker), al fallar/cancelar cada
+        archivo (ver _unmark_auto_processed) y al arrancar si quedó de
+        una sesión anterior (ver _cleanup_stale_uploading_marks). Solo
+        entradas identificadas (las subibles); el resto las ignora. En
+        UNA sola pasada leer-modificar-escribir (no una por archivo: con
+        cientos en cola y una base de miles de entradas, eso congelaría
+        la GUI, que es donde corre el encolado)."""
+        import json as _json, time as _t
+        try:
+            from core.auto_watcher import _processed_db_path, _DB_LOCK
+            keys = []
+            for e in entries or ():
+                try:
+                    if getattr(e, "media_info", None) is None:
+                        continue
+                    keys.append((self._db_key(e.path), e.new_name or ""))
+                except Exception:
+                    pass
+            if not keys:
+                return
+            with _DB_LOCK:
+                p = _processed_db_path()
+                db = {}
+                if p.exists():
+                    try:
+                        db = _json.loads(p.read_text(encoding="utf-8"))
+                    except Exception:
+                        pass
+                now = _t.time()
+                for key, new_name in keys:
+                    prev = db.get(key, {})
+                    prev_status = prev.get("status", "")
+                    entry = {"status": "en_cola_manual", "new_name": new_name, "ts": now}
+                    if prev_status and prev_status not in ("subiendo", "en_cola_manual"):
+                        entry["prev_status"] = prev_status
+                        entry["prev_new_name"] = prev.get("new_name", "")
+                    db[key] = entry
+                p.write_text(_json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _release_manual_entries(self, entries):
+        """Suelta la reserva de _reserve_manual_entries para las entradas
+        que sigan marcadas "en_cola_manual" (lo subido/fallado ya cambió
+        de marca por su cuenta). Una sola pasada, igual que al reservar."""
+        import json as _json
+        try:
+            from core.auto_watcher import _processed_db_path, _DB_LOCK
+            keys = []
+            for e in entries or ():
+                try:
+                    keys.append(self._db_key(e.path))
+                except Exception:
+                    pass
+            if not keys:
+                return
+            with _DB_LOCK:
+                p = _processed_db_path()
+                if not p.exists():
+                    return
+                try:
+                    db = _json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    return
+                touched = False
+                for key in keys:
+                    if db.get(key, {}).get("status", "") == "en_cola_manual":
+                        self._restore_or_delete_entry(db, key)
+                        touched = True
+                if touched:
+                    p.write_text(_json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
     def _begin_ftp_upload(self, entries):
         """Continuación de _start_ftp_upload en el hilo principal, una vez
         resuelta la conexión FTP en _connect_and_start_upload."""
+        self._reserve_manual_entries(entries)
         self._upload_queue = list(entries)
         self._upload_cancel.clear()
         self._upload_skip.clear()
@@ -6294,8 +6677,49 @@ class App(_AppBase):
             self._series_folder_cache[info.tmdb_id] = chosen
             return chosen
 
+    def _auto_is_processing(self, path: str) -> bool:
+        """True si el modo automático tiene *path* en curso ahora mismo
+        (ver core/auto_watcher.py::_in_progress: se añade al detectar y se
+        quita en todo camino terminal). La subida manual debe omitirlo: la
+        dirección contraria ya está cubierta (lo manual marca "subiendo" en
+        auto_processed.json y el watcher lo respeta, ver _should_process),
+        pero el watcher no marca nada hasta terminar, así que sin esto las
+        dos subidas abrían el mismo archivo a la vez y una fallaba al
+        desaparecer el archivo bajo sus pies ("No se pudo abrir",
+        "Archivo local no encontrado"). Típico con adelgazados: la ligera
+        cae en la carpeta vigilada (= Incoming) y el usuario la sube a mano
+        mientras el automático ya la está procesando. Nunca lanza
+        excepción (ante la duda, False = comportamiento de antes)."""
+        try:
+            watcher = getattr(self, "_watcher", None)
+            if watcher is None or not getattr(watcher, "running", False):
+                return False
+            from core.path_key import canon_path
+            want = canon_path(path)
+            if not want:
+                return False
+            for k in list(getattr(watcher, "_in_progress", None) or ()):
+                try:
+                    if canon_path(k) == want:
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return False
+
     def _upload_entry_with(self, entry, ftp_conn, speed_kbs, skip_ev):
         """Sube un único archivo usando la conexión ftp_conn dada. Devuelve (ok, msg)."""
+        if self._auto_is_processing(entry.path):
+            # El modo automático lo está procesando ahora mismo: omitir en
+            # la tanda manual con mensaje claro en vez de competir por el
+            # archivo (ver _auto_is_processing). El automático actualiza
+            # esta misma fila al terminar (mismo path → mismo entry).
+            self._ftp_row_set(entry, "En proceso (auto)", entry.ftp_progress, 0)
+            self.after(0, lambda e=entry: self._update_row(e))
+            _log.info("Subida: %r lo está procesando el modo automático, se omite en la tanda manual",
+                      entry.name)
+            return True, "en_proceso_auto"
         if not Path(entry.path).exists():
             # El renombrado de AutoWatcher no espera cupo de subida (solo la
             # transferencia en sí — ver core/upload_slots.py), así que puede
@@ -6398,6 +6822,11 @@ class App(_AppBase):
         # bajo ese nombre viejo. Ofrecer borrarlo antes de subir la versión
         # corregida; si el usuario lo desea, se borra y se continúa. No
         # molesta en el caso normal (misma ruta -> sin resto).
+        # "Borrar resto y subir (todos)"/"No borrar, subir (todos)" solo
+        # tiene sentido si hay más de un archivo en esta tanda de subida
+        # (mismo criterio que el diálogo de sobrescribir de más abajo).
+        is_batch = len(self._upload_queue) > 1
+
         stale_remote = ("" if getattr(entry, "_stale_checked", False) else
                         self._stale_remote_from_history(entry.path, entry.name, remote_file))
         if stale_remote:
@@ -6417,7 +6846,7 @@ class App(_AppBase):
                 answer = [None]
                 ev = threading.Event()
                 def _ask_stale(d=remote_file, s=stale_remote, ans=answer, e=ev):
-                    dlg = _StaleUploadDialog(self, d, s)
+                    dlg = _StaleUploadDialog(self, d, s, show_all_buttons=is_batch)
                     ans[0] = dlg.result
                     e.set()
                 self.after(0, _ask_stale)
@@ -6453,11 +6882,6 @@ class App(_AppBase):
             local_size = Path(entry.path).stat().st_size
         except OSError:
             local_size = 0
-
-        # "Sobrescribir todos"/"Empezar de cero (todos)"/"Subir todas de
-        # todas formas" solo tiene sentido si hay más de un archivo en esta
-        # tanda de subida.
-        is_batch = len(self._upload_queue) > 1
 
         # Si el archivo remoto con el MISMO nombre ya está completo (o más
         # grande), es un archivo ya subido de verdad: no hace falta avisar
@@ -6995,12 +7419,21 @@ class App(_AppBase):
                             e.ftp_status   = "En espera"
                             e.status       = "en_cola"
                             self.after(0, lambda en=e: self._update_row(en))
+                        self._reserve_manual_entries(stragglers)
                         self._upload_queue.extend(stragglers)
                         continue
                     # Esperar brevemente por nuevos ítems encolados en caliente
                     _time.sleep(0.2)
                     if idx >= len(self._upload_queue):
                         break
+
+        # Liberar la reserva temprana de la tanda (ver
+        # _reserve_manual_entries): lo que nunca llegó a procesarse no
+        # debe quedar vetado al automático.
+        try:
+            self._release_manual_entries(list(self._upload_queue or []))
+        except Exception:
+            pass
 
         for c in pool:
             try:
@@ -7138,47 +7571,138 @@ class App(_AppBase):
         # aIBechos contra este mismo FTP, se sincroniza sola al arrancar
         # y "Publicar" (cabecera de esta pestaña, ver
         # _build_server_publish_header) la sobrescribe para todos.
-        # command=: ver el mismo motivo en server_tabs más abajo -- cambiar
-        # entre "Cliente"/"Servidor" también puede dejar visible por
-        # primera vez la pestaña "Plantillas" (si ya estaba seleccionada
-        # de una visita anterior dentro de "Servidor").
-        tabs = ctk.CTkTabview(panel, command=lambda: self._apply_custom_links_desc_wraplength())
+        # command=: ver _on_config_outer_changed -- cambiar entre
+        # "Cliente"/"Servidor" construye la sub-pestaña visible si es su
+        # primera vez (construcción diferida, ver _ensure_config_tab) y
+        # además deja visible por primera vez la pestaña "Plantillas" (si
+        # ya estaba seleccionada de una visita anterior dentro de
+        # "Servidor"), cuyos textos necesitan su wraplength.
+        tabs = ctk.CTkTabview(panel, command=self._on_config_outer_changed)
         tabs.grid(row=0, column=0, sticky="nsew")
         self._config_tabs = tabs
 
         client_tab = tabs.add("🖥 Cliente")
         server_tab = tabs.add("🌐 Servidor")
 
-        client_tabs = ctk.CTkTabview(client_tab)
+        # Sub-pestañas DIFERIDAS (ver _ensure_config_tab): construir las 10
+        # de golpe al entrar en Ajustes creaba ~400 widgets compuestos de
+        # una sentada sobre un árbol que ya es grande (todas las demás
+        # vistas siguen vivas aunque ocultas) y en Windows eso rompía el
+        # pintado de TODA la ventana en silencio (límite de 10000 objetos
+        # GUI por proceso). Cada contenido se construye una sola vez, la
+        # primera vez que se selecciona su pestaña; lo nunca abierto no
+        # existe y sus valores son los guardados (ver _collect_settings).
+        client_tabs = ctk.CTkTabview(client_tab, command=self._on_client_subtab_changed)
         client_tabs.pack(fill="both", expand=True)
-        self._build_general_tab(client_tabs.add("General"))
-        self._build_ftp_connection_tab(client_tabs.add("Conexión FTP"))
-        self._build_watch_sync_config_tab(client_tabs.add("Sincronizar visionado"))
-        self._build_config_transfer_section(client_tabs.add("Copia de seguridad"))
+        self._client_tabs = client_tabs
+        for _name, _key, _builder in (
+                ("General", "general", self._build_general_tab),
+                ("Conexión FTP", "ftp", self._build_ftp_connection_tab),
+                ("Sincronizar visionado", "watch_sync", self._build_watch_sync_config_tab),
+                ("Copia de seguridad", "backup", self._build_config_transfer_section)):
+            self._config_tab_frames[_key] = (client_tabs.add(_name), _builder)
+            self._CONFIG_TAB_NAMES[_name] = _key
 
         server_wrap = ctk.CTkFrame(server_tab, fg_color="transparent")
         server_wrap.pack(fill="both", expand=True)
         self._build_server_publish_header(server_wrap)
-        # command=: al entrar en "Plantillas" (o cualquier otra pestaña de
-        # aquí) se recalcula el wraplength del texto de enlaces
-        # personalizables -- su contenedor solo tiene geometría real
-        # mientras está seleccionado (ver _apply_custom_links_desc_wraplength),
-        # así que el primer redimensionado de VENTANA no basta si el
-        # usuario todavía no había entrado nunca en esta pestaña concreta.
-        server_tabs = ctk.CTkTabview(server_wrap, command=lambda: self._apply_custom_links_desc_wraplength())
+        # command=: además de construir la pestaña al entrar (ver arriba),
+        # al entrar en "Plantillas" (o cualquier otra pestaña de aquí) se
+        # recalcula el wraplength del texto de enlaces personalizables --
+        # su contenedor solo tiene geometría real mientras está
+        # seleccionado (ver _apply_custom_links_desc_wraplength), así que
+        # el primer redimensionado de VENTANA no basta si el usuario
+        # todavía no había entrado nunca en esta pestaña concreta.
+        server_tabs = ctk.CTkTabview(server_wrap, command=self._on_server_subtab_changed)
         server_tabs.pack(fill="both", expand=True)
-        self._build_tmdb_tab(server_tabs.add("TMDB / IA"))
-        self._build_templates_tab(server_tabs.add("Plantillas"))
-        self._build_ftp_categories_section(server_tabs.add("Categorías"))
-        self._build_media_servers_section(server_tabs.add("Servidores de medios"))
-        self._build_reservation_quota_tab(server_tabs.add("Reservas"))
-        self._build_download_prefs_tab(server_tabs.add("Preferencias descargas"))
+        self._server_tabs = server_tabs
+        for _name, _key, _builder in (
+                ("TMDB / IA", "tmdb", self._build_tmdb_tab),
+                ("Plantillas", "templates", self._build_templates_tab),
+                ("Categorías", "categories", self._build_ftp_categories_section),
+                ("Servidores de medios", "media", self._build_media_servers_section),
+                ("Reservas", "reservas", self._build_reservation_quota_tab),
+                ("Preferencias descargas", "download_prefs", self._build_download_prefs_tab)):
+            self._config_tab_frames[_key] = (server_tabs.add(_name), _builder)
+            self._CONFIG_TAB_NAMES[_name] = _key
 
         ctk.CTkLabel(panel, text=f"aIBechos v{__version__}",
                      text_color=PENDING_COLOR, font=self._cfg_font_desc).grid(
             row=1, column=0, pady=(4, 8))
 
-        self._load_genres_async()
+        # Construir solo la visible ahora (la primera de Cliente); el
+        # resto, al seleccionarse (ver command= de cada nivel). Los
+        # géneros TMDB se piden al construir "Categorías", no aquí.
+        try:
+            self._ensure_config_tab(self._CONFIG_TAB_NAMES.get(client_tabs.get(), "general"))
+        except Exception:
+            pass
+
+    def _on_config_outer_changed(self):
+        """command= del tabview exterior Cliente/Servidor: construye la
+        sub-pestaña visible si es su primera vez (ver _ensure_config_tab)
+        y recalcula el wraplength de enlaces (ver
+        _apply_custom_links_desc_wraplength)."""
+        try:
+            outer = self._config_tabs.get()
+        except Exception:
+            outer = None
+        try:
+            sub = self._server_tabs if outer == "🌐 Servidor" else self._client_tabs
+            self._ensure_config_tab(self._CONFIG_TAB_NAMES.get(sub.get()))
+        except Exception:
+            pass
+        try:
+            self._apply_custom_links_desc_wraplength()
+        except Exception:
+            pass
+
+    def _ensure_config_tab(self, key: str):
+        """Construye el contenido de la sub-pestaña de Ajustes *key* si aún
+        no existe (ver _build_config_panel). Cada contenido se construye
+        una sola vez y lee los valores actuales de config_data al hacerlo,
+        así que una pestaña nunca abierta equivale a "sin cambios". Nunca
+        lanza excepción: una pestaña rota no debe impedir cambiar de
+        pestaña."""
+        try:
+            if not key or key in self._config_built_tabs:
+                return
+            entry = (self._config_tab_frames or {}).get(key)
+            if not entry:
+                return
+            frame, builder = entry
+            builder(frame)
+            self._config_built_tabs.add(key)
+        except Exception:
+            _log.warning("_ensure_config_tab(%r) falló", key, exc_info=True)
+
+    def _config_tab_built(self, key: str) -> bool:
+        """True si la sub-pestaña de Ajustes *key* ya construyó sus widgets."""
+        try:
+            return key in (self._config_built_tabs or set())
+        except Exception:
+            return False
+
+    def _on_client_subtab_changed(self):
+        """command= del tabview de Cliente: construye la pestaña al entrar."""
+        try:
+            name = self._client_tabs.get()
+        except Exception:
+            return
+        self._ensure_config_tab(self._CONFIG_TAB_NAMES.get(name))
+
+    def _on_server_subtab_changed(self):
+        """command= del tabview de Servidor: construye la pestaña al entrar
+        y recalcula el wraplength de enlaces (ver _build_config_panel)."""
+        try:
+            name = self._server_tabs.get()
+        except Exception:
+            name = None
+        self._ensure_config_tab(self._CONFIG_TAB_NAMES.get(name))
+        try:
+            self._apply_custom_links_desc_wraplength()
+        except Exception:
+            pass
 
     def _build_general_tab(self, tab):
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
@@ -7700,8 +8224,9 @@ class App(_AppBase):
         self._blocked_groups_box.grid(row=1, column=1, padx=10, pady=6, sticky="ew")
         self._blocked_groups_box.insert("1.0", self._providers_box_text("blocked"))
         attach_tooltip(self._blocked_groups_box, lambda: "Proveedores/marcas que no se quieren.\n"
-                       "Un release que los contenga NO se descarga aunque sea lo único disponible.\n"
-                       "Si trae además español, se permite. Uno por línea.")
+                       "Un release que los contenga NO se descarga nunca, aunque sea lo único\n"
+                       "disponible y aunque traiga español (la marca dice quién lo hizo).\n"
+                       "Uno por línea.")
         # ── Apartado Idioma: UN solo campo con secciones [kind] ──
         fr = _card("Idioma",
                    "El motor siempre excluye estos idiomas sin pista en español "
@@ -9083,17 +9608,25 @@ class App(_AppBase):
     def _on_custom_links_desc_resize(self, event):
         if event.widget is not self:
             return   # <Configure> también burbujea desde widgets hijos -- solo interesa el de la ventana
-        if self._custom_links_desc_resize_after_id is not None:
+        if getattr(self, "_custom_links_desc_resize_after_id", None) is not None:
             self.after_cancel(self._custom_links_desc_resize_after_id)
         self._custom_links_desc_resize_after_id = self.after(
             self._CUSTOM_LINKS_DESC_RESIZE_DEBOUNCE_MS, self._apply_custom_links_desc_wraplength)
 
     def _apply_custom_links_desc_wraplength(self):
-        self._custom_links_desc_resize_after_id = None
-        self._custom_links_canvas.update_idletasks()
-        w = self._custom_links_canvas.winfo_width()
+        try:
+            self._custom_links_desc_resize_after_id = None
+        except Exception:
+            pass
+        _canvas = getattr(self, "_custom_links_canvas", None)
+        if _canvas is None:
+            return   # pestaña "Plantillas" aún sin construir (ver _ensure_config_tab)
+        _canvas.update_idletasks()
+        w = _canvas.winfo_width()
         if w > 1:   # todavía sin geometría real (p.ej. pestaña nunca visitada) -- nada que ajustar aún
-            self._custom_links_desc_lbl.configure(wraplength=max(200, w - 24))
+            _desc = getattr(self, "_custom_links_desc_lbl", None)
+            if _desc is not None:
+                _desc.configure(wraplength=max(200, w - 24))
 
     def _add_custom_link_row(self, level: str, name: str, url_template: str, background: bool = False):
         row = ctk.CTkFrame(self._custom_links_rows_frame[level], fg_color="transparent")
@@ -18192,122 +18725,133 @@ class App(_AppBase):
     def _reload_settings_widgets(self):
         """Refresca todos los widgets de Ajustes con los valores actuales de
         self.config_data — usado tras importar configuración, para que se vea
-        reflejada sin tener que reiniciar la aplicación."""
+        reflejada sin tener que reiniciar la aplicación.
+
+        Solo toca las sub-pestañas YA CONSTRUIDAS (ver _ensure_config_tab):
+        lo nunca abierto leerá lo nuevo de config_data al construirse."""
         def _set_entry(entry, value):
             entry.delete(0, "end")
             entry.insert(0, str(value))
 
-        for key, entry in self._ftp_entries.items():
-            _set_entry(entry, self.config_data.get(key, ""))
-        self._protocol_combo.set(self._current_protocol_label())
-        self._ftp_parallel_combo.set(str(self.config_data.get("ftp_parallel", 1)))
-        self._ftp_streams_combo.set(str(self.config_data.get("ftp_upload_streams", 4)))
-        _set_entry(self._ftp_speed_entry, self.config_data.get("ftp_speed_limit", 0))
-        _set_entry(self._ftp_retries_entry, self.config_data.get("ftp_retries", 3))
-        _set_entry(self._reservation_quota_entry, self.config_data.get("reservation_quota_gb", 100))
+        if self._config_tab_built("ftp"):
+            for key, entry in (getattr(self, "_ftp_entries", None) or {}).items():
+                _set_entry(entry, self.config_data.get(key, ""))
+            self._protocol_combo.set(self._current_protocol_label())
+            self._ftp_parallel_combo.set(str(self.config_data.get("ftp_parallel", 1)))
+            self._ftp_streams_combo.set(str(self.config_data.get("ftp_upload_streams", 4)))
+            _set_entry(self._ftp_speed_entry, self.config_data.get("ftp_speed_limit", 0))
+            _set_entry(self._ftp_retries_entry, self.config_data.get("ftp_retries", 3))
+        if self._config_tab_built("reservas"):
+            _set_entry(self._reservation_quota_entry, self.config_data.get("reservation_quota_gb", 100))
 
         # Boxes de proveedores, idioma (campo único) y otros filtros (tab
-        # Servidor → Preferencias descargas): pueden no existir si el panel
-        # aún no se construyó (ver _build_ui diferida).
-        for _box, _kind in ((getattr(self, "_trusted_groups_box", None), "trusted"),
-                            (getattr(self, "_blocked_groups_box", None), "blocked")):
-            if _box is not None:
+        # Servidor → Preferencias descargas): pueden no existir si su
+        # pestaña aún no se construyó (ver _ensure_config_tab).
+        if self._config_tab_built("download_prefs"):
+            for _box, _kind in ((getattr(self, "_trusted_groups_box", None), "trusted"),
+                                (getattr(self, "_blocked_groups_box", None), "blocked")):
+                if _box is not None:
+                    try:
+                        _box.delete("1.0", "end")
+                        _box.insert("1.0", self._providers_box_text(_kind))
+                    except Exception:
+                        pass
+            _lang_box = getattr(self, "_lang_box", None)
+            if _lang_box is not None:
                 try:
-                    _box.delete("1.0", "end")
-                    _box.insert("1.0", self._providers_box_text(_kind))
+                    _lang_box.delete("1.0", "end")
+                    _lang_box.insert("1.0", self._lang_box_text())
                 except Exception:
                     pass
-        _lang_box = getattr(self, "_lang_box", None)
-        if _lang_box is not None:
-            try:
-                _lang_box.delete("1.0", "end")
-                _lang_box.insert("1.0", self._lang_box_text())
-            except Exception:
-                pass
-        for _kind, _label, _ckey in self._OTHER_BOX_DEFS:
-            _box = (getattr(self, "_other_filter_boxes", None) or {}).get(_kind)
-            if _box is not None:
+            for _kind, _label, _ckey in self._OTHER_BOX_DEFS:
+                _box = (getattr(self, "_other_filter_boxes", None) or {}).get(_kind)
+                if _box is not None:
+                    try:
+                        _box.delete("1.0", "end")
+                        _box.insert("1.0", self._list_box_text(_ckey))
+                    except Exception:
+                        pass
+            for _wkey, _entry in (getattr(self, "_weight_entries", None) or {}).items():
                 try:
-                    _box.delete("1.0", "end")
-                    _box.insert("1.0", self._list_box_text(_ckey))
+                    _entry.delete(0, "end")
+                    _entry.insert(0, self._weight_entry_text(_wkey))
                 except Exception:
                     pass
-        for _wkey, _entry in (getattr(self, "_weight_entries", None) or {}).items():
-            try:
-                _entry.delete(0, "end")
-                _entry.insert(0, self._weight_entry_text(_wkey))
-            except Exception:
-                pass
 
-        _set_entry(self._api_key_entry, self.config_data.get("tmdb_api_key", ""))
-        self._lang_combo.set(self.config_data.get("language", "es-ES"))
-        self.tmdb.set_api_key(self.config_data.get("tmdb_api_key", ""))
-        self.tmdb.set_language(self.config_data.get("language", "es-ES"))
+        if self._config_tab_built("tmdb"):
+            _set_entry(self._api_key_entry, self.config_data.get("tmdb_api_key", ""))
+            self._lang_combo.set(self.config_data.get("language", "es-ES"))
+            self.tmdb.set_api_key(self.config_data.get("tmdb_api_key", ""))
+            self.tmdb.set_language(self.config_data.get("language", "es-ES"))
 
-        _set_entry(self._comicvine_key_entry, self.config_data.get("comicvine_api_key", ""))
-        self.comicvine.set_api_key(self.config_data.get("comicvine_api_key", ""))
+            _set_entry(self._comicvine_key_entry, self.config_data.get("comicvine_api_key", ""))
+            self.comicvine.set_api_key(self.config_data.get("comicvine_api_key", ""))
 
-        _set_entry(self._google_books_key_entry, self.config_data.get("google_books_api_key", ""))
-        self.book_client.set_api_key(self.config_data.get("google_books_api_key", ""))
+            _set_entry(self._google_books_key_entry, self.config_data.get("google_books_api_key", ""))
+            self.book_client.set_api_key(self.config_data.get("google_books_api_key", ""))
 
-        if self.config_data.get("ai_fallback_enabled"):
-            self._ai_fallback_switch.select()
-        else:
-            self._ai_fallback_switch.deselect()
-        _set_entry(self._ai_key_entry, self.config_data.get("ai_api_key", ""))
+            if self.config_data.get("ai_fallback_enabled"):
+                self._ai_fallback_switch.select()
+            else:
+                self._ai_fallback_switch.deselect()
+            _set_entry(self._ai_key_entry, self.config_data.get("ai_api_key", ""))
 
-        if self.config_data.get("plex_enabled"):
-            self._plex_switch.select()
-        else:
-            self._plex_switch.deselect()
-        _set_entry(self._plex_host_entry, self.config_data.get("plex_host", ""))
-        _set_entry(self._plex_token_entry, self.config_data.get("plex_token", ""))
-        if self.config_data.get("jellyfin_enabled"):
-            self._jellyfin_switch.select()
-        else:
-            self._jellyfin_switch.deselect()
-        _set_entry(self._jellyfin_host_entry, self.config_data.get("jellyfin_host", ""))
-        _set_entry(self._jellyfin_key_entry, self.config_data.get("jellyfin_api_key", ""))
-        _set_entry(self._jellyfin_username_entry, self.config_data.get("jellyfin_username", ""))
+        if self._config_tab_built("media"):
+            if self.config_data.get("plex_enabled"):
+                self._plex_switch.select()
+            else:
+                self._plex_switch.deselect()
+            _set_entry(self._plex_host_entry, self.config_data.get("plex_host", ""))
+            _set_entry(self._plex_token_entry, self.config_data.get("plex_token", ""))
+            if self.config_data.get("jellyfin_enabled"):
+                self._jellyfin_switch.select()
+            else:
+                self._jellyfin_switch.deselect()
+            _set_entry(self._jellyfin_host_entry, self.config_data.get("jellyfin_host", ""))
+            _set_entry(self._jellyfin_key_entry, self.config_data.get("jellyfin_api_key", ""))
+            _set_entry(self._jellyfin_username_entry, self.config_data.get("jellyfin_username", ""))
 
-        for key, combo in self._tpl_entries.items():
-            combo.set(str(self.config_data.get(key, "")))
+        if self._config_tab_built("templates"):
+            for key, combo in (getattr(self, "_tpl_entries", None) or {}).items():
+                combo.set(str(self.config_data.get(key, "")))
+            if self.config_data.get("rename_remote", True):
+                self._rename_remote_switch.select()
+            else:
+                self._rename_remote_switch.deselect()
 
-        _set_entry(self._watch_folder_entry, self.config_data.get("watch_folder", ""))
-        _set_entry(self._poll_interval_entry, self.config_data.get("poll_interval", 10))
-        self._auto_action_combo.set(self.config_data.get("auto_action", "Mantener original"))
-        self._manual_action_combo.set(self.config_data.get("manual_action", "Mantener original"))
-        if self.config_data.get("auto_extract_archives", False):
-            self._auto_extract_switch.select()
-        else:
-            self._auto_extract_switch.deselect()
-        conf = int(self.config_data.get("min_confidence", 70))
-        self._conf_slider.set(conf)
-        self._conf_label.configure(text=f"{conf}%")
-        if self.config_data.get("start_with_windows"):
-            self._autostart_switch.select()
-        else:
-            self._autostart_switch.deselect()
-        if self.config_data.get("desktop_notifications", True):
-            self._notif_switch.select()
-        else:
-            self._notif_switch.deselect()
-        if self.config_data.get("rename_local", True):
-            self._rename_local_switch.select()
-        else:
-            self._rename_local_switch.deselect()
-        if self.config_data.get("rename_remote", True):
-            self._rename_remote_switch.select()
-        else:
-            self._rename_remote_switch.deselect()
+        if self._config_tab_built("general"):
+            _set_entry(self._watch_folder_entry, self.config_data.get("watch_folder", ""))
+            _set_entry(self._poll_interval_entry, self.config_data.get("poll_interval", 10))
+            self._auto_action_combo.set(self.config_data.get("auto_action", "Mantener original"))
+            self._manual_action_combo.set(self.config_data.get("manual_action", "Mantener original"))
+            if self.config_data.get("auto_extract_archives", False):
+                self._auto_extract_switch.select()
+            else:
+                self._auto_extract_switch.deselect()
+            conf = int(self.config_data.get("min_confidence", 70))
+            self._conf_slider.set(conf)
+            self._conf_label.configure(text=f"{conf}%")
+            if self.config_data.get("start_with_windows"):
+                self._autostart_switch.select()
+            else:
+                self._autostart_switch.deselect()
+            if self.config_data.get("desktop_notifications", True):
+                self._notif_switch.select()
+            else:
+                self._notif_switch.deselect()
+            if self.config_data.get("rename_local", True):
+                self._rename_local_switch.select()
+            else:
+                self._rename_local_switch.deselect()
 
-        for key, entry in self._amule_entries.items():
-            _set_entry(entry, self.config_data.get(key, ""))
+            for key, entry in (getattr(self, "_amule_entries", None) or {}).items():
+                _set_entry(entry, self.config_data.get(key, ""))
 
-        saved = self.config_data.get("ftp_categories", {"tv": [], "movie": [], "libro": []})
-        self._categories = {mt: [dict(c) for c in saved.get(mt, [])] for mt in self._CATEGORY_TYPES}
-        for mt in self._CATEGORY_TYPES:
-            self._render_category_list(mt)
+        if self._config_tab_built("categories"):
+            saved = self.config_data.get("ftp_categories", {"tv": [], "movie": [], "libro": []})
+            self._categories = {mt: [dict(c) for c in saved.get(mt, [])] for mt in self._CATEGORY_TYPES}
+            for mt in self._CATEGORY_TYPES:
+                self._render_category_list(mt)
 
     # ── Categorías FTP (rutas raíz + clasificación automática por género) ──
 
@@ -18360,6 +18904,13 @@ class App(_AppBase):
 
         for mt in self._CATEGORY_TYPES:
             self._render_category_list(mt)
+        # Los géneros TMDB solo hacen falta aquí: se piden al construir
+        # esta pestaña (antes, al construir todo Ajustes), y al llegar
+        # refrescan sus checkboxes (ver _rebuild_all_category_checkboxes).
+        try:
+            self._load_genres_async()
+        except Exception:
+            pass
 
     def _new_ftp_category(self) -> dict:
         return {
@@ -18522,6 +19073,11 @@ class App(_AppBase):
         threading.Thread(target=worker, daemon=True).start()
 
     def _rebuild_all_category_checkboxes(self):
+        # Sin la pestaña "Categorías" construida no hay nada que repintar
+        # (ver _ensure_config_tab): los géneros quedan en caché y se usan
+        # al construirla.
+        if not self._config_tab_built("categories"):
+            return
         self._sync_category_widgets_to_data("tv")
         self._sync_category_widgets_to_data("movie")
         self._render_category_list("tv")
@@ -18697,10 +19253,28 @@ class App(_AppBase):
         self.after(0, _finish)
 
     def _add_entries(self, paths, same_series_prompt: bool = False):
-        existing = {e.path for e in self.files}
+        # Identidad por clave canónica (ver core/path_key.py): el path
+        # crudo tal como llega (diálogo, arrastre, rglob) puede traer
+        # otra caja u otros separadores que el de una fila ya existente
+        # del MISMO archivo — comparar strings tal cual duplicaba filas.
+        from core.path_key import canon_path
+        existing = set()
+        for e in self.files:
+            try:
+                existing.add(e.path_key)
+            except Exception:
+                try:
+                    existing.add(canon_path(e.path))
+                except Exception:
+                    pass
         added = []
         for p in paths:
-            if p not in existing:
+            try:
+                key = canon_path(p)
+            except Exception:
+                key = p
+            if key not in existing:
+                existing.add(key)
                 entry = FileEntry(p)
                 self.files.append(entry)
                 added.append(entry)
@@ -18956,7 +19530,7 @@ class App(_AppBase):
             st_lbl = None
             if "stat" not in hidden:
                 c = self._file_table.cell(rf, "stat", pady=2); cells.append(c)
-                st_lbl = ctk.CTkLabel(c, text=_status_label(entry.status),
+                st_lbl = ctk.CTkLabel(c, text=_file_status_text(entry),
                                        anchor="w", font=self._font_small,
                                        text_color=sc.get(entry.status, PENDING_COLOR))
                 st_lbl.pack(fill="both", expand=True)
@@ -19169,7 +19743,7 @@ class App(_AppBase):
                                         self._font_det),
                         text_color=ACCENT if entry.remote_dir_override else PENDING_COLOR)
                 if row["status"] is not None:
-                    row["status"].configure(text=_status_label(entry.status),
+                    row["status"].configure(text=_file_status_text(entry),
                                              text_color=sc.get(entry.status, PENDING_COLOR))
                 if row["size"] is not None:
                     row["size"].configure(text=self._file_size_text(entry))
@@ -19254,6 +19828,7 @@ class App(_AppBase):
         """Añade el archivo a la cola. Si hay subida activa lo encola; si no, la inicia."""
         if self._upload_running:
             if entry not in self._upload_queue:
+                self._reserve_manual_entries([entry])
                 self._upload_queue.append(entry)
                 entry.ftp_progress = 0.0
                 entry.ftp_speed    = 0.0
@@ -21016,6 +21591,41 @@ class App(_AppBase):
         self.after(0, self._sort_files_by_episode)
         self.after(0, lambda: self._set_status("Renombrado completado", SUCCESS_COLOR))
 
+    @staticmethod
+    def _db_key(original_path: str) -> str:
+        """Clave canónica en auto_processed.json (ver core/path_key.py):
+        la misma que usa AutoWatcher para sus marcas, para que caja o
+        separadores distintos no rompan la búsqueda."""
+        try:
+            from core.path_key import canon_path
+            return canon_path(original_path)
+        except Exception:
+            return original_path or ""
+
+    def _slim_pending_for_path(self, original_path: str):
+        """Pendiente de adelgazamiento que casa con el archivo local
+        *original_path*, o None (ver core/slim_pending.find_match: exige
+        identidad y que pese <= 85% del gordo)."""
+        try:
+            from core.slim_pending import load_pending, find_match
+            from core.api_client import detect_episode
+            import re as _re
+            try:
+                size = Path(original_path).stat().st_size
+            except OSError:
+                return None
+            name = Path(original_path).name
+            det = detect_episode(name) or {}
+            season, episode = det.get("season"), det.get("episode")
+            if season and episode:
+                return find_match(load_pending(), "tv", det.get("title", ""),
+                                  season, episode, "", size)
+            m = _re.search(r"\b(?:19|20)\d{2}\b", name)
+            return find_match(load_pending(), "movie", det.get("title", "") or name,
+                              None, None, m.group(0) if m else "", size)
+        except Exception:
+            return None
+
     def _auto_processed_status(self, original_path: str) -> str:
         """Estado registrado en auto_processed.json para original_path, o "" si no hay nada."""
         import json as _json
@@ -21026,7 +21636,7 @@ class App(_AppBase):
                 if not p.exists():
                     return ""
                 db = _json.loads(p.read_text(encoding="utf-8"))
-            return db.get(original_path, {}).get("status", "")
+            return db.get(self._db_key(original_path), {}).get("status", "")
         except Exception:
             return ""
 
@@ -21039,14 +21649,31 @@ class App(_AppBase):
         misma lectura desactualizada y uno de los dos perdía su marca
         "subido", haciendo que ese archivo "reapareciera" como nuevo.
 
-        Al pasar a "subiendo" se guarda el estado previo (p.ej.
-        "identificado_manual") como "prev_status" en la propia entrada --
-        ver _unmark_auto_processed/_cleanup_stale_uploading_marks, que lo
-        usan para restaurar en vez de borrar del todo si la subida se
-        interrumpe (la app se cierra a medias) sin llegar a "subido"."""
+        Al pasar a "subiendo" o a "en_cola_manual" se guarda el estado
+        previo (p.ej. "identificado_manual") como "prev_status" en la
+        propia entrada -- ver _unmark_auto_processed/
+        _cleanup_stale_uploading_marks, que lo usan para restaurar en vez
+        de borrar del todo si la subida se interrumpe (la app se cierra a
+        medias) sin llegar a "subido". "en_cola_manual" como PREVIO no se
+        restaura nunca (reserva transitoria, ver _restore_or_delete_entry).
+
+        Excepción: "renombrado"/"identificado_manual" de un ligero con
+        pendiente de adelgazamiento NO se marca -- esa protección ("el
+        usuario lo lleva, no tocar") dejaría el reemplazo colgado para
+        siempre, con la fila en "Renombrado" y el pendiente sin completar
+        jamás (ver _slim_pending_for_path)."""
         import json as _json, time as _t
         try:
+            if status in ("renombrado", "identificado_manual") \
+                    and self._slim_pending_for_path(original_path) is not None:
+                try:
+                    _log.info("Adelgazamiento: %s tiene pendiente, no se protege del automático",
+                              Path(original_path).name)
+                except Exception:
+                    pass
+                return
             from core.auto_watcher import _processed_db_path, _DB_LOCK
+            key = self._db_key(original_path)
             with _DB_LOCK:
                 p = _processed_db_path()
                 db = {}
@@ -21056,13 +21683,13 @@ class App(_AppBase):
                     except Exception:
                         pass
                 entry = {"status": status, "new_name": new_name, "ts": _t.time()}
-                if status == "subiendo":
-                    prev = db.get(original_path, {})
+                if status in ("subiendo", "en_cola_manual"):
+                    prev = db.get(key, {})
                     prev_status = prev.get("status", "")
-                    if prev_status and prev_status != "subiendo":
+                    if prev_status and prev_status not in ("subiendo", "en_cola_manual"):
                         entry["prev_status"]   = prev_status
                         entry["prev_new_name"] = prev.get("new_name", "")
-                db[original_path] = entry
+                db[key] = entry
                 p.write_text(_json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
@@ -21084,21 +21711,25 @@ class App(_AppBase):
                 if not p.exists():
                     return
                 db = _json.loads(p.read_text(encoding="utf-8"))
-                if original_path in db:
-                    self._restore_or_delete_entry(db, original_path)
+                key = self._db_key(original_path)
+                if key in db:
+                    self._restore_or_delete_entry(db, key)
                     p.write_text(_json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
 
     @staticmethod
     def _restore_or_delete_entry(db: dict, key: str):
-        """Restaura la entrada *key* de *db* a su "prev_status" (si lo
-        tenía) o la borra del todo (si no) -- lógica compartida entre
+        """Restaura la entrada *key* de *db* a su "prev_status" (si es uno
+        real) o la borra del todo -- lógica compartida entre
         _unmark_auto_processed y _cleanup_stale_uploading_marks. Muta *db*
-        in-place, no escribe a disco."""
+        in-place, no escribe a disco. "en_cola_manual" no cuenta como
+        previo restaurable en ningún caso: es una reserva transitoria de
+        tanda (ver _reserve_manual_entries) y restaurarla dejaría el
+        archivo vetado al automático para siempre."""
         entry = db.get(key, {})
         prev_status = entry.get("prev_status", "")
-        if prev_status:
+        if prev_status and prev_status != "en_cola_manual":
             db[key] = {
                 "status":   prev_status,
                 "new_name": entry.get("prev_new_name", ""),
@@ -21110,8 +21741,9 @@ class App(_AppBase):
     def _cleanup_stale_uploading_marks(self):
         """Al arrancar, ninguna subida manual puede estar realmente "en
         marcha" todavía (acabamos de abrir la app) — cualquier marca
-        "subiendo" que quede en auto_processed.json es forzosamente de una
-        sesión anterior cerrada a medias (cierre forzado, cuelgue, etc.).
+        "subiendo" o "en_cola_manual" que quede en auto_processed.json es
+        forzosamente de una sesión anterior cerrada a medias (cierre
+        forzado, cuelgue, etc.).
 
         Antes esto borraba la entrada entera, lo que también borraba
         cualquier "identificado_manual" previo que _mark_auto_processed
@@ -21131,7 +21763,8 @@ class App(_AppBase):
                 if not p.exists():
                     return
                 db = _json.loads(p.read_text(encoding="utf-8"))
-                stale = [k for k, v in db.items() if v.get("status") == "subiendo"]
+                stale = [k for k, v in db.items()
+                         if v.get("status") in ("subiendo", "en_cola_manual")]
                 if not stale:
                     return
                 for k in stale:
@@ -21279,6 +21912,7 @@ class App(_AppBase):
             added = 0
             for e in entries:
                 if e not in self._upload_queue and e.status in ("listo", "renombrado"):
+                    self._reserve_manual_entries([e])
                     self._upload_queue.append(e)
                     e.ftp_progress = 0.0
                     e.ftp_speed = 0.0
@@ -21494,149 +22128,163 @@ class App(_AppBase):
     def _collect_settings(self) -> dict:
         """Recoge de los widgets de Ajustes todos los valores actuales, sin
         guardarlos. Se usa tanto para el guardado único como para detectar
-        cambios sin guardar al salir de la pestaña."""
-        try:
-            poll = int(self._poll_interval_entry.get().strip() or 10)
-            if poll < 5:
-                poll = 5
-        except ValueError:
-            poll = 10
-        try:
-            parallel = max(1, min(5, int(self._ftp_parallel_combo.get() or 1)))
-        except ValueError:
-            parallel = 1
-        try:
-            streams = max(1, min(8, int(self._ftp_streams_combo.get() or 4)))
-        except ValueError:
-            streams = 4
-        try:
-            speed = max(0.0, float(self._ftp_speed_entry.get().replace(",", ".") or 0))
-        except ValueError:
-            speed = 0.0
-        try:
-            retries = max(0, min(10, int(self._ftp_retries_entry.get() or 3)))
-        except ValueError:
-            retries = 3
-        try:
-            quota_gb = max(1, int(self._reservation_quota_entry.get().strip() or 100))
-        except ValueError:
-            quota_gb = 100
-        try:
-            unstuck_max = max(1, min(20, int(self._unstuck_max_retries_entry.get().strip() or 5)))
-        except ValueError:
-            unstuck_max = 5
-        try:
-            unstuck_base = max(5, min(1440, int(self._unstuck_backoff_base_entry.get().strip() or 30)))
-        except ValueError:
-            unstuck_base = 30
-        try:
-            unstuck_maxmin = max(30, min(10080, int(self._unstuck_backoff_max_entry.get().strip() or 480)))
-        except ValueError:
-            unstuck_maxmin = 480
-        try:
-            unstuck_ttl = max(30, min(10080, int(self._unstuck_ttl_entry.get().strip() or 1440)))
-        except ValueError:
-            unstuck_ttl = 1440
+        cambios sin guardar al salir de la pestaña.
 
-        for mt in self._CATEGORY_TYPES:
-            self._sync_category_widgets_to_data(mt)
+        Solo incluye las sub-pestañas YA CONSTRUIDAS (ver
+        _ensure_config_tab): lo nunca abierto equivale a "sin cambios" y
+        no se compara ni se guarda, así se conserva tal cual."""
+        data = {}
+        if self._config_tab_built("general"):
+            try:
+                poll = int(self._poll_interval_entry.get().strip() or 10)
+                if poll < 5:
+                    poll = 5
+            except (ValueError, AttributeError):
+                poll = 10
+            try:
+                unstuck_max = max(1, min(20, int(self._unstuck_max_retries_entry.get().strip() or 5)))
+            except ValueError:
+                unstuck_max = 5
+            try:
+                unstuck_base = max(5, min(1440, int(self._unstuck_backoff_base_entry.get().strip() or 30)))
+            except ValueError:
+                unstuck_base = 30
+            try:
+                unstuck_maxmin = max(30, min(10080, int(self._unstuck_backoff_max_entry.get().strip() or 480)))
+            except ValueError:
+                unstuck_maxmin = 480
+            try:
+                unstuck_ttl = max(30, min(10080, int(self._unstuck_ttl_entry.get().strip() or 1440)))
+            except ValueError:
+                unstuck_ttl = 1440
+            data.update({
+                "watch_folder":          self._watch_folder_entry.get().strip(),
+                "poll_interval":         poll,
+                "auto_action":           self._auto_action_combo.get(),
+                "manual_action":         self._manual_action_combo.get(),
+                "auto_extract_archives": self._auto_extract_switch.get() in (True, "1", 1),
+                "start_with_windows":    self._autostart_switch.get() in (True, "1", 1),
+                "desktop_notifications": self._notif_switch.get() in (True, "1", 1),
+                "min_confidence":        int(self._conf_slider.get()),
+                "rename_local":          self._rename_local_switch.get() in (True, "1", 1),
 
-        return {
-            "watch_folder":          self._watch_folder_entry.get().strip(),
-            "poll_interval":         poll,
-            "auto_action":           self._auto_action_combo.get(),
-            "manual_action":         self._manual_action_combo.get(),
-            "auto_extract_archives": self._auto_extract_switch.get() in (True, "1", 1),
-            "start_with_windows":    self._autostart_switch.get() in (True, "1", 1),
-            "desktop_notifications": self._notif_switch.get() in (True, "1", 1),
-            "min_confidence":        int(self._conf_slider.get()),
-            "rename_local":          self._rename_local_switch.get() in (True, "1", 1),
-            "rename_remote":         self._rename_remote_switch.get() in (True, "1", 1),
+                "amule_host":     self._amule_entries["amule_host"].get().strip(),
+                "amule_port":     int(self._amule_entries["amule_port"].get() or 4712),
+                "amule_password": self._amule_entries["amule_password"].get(),
 
-            "ftp_host":        self._ftp_entries["ftp_host"].get().strip(),
-            "ftp_port":        int(self._ftp_entries["ftp_port"].get() or 21),
-            "ftp_user":        self._ftp_entries["ftp_user"].get().strip(),
-            "ftp_password":    self._ftp_entries["ftp_password"].get(),
-            "ftp_protocol":    self._selected_protocol()[0],
-            "ftp_use_tls":     self._selected_protocol()[1],
-            "ftp_parallel":    parallel,
-            "ftp_upload_streams": streams,
-            "ftp_speed_limit": speed,
-            "ftp_retries":     retries,
-            "shared_data_ftp_path": self._shared_data_ftp_path_entry.get().strip(),
-            "app_user_name":        self._app_user_name_entry.get().strip(),
+                "unstuck_enabled":              self._unstuck_switch.get() in (True, "1", 1),
+                "unstuck_max_retries":          unstuck_max,
+                "unstuck_backoff_base_minutes": unstuck_base,
+                "unstuck_backoff_max_minutes":  unstuck_maxmin,
+                "unstuck_file_ttl_minutes":     unstuck_ttl,
+            })
+        if self._config_tab_built("ftp"):
+            try:
+                parallel = max(1, min(5, int(self._ftp_parallel_combo.get() or 1)))
+            except ValueError:
+                parallel = 1
+            try:
+                streams = max(1, min(8, int(self._ftp_streams_combo.get() or 4)))
+            except ValueError:
+                streams = 4
+            try:
+                speed = max(0.0, float(self._ftp_speed_entry.get().replace(",", ".") or 0))
+            except ValueError:
+                speed = 0.0
+            try:
+                retries = max(0, min(10, int(self._ftp_retries_entry.get() or 3)))
+            except ValueError:
+                retries = 3
+            data.update({
+                "ftp_host":        self._ftp_entries["ftp_host"].get().strip(),
+                "ftp_port":        int(self._ftp_entries["ftp_port"].get() or 21),
+                "ftp_user":        self._ftp_entries["ftp_user"].get().strip(),
+                "ftp_password":    self._ftp_entries["ftp_password"].get(),
+                "ftp_protocol":    self._selected_protocol()[0],
+                "ftp_use_tls":     self._selected_protocol()[1],
+                "ftp_parallel":    parallel,
+                "ftp_upload_streams": streams,
+                "ftp_speed_limit": speed,
+                "ftp_retries":     retries,
+                "shared_data_ftp_path": self._shared_data_ftp_path_entry.get().strip(),
+                "app_user_name":        self._app_user_name_entry.get().strip(),
+            })
+        if self._config_tab_built("tmdb"):
+            data.update({
+                "tmdb_api_key": self._api_key_entry.get().strip(),
+                "language":     self._lang_combo.get(),
 
-            "tmdb_api_key": self._api_key_entry.get().strip(),
-            "language":     self._lang_combo.get(),
+                "ai_fallback_enabled": self._ai_fallback_switch.get() in (True, "1", 1),
+                "ai_api_key":          self._ai_key_entry.get().strip(),
 
-            "ai_fallback_enabled": self._ai_fallback_switch.get() in (True, "1", 1),
-            "ai_api_key":          self._ai_key_entry.get().strip(),
+                "comicvine_api_key": self._comicvine_key_entry.get().strip(),
+                "google_books_api_key": self._google_books_key_entry.get().strip(),
+            })
+        if self._config_tab_built("templates"):
+            data.update({
+                "tv_template":    self._tpl_entries["tv_template"].get().strip(),
+                "movie_template": self._tpl_entries["movie_template"].get().strip(),
+                "anime_template": self._tpl_entries["anime_template"].get().strip(),
+                "libro_template": self._tpl_entries["libro_template"].get().strip(),
+                "comic_template": self._tpl_entries["comic_template"].get().strip(),
+                "rename_remote":  self._rename_remote_switch.get() in (True, "1", 1),
 
-            "comicvine_api_key": self._comicvine_key_entry.get().strip(),
-            "google_books_api_key": self._google_books_key_entry.get().strip(),
-
-            "plex_enabled": self._plex_switch.get() in (True, "1", 1),
-            "plex_host":    self._plex_host_entry.get().strip(),
-            "plex_token":   self._plex_token_entry.get().strip(),
-            "jellyfin_enabled":  self._jellyfin_switch.get() in (True, "1", 1),
-            "jellyfin_host":     self._jellyfin_host_entry.get().strip(),
-            "jellyfin_api_key":  self._jellyfin_key_entry.get().strip(),
-            "jellyfin_username": self._jellyfin_username_entry.get().strip(),
-
-            "tv_template":    self._tpl_entries["tv_template"].get().strip(),
-            "movie_template": self._tpl_entries["movie_template"].get().strip(),
-            "anime_template": self._tpl_entries["anime_template"].get().strip(),
-            "libro_template": self._tpl_entries["libro_template"].get().strip(),
-            "comic_template": self._tpl_entries["comic_template"].get().strip(),
-
-            "custom_links_show": [
-                {"name": w["name"].get().strip(), "url_template": w["url"].get().strip(),
-                 "background": w["background"].get()}
-                for w in self._custom_links_widgets["show"]
-                if w["name"].get().strip() or w["url"].get().strip()
-            ],
-            "custom_links_season": [
-                {"name": w["name"].get().strip(), "url_template": w["url"].get().strip(),
-                 "background": w["background"].get()}
-                for w in self._custom_links_widgets["season"]
-                if w["name"].get().strip() or w["url"].get().strip()
-            ],
-            "custom_links_episode": [
-                {"name": w["name"].get().strip(), "url_template": w["url"].get().strip(),
-                 "background": w["background"].get()}
-                for w in self._custom_links_widgets["episode"]
-                if w["name"].get().strip() or w["url"].get().strip()
-            ],
-            "custom_links_movie": [
-                {"name": w["name"].get().strip(), "url_template": w["url"].get().strip(),
-                 "background": w["background"].get()}
-                for w in self._custom_links_widgets["movie"]
-                if w["name"].get().strip() or w["url"].get().strip()
-            ],
-
-            "reservation_quota_gb": quota_gb,
-
-            "ftp_categories": {
-                mt: [self._category_to_plain_dict(c) for c in self._categories[mt]]
+                "custom_links_show": [
+                    {"name": w["name"].get().strip(), "url_template": w["url"].get().strip(),
+                     "background": w["background"].get()}
+                    for w in (self._custom_links_widgets or {}).get("show", [])
+                    if w["name"].get().strip() or w["url"].get().strip()
+                ],
+                "custom_links_season": [
+                    {"name": w["name"].get().strip(), "url_template": w["url"].get().strip(),
+                     "background": w["background"].get()}
+                    for w in (self._custom_links_widgets or {}).get("season", [])
+                    if w["name"].get().strip() or w["url"].get().strip()
+                ],
+                "custom_links_episode": [
+                    {"name": w["name"].get().strip(), "url_template": w["url"].get().strip(),
+                     "background": w["background"].get()}
+                    for w in (self._custom_links_widgets or {}).get("episode", [])
+                    if w["name"].get().strip() or w["url"].get().strip()
+                ],
+                "custom_links_movie": [
+                    {"name": w["name"].get().strip(), "url_template": w["url"].get().strip(),
+                     "background": w["background"].get()}
+                    for w in (self._custom_links_widgets or {}).get("movie", [])
+                    if w["name"].get().strip() or w["url"].get().strip()
+                ],
+            })
+        if self._config_tab_built("categories"):
+            for mt in self._CATEGORY_TYPES:
+                self._sync_category_widgets_to_data(mt)
+            data["ftp_categories"] = {
+                mt: [self._category_to_plain_dict(c) for c in (self._categories or {}).get(mt, [])]
                 for mt in self._CATEGORY_TYPES
-            },
-
-            "amule_host":     self._amule_entries["amule_host"].get().strip(),
-            "amule_port":     int(self._amule_entries["amule_port"].get() or 4712),
-            "amule_password": self._amule_entries["amule_password"].get(),
-
-            "p2p_trusted_groups": self._provider_list_from_box(self._trusted_groups_box),
-            "p2p_blocked_groups": self._provider_list_from_box(self._blocked_groups_box),
-
-            **self._collect_download_filter_lists(),
-            "p2p_score_weights": self._collect_score_weights(),
-
-            "unstuck_enabled":              self._unstuck_switch.get() in (True, "1", 1),
-            "unstuck_max_retries":          unstuck_max,
-            "unstuck_backoff_base_minutes": unstuck_base,
-            "unstuck_backoff_max_minutes":  unstuck_maxmin,
-            "unstuck_file_ttl_minutes":     unstuck_ttl,
-        }
+            }
+        if self._config_tab_built("media"):
+            data.update({
+                "plex_enabled": self._plex_switch.get() in (True, "1", 1),
+                "plex_host":    self._plex_host_entry.get().strip(),
+                "plex_token":   self._plex_token_entry.get().strip(),
+                "jellyfin_enabled":  self._jellyfin_switch.get() in (True, "1", 1),
+                "jellyfin_host":     self._jellyfin_host_entry.get().strip(),
+                "jellyfin_api_key":  self._jellyfin_key_entry.get().strip(),
+                "jellyfin_username": self._jellyfin_username_entry.get().strip(),
+            })
+        if self._config_tab_built("reservas"):
+            try:
+                quota_gb = max(1, int(self._reservation_quota_entry.get().strip() or 100))
+            except ValueError:
+                quota_gb = 100
+            data["reservation_quota_gb"] = quota_gb
+        if self._config_tab_built("download_prefs"):
+            data.update({
+                "p2p_trusted_groups": self._provider_list_from_box(self._trusted_groups_box),
+                "p2p_blocked_groups": self._provider_list_from_box(self._blocked_groups_box),
+                **self._collect_download_filter_lists(),
+                "p2p_score_weights": self._collect_score_weights(),
+            })
+        return data
 
     @staticmethod
     def _provider_list_from_box(box) -> list:
@@ -21781,18 +22429,29 @@ class App(_AppBase):
             pass
 
     def _save_all_settings(self):
+        # Solo trae las sub-pestañas ya construidas (ver _collect_settings);
+        # lo nunca abierto conserva lo guardado.
         data = self._collect_settings()
-        resolved_name = self._resolve_app_user_name_change(data["app_user_name"])
-        if resolved_name != data["app_user_name"]:
-            data["app_user_name"] = resolved_name
-            self._app_user_name_entry.delete(0, "end")
-            self._app_user_name_entry.insert(0, resolved_name)
+        cfg = self.config_data.get
+        if "app_user_name" in data:
+            resolved_name = self._resolve_app_user_name_change(data["app_user_name"])
+            if resolved_name != data["app_user_name"]:
+                data["app_user_name"] = resolved_name
+                try:
+                    self._app_user_name_entry.delete(0, "end")
+                    self._app_user_name_entry.insert(0, resolved_name)
+                except Exception:
+                    pass
         self.config_data.set_many(data)
         self.config_data.save()
-        self._apply_provider_lists(data)
-        self._set_autostart(data["start_with_windows"])
-        self.tmdb.set_api_key(data["tmdb_api_key"])
-        self.tmdb.set_language(data["language"])
+        self._apply_provider_lists({**{k: cfg(k) for k in (
+            "p2p_trusted_groups", "p2p_blocked_groups", "p2p_lang_vos",
+            "p2p_lang_fr", "p2p_lang_it", "p2p_lang_de", "p2p_lang_pt",
+            "p2p_lang_ca", "p2p_blocked_adult", "p2p_blocked_sample",
+            "p2p_blocked_scr", "p2p_blocked_exts", "p2p_score_weights")}, **data})
+        self._set_autostart(data.get("start_with_windows", cfg("start_with_windows")))
+        self.tmdb.set_api_key(data.get("tmdb_api_key", cfg("tmdb_api_key", "")))
+        self.tmdb.set_language(data.get("language", cfg("language", "es-ES")))
         # Sin esto, self.comicvine/self.book_client (creados una sola vez en
         # __init__) se quedaban con la key vieja hasta reiniciar la app --
         # el "Guardar" la persistía en config.json, pero el cliente en
@@ -21801,9 +22460,9 @@ class App(_AppBase):
         # tras poner una API Key de Google Books y guardar, las búsquedas
         # seguían fallando por la cuota anónima porque la key nunca llegó
         # al cliente ya en uso.
-        self.comicvine.set_api_key(data["comicvine_api_key"])
-        self.book_client.set_api_key(data["google_books_api_key"])
-        if self._watcher and self._watcher.running:
+        self.comicvine.set_api_key(data.get("comicvine_api_key", cfg("comicvine_api_key", "")))
+        self.book_client.set_api_key(data.get("google_books_api_key", cfg("google_books_api_key", "")))
+        if self._watcher and self._watcher.running and "poll_interval" in data:
             self._watcher.poll_interval = data["poll_interval"]
         self._invalidate_missing_ep_detail_frames()
         self._set_status("✓ Configuración guardada", SUCCESS_COLOR)
@@ -23481,6 +24140,7 @@ class App(_AppBase):
             ColumnSpec("logo", "", width=24),
             ColumnSpec("fav", "", width=32),
             ColumnSpec("reserve", "", width=32),
+            ColumnSpec("rescan", "", width=36),
             ColumnSpec("del", "", width=110),
         ])
         # Fila más alta que el resto: la celda "candidata" lleva dos líneas
@@ -23550,11 +24210,18 @@ class App(_AppBase):
         self._cleanup_ftp_tree_loaded_for = None   # ruta (o "loose:<ruta>") ya lista, ver _toggle_cleanup_ftp_tree
         self._cleanup_row_widgets = []   # [(item, row_frame), ...] -- para resaltar la fila seleccionada
         self._cleanup_delete_buttons = {}   # {item.ftp_path: botón "Eliminar"} -- deshabilitar/etiquetar durante el borrado
+        self._cleanup_rescan_buttons = {}   # {item.ftp_path: botón "↻"} -- deshabilitar durante el reescaneo
+        self._cleanup_rescanning = set()   # ftp_paths con reescaneo EN CURSO (ver _rescan_cleanup_item)
         self._cleanup_deleting_paths = set()   # ftp_paths con borrado EN CURSO (ver _confirm_and_delete_cleanup_item)
         # -- Adelgazar (ver core/slim_candidates.py) --
         # Series expandidas (serie -> capítulos con pesos). Las sub-filas no
         # cuentan para el paginado: solo se pintan bajo su padre.
         self._cleanup_expanded = set()   # {ftp_path, ...}
+        # Temporadas expandidas dentro de una serie ({(ftp_path, season)}).
+        # Acordeón por serie: solo una desplegada a la vez (ver
+        # _toggle_cleanup_season_expand) -- así nunca hay muchas filas
+        # visibles a la vez (límite de objetos GUI de Windows).
+        self._cleanup_expanded_seasons = set()
         # Árboles FTP por análisis ({ruta_carpeta: [(nombre, tamaño), ...]}),
         # solo cuando LIST -R funcionó durante el escaneo -- así expandir no
         # cuesta peticiones extra. Sin esto (caché antigua), expandir lista
@@ -23576,6 +24243,7 @@ class App(_AppBase):
         # CTkFont nuevo (llamada a Tcl) por cada candidata de la lista.
         self._cleanup_name_font = ctk.CTkFont(size=13, weight="bold")
         self._cleanup_reason_font = ctk.CTkFont(size=11)
+        self._cleanup_icon_font = ctk.CTkFont(size=16)   # iconos ↻/🗑 (una sola, ver comentario de arriba)
 
         # Cargar el último análisis guardado (si lo hay) para no obligar
         # a repetir el escaneo completo -- que puede tardar más de un
@@ -24187,6 +24855,7 @@ class App(_AppBase):
         self._cleanup_table.clear_rows()
         self._cleanup_row_widgets = []
         self._cleanup_delete_buttons = {}
+        self._cleanup_rescan_buttons = {}
 
         flat = self._cleanup_flat_mode()
         items = self._cleanup_flat_rows if flat else self._cleanup_filtered_items
@@ -24480,6 +25149,8 @@ class App(_AppBase):
         key = item.ftp_path
         if key in self._cleanup_expanded:
             self._cleanup_expanded.discard(key)
+            self._cleanup_expanded_seasons = {
+                k for k in self._cleanup_expanded_seasons if k[0] != key}
         else:
             # Archivos sueltos: no hay nada que expandir (sus tamaños ya
             # se conocen y no hay capítulos dentro).
@@ -24490,6 +25161,20 @@ class App(_AppBase):
             self._cleanup_expanded.add(key)
             if self._cleanup_ep_files(item) is None and key not in self._cleanup_slim_loading:
                 self._fetch_cleanup_ep_files(item)
+        self._render_cleanup_page()
+
+    def _toggle_cleanup_season_expand(self, item, season):
+        """Acordeón de temporadas dentro de una serie expandida (igual que
+        la serie con "v"/">"): al desplegar una se colapsa la otra que
+        estuviera desplegada, para que nunca haya muchas filas visibles a
+        la vez (límite de objetos GUI de Windows)."""
+        key = (item.ftp_path, season)
+        if key in self._cleanup_expanded_seasons:
+            self._cleanup_expanded_seasons.discard(key)
+        else:
+            self._cleanup_expanded_seasons = {
+                k for k in self._cleanup_expanded_seasons if k[0] != item.ftp_path}
+            self._cleanup_expanded_seasons.add(key)
         self._render_cleanup_page()
 
     def _fetch_cleanup_ep_files(self, item):
@@ -24851,6 +25536,26 @@ class App(_AppBase):
                        "Ocupa cuota de reserva."))
         res_btn.pack(fill="both", expand=True)
 
+        # "↻" en vez de "🔄": el emoji U+1F504 renderiza con un recuadro
+        # visible en este sistema (mismo artefacto de fuente que ▼/▶, ver
+        # _build_missing_ep_row). Los sueltos no tienen carpeta que
+        # re-listar (su foto viene del análisis plano), así que no llevan
+        # botón, igual que no llevan desplegable.
+        is_loose = bool(getattr(item, "loose_file_paths", None))
+        if not is_loose:
+            c = _cell("rescan")
+            rescanning = item.ftp_path in self._cleanup_rescanning
+            rescan_btn = ctk.CTkButton(c, text="…" if rescanning else "↻", height=24,
+                          font=self._cleanup_icon_font,
+                          fg_color="transparent", border_width=1,
+                          state="disabled" if rescanning else "normal",
+                          command=lambda it=item: self._rescan_cleanup_item(it))
+            attach_tooltip(rescan_btn, lambda: "Volver a listar esta serie en el servidor: "
+                           "recalcula su peso y sus capítulos adelgazables ahora mismo, "
+                           "sin repetir «Analizar servidor».")
+            rescan_btn.pack(fill="both", expand=True)
+            self._cleanup_rescan_buttons[item.ftp_path] = rescan_btn
+
         # Protegido (favorito o reservado) nunca se borra desde aquí, ni
         # aunque el filtro correspondiente lo esté mostrando -- deshabilitar
         # en vez de ocultar, para que quede claro POR QUÉ no se puede.
@@ -24970,31 +25675,68 @@ class App(_AppBase):
             return
 
         # Por temporada (clave 0 = sin número reconocido): cabecera de
-        # temporada con su botón + filas de capítulos.
+        # temporada COLAPSABLE con su botón + filas de capítulos solo si
+        # está desplegada. Acordeón por serie (ver
+        # _toggle_cleanup_season_expand): una serie con decenas de
+        # temporadas (p. ej. Doctor Who con clásica + nueva) son ~120
+        # widgets por temporada, y pintarlas todas de golpe agotaba el
+        # límite de objetos GUI de Windows (10000 por proceso) rompiendo
+        # el pintado de TODA la ventana. El botón "🪶 Adelgazar serie"
+        # de arriba sigue actuando sobre TODAS las candidatas (cands),
+        # y cada cabecera conserva su botón por temporada (también sobre
+        # su temporada completa); el detalle por capítulo de cada
+        # temporada se ve al desplegarla, y la lista completa está en la
+        # vista plana "Por capítulo".
         from core.slim_candidates import group_by_season
         grouped = group_by_season(cands)
         is_movie = item.media_type != "tv"
+        multi = (not is_movie) and len(grouped) > 1
         for season in sorted(grouped):
             sc = grouped[season]
-            if not is_movie and len(grouped) > 1:
+            if multi:
+                season_key = (item.ftp_path, season)
+                season_expanded = season_key in self._cleanup_expanded_seasons
                 s_fr = ctk.CTkFrame(body, fg_color=("gray84", "gray25"))
                 s_fr.pack(fill="x", **indent)
+                # Igual que la fila de serie (ver _build_cleanup_result_row):
+                # CTkLabel + bind con "v"/">" en vez de CTkButton con ▼/▶.
+                arrow = ctk.CTkLabel(s_fr, text="v" if season_expanded else ">",
+                                     cursor="hand2", text_color=PENDING_COLOR)
+                arrow.pack(side="left", padx=(8, 0), pady=3)
+                arrow.bind("<Button-1>", lambda e, it=item, s=season:
+                           self._toggle_cleanup_season_expand(it, s))
+                attach_tooltip(arrow, lambda ex=season_expanded: (
+                    "Colapsar capítulos." if ex else
+                    "Expandir: ver capítulos con sus pesos y qué conviene adelgazar."))
                 s_lbl = f"Temporada {season}" if season else "Sin temporada reconocible"
                 ctk.CTkLabel(s_fr, text=f"{s_lbl} — {len(sc)} adelgazable(s)",
                              font=small_font, anchor="w").pack(
-                    side="left", fill="x", expand=True, padx=(8, 4), pady=3)
+                    side="left", fill="x", expand=True, padx=(4, 4), pady=3)
                 ctk.CTkButton(s_fr, text=f"🪶 T{season} ({len(sc)})" if season else f"🪶 ({len(sc)})",
                               width=90,
                               command=lambda it=item, c=list(sc), s=season:
                               self._slim_download_many(it, c, f"'{it.name}' T{s}")
                               ).pack(side="right", padx=(4, 8), pady=3)
+                if not season_expanded:
+                    continue
             for d in sc[:30]:
                 f_fr = ctk.CTkFrame(body, fg_color=("gray92", "gray18"))
                 f_fr.pack(fill="x", **indent)
                 try:
                     from core.download_quality import _parse_season_episode
                     _se = _parse_season_episode(d["name"] or "")
-                    ep_txt = f"{_se[0]}x{_se[1]:02d} " if _se else ""
+                    if _se:
+                        # El marcador ya está dentro del propio nombre
+                        # ("fargo 1x01.mkv", "S01E01 ...") en el caso
+                        # normal: anteponerlo otra vez se vería dos veces
+                        # ("1x01 fargo 1x01.mkv"). Solo se antepone si el
+                        # nombre no lo trae en ninguna forma habitual.
+                        _low = (d["name"] or "").lower()
+                        _nxnn = f"{_se[0]}x{_se[1]:02d}"
+                        _sxey = f"s{_se[0]:02d}e{_se[1]:02d}"
+                        ep_txt = "" if (_nxnn in _low or _sxey in _low) else f"{_nxnn} "
+                    else:
+                        ep_txt = ""
                 except Exception:
                     ep_txt = ""
                 src_txt = {"desired": "deseado", "typical": "mediana",
@@ -25103,10 +25845,9 @@ class App(_AppBase):
         """Tras un reemplazo por adelgazamiento (evento "slim_replaced"
         del watcher: gordo borrado + ligera subida), la foto de Liberar
         espacio de esa serie quedó obsoleta y el capítulo seguiría
-        listado como gordo. Re-lista SOLO su carpeta (barato, sin repetir
-        "Analizar servidor") y re-aplica filtros para que desaparezca de
-        la lista. Sin la serie en el análisis actual, no hay nada que
-        refrescar."""
+        listado como gordo. Localiza la serie dueña y la re-lista (ver
+        _rescan_cleanup_item). Sin la serie en el análisis actual, no hay
+        nada que refrescar."""
         heavy = (heavy_remote_file or "").replace("\\", "/").rstrip("/")
         if not heavy:
             return
@@ -25118,31 +25859,58 @@ class App(_AppBase):
                 break
         if owner is None:
             return
-        base = (owner.ftp_path or "").rstrip("/")
+        self._rescan_cleanup_item(owner)
+
+    def _rescan_cleanup_item(self, item):
+        """Re-lista SOLO la carpeta de *item* en el servidor (barato, sin
+        repetir "Analizar servidor") y re-aplica filtros -- para el botón
+        ↻ de cada serie y para el refresco tras un reemplazo (ver
+        _refresh_cleanup_item_after_replace). Si ya hay un reescaneo suyo
+        en curso, se ignora el segundo clic."""
+        base = (getattr(item, "ftp_path", "") or "").rstrip("/")
+        if not base:
+            return
+        if base in getattr(self, "_cleanup_rescanning", set()):
+            self._set_status(f"'{item.name}' ya se está actualizando…", PENDING_COLOR)
+            return
+        self._cleanup_rescanning.add(base)
         trees = getattr(self, "_cleanup_trees", {}) or {}
         for folder in [f for f in trees
                        if (f or "").rstrip("/") == base or (f or "").rstrip("/").startswith(base + "/")]:
             trees.pop(folder, None)
         try:
-            (getattr(self, "_cleanup_ep_cache", {}) or {}).pop(owner.ftp_path, None)
+            (getattr(self, "_cleanup_ep_cache", {}) or {}).pop(item.ftp_path, None)
         except Exception:
             pass
+        btn = (getattr(self, "_cleanup_rescan_buttons", {}) or {}).get(item.ftp_path)
+        if btn is not None:
+            try:
+                btn.configure(state="disabled", text="…")
+            except Exception:
+                pass
         # Misma conexión propia que _fetch_cleanup_ep_files (nunca
         # self.ftp, que es del hilo principal).
-        self._set_status(f"Actualizando '{owner.name}' en Liberar espacio…", PENDING_COLOR)
+        self._set_status(f"Actualizando '{item.name}' en Liberar espacio…", PENDING_COLOR)
 
         def worker():
             tree = None
             own_ftp = self._new_ftp_client()
             try:
-                own_ftp.connect(
+                ok, _msg = own_ftp.connect(
                     self.config_data.get("ftp_host", ""),
                     int(self.config_data.get("ftp_port", 21)),
                     self.config_data.get("ftp_user", ""),
                     self.config_data.get("ftp_password", ""),
                     self.config_data.get("ftp_use_tls", False))
-                tree = own_ftp.get_folder_tree(base)
+                if not ok:
+                    _log.warning("Reescaneo de '%s': sin conexión (%s)", item.name, _msg)
+                    tree = None
+                else:
+                    tree = own_ftp.get_folder_tree(base)
+                    if not tree:
+                        _log.warning("Reescaneo de '%s': árbol vacío para %s", item.name, base)
             except Exception:
+                _log.warning("Reescaneo de '%s' falló", item.name, exc_info=True)
                 tree = None
             finally:
                 try:
@@ -25151,18 +25919,31 @@ class App(_AppBase):
                     pass
 
             def _apply():
+                try:
+                    self._cleanup_rescanning.discard(base)
+                except Exception:
+                    pass
                 if tree:
                     try:
-                        for folder, entries in tree.items():
-                            if folder:
-                                trees[folder] = [(n, int(s or 0)) for n, s in (entries or [])]
+                        _ep_cache = getattr(self, "_cleanup_ep_cache", None)
+                        if _ep_cache is None:
+                            _ep_cache = {}
+                            self._cleanup_ep_cache = _ep_cache
                     except Exception:
-                        pass
+                        _ep_cache = {}
+                    _store_cleanup_retree(
+                        trees, _ep_cache, item.ftp_path, tree, _time.time())
                     self._apply_cleanup_filters(preserve_page=True)
-                    self._set_status(f"'{owner.name}' actualizado en Liberar espacio.",
+                    self._set_status(f"'{item.name}' actualizado en Liberar espacio.",
                                      SUCCESS_COLOR)
                 else:
-                    self._set_status(f"No se pudo actualizar '{owner.name}': "
+                    btn = (getattr(self, "_cleanup_rescan_buttons", {}) or {}).get(item.ftp_path)
+                    if btn is not None:
+                        try:
+                            btn.configure(state="normal", text="↻")
+                        except Exception:
+                            pass
+                    self._set_status(f"No se pudo actualizar '{item.name}': "
                                      "pulsa «Analizar servidor».", WARNING_COLOR)
             self.after(0, _apply)
         threading.Thread(target=worker, daemon=True).start()

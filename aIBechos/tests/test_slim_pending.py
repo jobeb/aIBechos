@@ -1,4 +1,6 @@
-"""Reemplazo automático al adelgazar: la ligera borra al gordo (ver core/slim_pending.py)."""
+"""Reemplazo automático al adelgazar (ver core/slim_pending.py): primero
+sube la ligera y solo con ella confirmada se borra al gordo -- nunca
+antes (si la subida falla, el gordo sigue intacto)."""
 
 import time
 
@@ -166,20 +168,31 @@ def _ligera(tmp_path):
     return f
 
 
-def test_watcher_borra_gordo_y_sube_ligera(tmp_path):
+def test_watcher_sube_ligera_antes_de_borrar_gordo(tmp_path):
     record(_tv_entry())
     original = _ligera(tmp_path)
     watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher()
+    seen = {}
+    orig_delete = ftp.delete_file.side_effect
+
+    def _ordered_delete(p):
+        seen["uploads_before_delete"] = len(upload_calls)
+        return orig_delete(p)
+    ftp.delete_file.side_effect = _ordered_delete
 
     watcher._process(original)
 
-    assert delete_calls == [HEAVY], "el gordo debe borrarse antes de subir"
-    assert len(upload_calls) == 1, "la ligera debe subir una vez fuera el gordo"
+    assert seen.get("uploads_before_delete") == 1, \
+        "el gordo solo se borra con la ligera ya subida"
+    assert delete_calls == [HEAVY]
+    assert len(upload_calls) == 1
     assert load_pending() == [], "el pendiente se consume tras el reemplazo"
     assert any(v.get("status") == "subido" for v in watcher._processed.values()), watcher._processed
     slim_ev = [kw for (a, kw) in file_events if len(a) > 1 and a[1] == "slim_replaced"]
     assert len(slim_ev) == 1, "la GUI debe enterarse para refrescar Liberar espacio"
     assert slim_ev[0].get("heavy_remote_file") == HEAVY
+    assert slim_ev[0].get("added_by") == "tester"
+    assert slim_ev[0].get("saved_bytes") == 100 - 80
 
 
 def test_watcher_sube_si_gordo_ya_no_esta(tmp_path):
@@ -196,20 +209,91 @@ def test_watcher_sube_si_gordo_ya_no_esta(tmp_path):
     assert any(len(a) > 1 and a[1] == "slim_replaced" for (a, kw) in file_events)
 
 
-def test_watcher_no_marca_si_borrado_falla(tmp_path):
+def test_watcher_sube_aunque_falle_borrado_gordo(tmp_path):
+    """Si el borrado del gordo falla DESPUÉS de subir la ligera, nada se
+    pierde (la ligera ya está): se consume el pendiente para no dejar un
+    estado a medias que nunca se reintentaría (la ligera local se elimina
+    tras el OK igual que siempre) y se avisa para borrarlo a mano. Sin
+    evento slim_replaced: el reemplazo no se completó y no hay ahorro
+    que sumar ni nada que refrescar como sustituido."""
     record(_tv_entry())
     original = _ligera(tmp_path)
     watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher(tmp_ok_delete=False)
 
     watcher._process(original)
 
-    assert delete_calls == [HEAVY]
-    assert upload_calls == [], "sin borrar el gordo no se sube nada"
-    assert len(load_pending()) == 1, "el pendiente se conserva para reintentar"
-    assert str(original) not in watcher._processed, \
-        "el archivo no debe marcarse como procesado para que el próximo ciclo reintente"
+    assert len(upload_calls) == 1, "la ligera sube primero pase lo que pase con el gordo"
+    assert delete_calls == [HEAVY], "se intenta borrar el gordo tras la subida"
+    assert load_pending() == [], "el pendiente se consume para no dejar un estado a medias"
+    assert any(v.get("status") == "subido" for v in watcher._processed.values())
     assert not any(len(a) > 1 and a[1] == "slim_replaced" for (a, kw) in file_events), \
-        "sin subida no hay reemplazo que refrescar"
+        "sin gordo borrado no hay reemplazo completado"
+    assert any("pero no se pudo borrar el gordo" in str(a) for (a, kw) in events), \
+        "se avisa para borrarlo a mano"
+
+
+def test_watcher_no_borra_gordo_si_subida_falla(tmp_path):
+    """Si la subida de la ligera falla, el gordo sigue intacto (ese es el
+    motivo del nuevo orden) y el pendiente se conserva para reintentar con
+    la ligera local todavía en disco."""
+    record(_tv_entry())
+    original = _ligera(tmp_path)
+    watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher()
+    orig_upload = ftp.upload_file.side_effect
+
+    def _failing_upload(*a, **k):
+        orig_upload(*a, **k)
+        return False, "boom"
+    ftp.upload_file.side_effect = _failing_upload
+
+    watcher._process(original)
+
+    assert len(upload_calls) == 1
+    assert delete_calls == [], "sin ligera confirmada no se toca el gordo"
+    assert len(load_pending()) == 1, "el pendiente se conserva para reintentar"
+    assert not any(len(a) > 1 and a[1] == "slim_replaced" for (a, kw) in file_events)
+
+
+def test_watcher_no_omite_ligera_como_duplicada_del_gordo(tmp_path):
+    """Con el gordo aún presente (se borra después), el chequeo de
+    duplicados lo vería como "ya existe este episodio" y omitiría la
+    ligera: el propio gordo pendiente está exento, otro archivo no."""
+    record(_tv_entry())
+    original = _ligera(tmp_path)
+    watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher()
+    ftp.list_files.return_value = ["Mi Serie 1x06 Gordo.mkv"]
+
+    watcher._process(original)
+
+    assert len(upload_calls) == 1, "el gordo pendiente no cuenta como duplicado"
+    assert delete_calls == [HEAVY]
+    assert load_pending() == []
+
+
+def test_watcher_estrangula_ticks_de_progreso(tmp_path):
+    """500 ticks por bloque (0.2% cada uno) no generan 500 eventos: el
+    primero sale y luego solo los que avanzan >=1% (ver
+    core/auto_watcher.py::_upload_tick_due)."""
+    record(_tv_entry())
+    original = _ligera(tmp_path)
+    watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher()
+    orig_upload = ftp.upload_file.side_effect
+
+    def _many_ticks(*a, **k):
+        cb = k.get("progress_cb")
+        for i in range(501):
+            cb(i * 2000, 1000000, 1000)
+        return orig_upload(*a, **k)
+    ftp.upload_file.side_effect = _many_ticks
+
+    watcher._process(original)
+
+    ticks = [kw for (a, kw) in file_events if len(a) > 1 and a[1] == "uploading"]
+    assert ticks, "el primer tick siempre se emite"
+    assert ticks[0].get("progress", -1) == 0.0
+    assert len(ticks) < 150, f"sin estrangular serían 501, salieron {len(ticks)}"
+    assert all(kw.get("is_slim") is True for kw in ticks), \
+        "hasta los ticks llevan la marca de adelgazamiento"
 
 
 def test_watcher_normal_no_emite_slim_replaced(tmp_path):

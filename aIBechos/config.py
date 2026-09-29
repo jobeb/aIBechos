@@ -326,13 +326,14 @@ DEFAULTS = {
     "p2p_trusted_groups": ["exploradoresp2p", "grupots", "hispashare",
                            "hispashare.org", "nocturniap2p"],
     # Proveedores/marcas bloqueadas (misma edición en Ajustes, apartado
-    # Proveedores). Un release que contenga alguna se EXCLUYE como el
-    # francés/alemán (aunque sea lo único disponible), SALVO que traiga
-    # además español. Incluye "kagome" (grupo italiano: antes era veto fijo
-    # del motor, ahora es una entrada normal y editable). Los filtros de
-    # idioma del motor (VOSTFR/FR/ITA/GER/PT/VOS...) van aparte, en el
-    # apartado Idioma de la misma subpestaña, no mezclados en estas listas.
-    # Compartida por todo el grupo.
+    # Proveedores). Un release que contenga alguna NO se descarga nunca,
+    # aunque sea lo único disponible y aunque traiga español además (la
+    # marca dice quién lo hizo, no en qué idioma está; el "español" a
+    # veces son solo subtítulos). Incluye "kagome" (grupo italiano: antes
+    # era veto fijo del motor, ahora es una entrada normal y editable).
+    # Los filtros de idioma del motor (VOSTFR/FR/ITA/GER/PT/VOS...) van
+    # aparte, en el apartado Idioma de la misma subpestaña, no mezclados
+    # en estas listas. Compartida por todo el grupo.
     "p2p_blocked_groups": ["kagome"],
     # Marcadores editables de idioma para descargas (listas AUTORITATIVAS en
     # lo que añaden: se SUMAN al motor inteligente fijo de cada idioma, ver
