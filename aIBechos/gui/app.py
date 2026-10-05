@@ -13934,7 +13934,7 @@ class App(_AppBase):
                                 from core.ec_client import _no_console_kwargs
                                 exe = _find_amulecmd("")
                                 if exe:
-                                    args=[exe,"-c","show shared","-h",host,"-p",str(port),"-P",pwd]
+                                    args=[exe,"-c","show shared","-h",ec.host,"-p",str(ec.port),"-P",ec.password]
                                     r=subprocess.run(args,capture_output=True,text=True,timeout=6,**_no_console_kwargs())
                                     if h.lower() in (r.stdout or "").lower():
                                         self.after(0, lambda: self._dl_btn_reset(button, ICON_DL_ALREADY))
@@ -15828,7 +15828,7 @@ class App(_AppBase):
                     _f.write(f"{_time.strftime('%Y-%m-%d %H:%M:%S')} fetch error {e}\n")
             except Exception:
                 pass
-            self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"— ({e})", text_color=ERROR_COLOR))
+            self.after(0, lambda msg=f"— ({e})": self._active_downloads_status_lbl.configure(text=msg, text_color=ERROR_COLOR))
 
     def _rebuild_active_downloads(self, queue: list, force: bool = False):
         # Normalizar tamaños: show DL no trae bytes, pero si tenemos
@@ -16037,7 +16037,7 @@ class App(_AppBase):
                 self.after(0, lambda ok=ok, msg=msg: self._active_downloads_status_lbl.configure(text="Cancelada" if ok else f"Error: {msg}", text_color=SUCCESS_COLOR if ok else ERROR_COLOR))
                 self.after(0, self._refresh_active_downloads)
             except Exception as e:
-                self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"Error: {e}", text_color=ERROR_COLOR))
+                self.after(0, lambda msg=f"Error: {e}": self._active_downloads_status_lbl.configure(text=msg, text_color=ERROR_COLOR))
         threading.Thread(target=_worker, daemon=True).start()
 
     def _alternative_query_for_download(self, d: dict) -> str:
@@ -16113,7 +16113,7 @@ class App(_AppBase):
                         ec.connect()
                     except Exception as e:
                         self._downloads_search_active = False
-                        self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"Error aMule: {e}", text_color=ERROR_COLOR))
+                        self.after(0, lambda msg=f"Error aMule: {e}": self._active_downloads_status_lbl.configure(text=msg, text_color=ERROR_COLOR))
                         return
                     # Tamaño típico de la temporada en el servidor (solo misma serie)
                     _typical_alt = None
@@ -16167,7 +16167,7 @@ class App(_AppBase):
                         except Exception:
                             pass
             except Exception as e:
-                self.after(0, lambda: self._active_downloads_status_lbl.configure(text=f"Error alternativa: {e}", text_color=ERROR_COLOR))
+                self.after(0, lambda msg=f"Error alternativa: {e}": self._active_downloads_status_lbl.configure(text=msg, text_color=ERROR_COLOR))
         threading.Thread(target=worker, daemon=True).start()
 
     def _refresh_active_downloads(self):
