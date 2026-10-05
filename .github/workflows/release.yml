@@ -152,7 +152,15 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist-artifacts/*
+          # Glob recursivo: los artefactos conservan subcarpetas
+          # (el Setup.exe de Windows baja a installer_output/) y
+          # "dist-artifacts/*" no cruza directorios -- con ese patrón
+          # la v1.8.8 salió sin instalador.
+          files: |
+            dist-artifacts/**/*.exe
+            dist-artifacts/**/*.zip
+            dist-artifacts/**/*.dmg
+            dist-artifacts/**/*.tar.gz
           generate_release_notes: true
           body: |
             ## aIBechos ${{ github.ref_name }}
