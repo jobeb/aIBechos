@@ -41,7 +41,13 @@ jobs:
       # de que Python la borrara, en el aviso de fallo al mover/borrar el
       # original tras subir).
       # Solo nombres indefinidos: los "imported but unused" son ruido aquí.
+      # PowerShell puro (sin grep/||/&&): pwsh no expande globs para
+      # comandos nativos y `true` no existe como comando (visto en CI).
       - name: Nombres indefinidos (pyflakes)
         run: |
-          pyflakes gui/*.py core/*.py *.py > pyflakes.txt || true
-          grep "undefined name" pyflakes.txt && exit 1 || echo "sin nombres indefinidos"
+          $files = Get-ChildItem -Path gui, core -Filter *.py -File | Select-Object -ExpandProperty FullName
+          $files += Get-ChildItem -Path . -Filter *.py -File | Select-Object -ExpandProperty FullName
+          & pyflakes $files > pyflakes.txt
+          $hits = Select-String -Path pyflakes.txt -Pattern "undefined name"
+          if ($hits) { $hits | ForEach-Object { Write-Output $_.Line }; exit 1 }
+          Write-Output "sin nombres indefinidos"
