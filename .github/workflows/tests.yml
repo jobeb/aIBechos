@@ -1,12 +1,12 @@
 name: Tests
 
-# En cada push a main y en cada PR -- solo instala lo que core/ y config.py
-# necesitan de verdad (requests, keyring, pytest), no las dependencias de
-# interfaz gráfica de requirements.txt (customtkinter, tkinterdnd2,
-# pystray, Pillow): los tests solo cubren la lógica pura de core/ (sin
-# tkinter, ver CLAUDE.md), así que instalar menos hace el workflow más
-# rápido y evita depender de que esos paquetes de GUI instalen limpio en
-# un runner Linux sin entorno gráfico.
+# En cada push a main y en cada PR. Instala requirements-dev.txt
+# (= requirements.txt + pytest + pyflakes): parte de los tests importa
+# gui/app.py y core/media_server_refresh (plexapi), así que instalar
+# solo requests/keyring rompe la recolección con ModuleNotFoundError
+# (visto en CI). python3-tk + xvfb porque customtkinter necesita tkinter
+# presente y, por si algún test futuro instancia widgets, display
+# virtual (xvfb-run) en el runner sin entorno gráfico.
 on:
   push:
     branches: [main]
@@ -25,20 +25,24 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Instalar dependencias del sistema (Tk + display virtual)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk xvfb
+
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install requests keyring pytest pyflakes
+          pip install -r requirements-dev.txt
 
       - name: Ejecutar tests
-        run: pytest tests/ -v
+        run: xvfb-run -a python -m pytest tests/ -q --tb=short
 
-      # pyflakes NO importa el módulo, solo lo parsea -- así que es lo único
-      # que puede revisar gui/app.py en este runner, donde customtkinter no
-      # está instalado y por tanto los tests no llegan. Y ahí es justo donde
-      # hacen falta: pilló tres NameError reales de un tirón (un `lambda` que
-      # leía la variable de un `except ... as e` después de que Python la
-      # borrara, en el aviso de fallo al mover/borrar el original tras subir).
+      # pyflakes NO importa el módulo, solo lo parsea -- red de seguridad
+      # estática además de pytest: pilló tres NameError reales de un tirón
+      # (un `lambda` que leía la variable de un `except ... as e` después
+      # de que Python la borrara, en el aviso de fallo al mover/borrar el
+      # original tras subir).
       # Solo nombres indefinidos: los "imported but unused" son ruido aquí.
       - name: Nombres indefinidos (pyflakes)
         run: |
