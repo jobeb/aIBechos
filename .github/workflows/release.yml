@@ -37,7 +37,7 @@ jobs:
       - name: Leer versión de core/version.py
         id: version
         run: |
-          $v = python -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', (Get-Content core/version.py -Raw)).Group(1))"
+          $v = (Get-Content core/version.py -Raw | Select-String '__version__ = "(.*?)"').Matches[0].Groups[1].Value
           echo "version=$v" >> $env:GITHUB_OUTPUT
 
       - name: Compilar con PyInstaller
