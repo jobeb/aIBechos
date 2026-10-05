@@ -182,6 +182,13 @@ DEFAULTS = {
     # no puede reservar espacio todavía (hace falta para saber a quién
     # cargarle la cuota).
     "app_user_name": "",
+    # Solicitudes de descarga de la web (ver core/download_requests.py):
+    # este PC reclama y descarga automáticamente lo que pidan desde el
+    # móvil. Solo con carpeta compartida configurada; intervalo en
+    # segundos y tope de solicitudes activas por equipo.
+    "download_requests_enabled": True,
+    "download_requests_interval": 300,
+    "download_requests_max_active": 5,
     # Anchos de columna de las tablas (Archivos/Episodios/Liberar espacio/
     # Historial), guardados al soltar un separador -- ver gui/table_view.py
     # y _save_table_col_widths en gui/app.py. {tabla: {columna: ancho_px}}.

@@ -60,7 +60,8 @@ aIBechos/
 │   ├── ftp_client.py     # FTPClient — upload with progress, speed limit, resume
 │   ├── sftp_client.py    # SFTPClient — same public API over SSH (subclasses FTPClient)
 │   ├── transfer.py       # make_client() — the single place that picks FTP vs SFTP
-│   └── auto_watcher.py   # AutoWatcher — recursive folder polling thread; identifies video AND books/comics, optionally auto-extracts archives (see "auto_extract_archives" setting)
+│   ├── auto_watcher.py   # AutoWatcher — recursive folder polling thread; identifies video AND books/comics, optionally auto-extracts archives (see "auto_extract_archives" setting)
+│   └── download_requests.py # download-request queue shared with the mobile web (solicitudes-web/): pure ops (new/claim/release/mark/merge/prune), never touches network; the desktop worker lives in App (_start_download_requests_worker)
 └── gui/
     └── app.py          # entire UI in one App class (~2200 lines)
 ```

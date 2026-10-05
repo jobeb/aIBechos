@@ -1575,6 +1575,8 @@ class App(_AppBase):
         # tanto si la app se abre a mano como por el autoarranque.
         self.after(400, self._restore_auto_watcher_state)
         self.after(600, self._start_missing_ep_auto_worker)
+        # Solicitudes de descarga de la web (ver _start_download_requests_worker)
+        self.after(8000, self._start_download_requests_worker)
         self.after(500, self._apply_fitted_for_current_view)
         if "--minimized" in sys.argv:
             self.after(200, self._minimize_to_tray)
@@ -11450,6 +11452,8 @@ class App(_AppBase):
         self._missing_ep_row_widgets = {}
         self._missing_ep_auto_widgets = {}   # tmdb_id -> etiqueta "⚡" de autocompletado (ver _build_missing_ep_row)
         self._missing_ep_auto_worker = None
+        self._download_requests_worker = None   # hilo de solicitudes web (ver _start_download_requests_worker)
+        self._download_requests_carry = {}   # cambios sin subir por fallo de red (ver _download_requests_cycle)
         self._missing_ep_auto_busy = set()   # tmdb_ids en proceso (anti-duplicado, ver _auto_complete_series_single)
         self._missing_ep_auto_countdown_lbls = {}   # tmdb_id -> label "⏳" de cuenta atrás del reintento (ver _build_missing_ep_detail_frame)
         self._missing_ep_auto_countdown_after = None   # id del after() del ticker de cuenta atrás
@@ -14565,6 +14569,375 @@ class App(_AppBase):
             self._auto_complete_series_single_impl(tmdb_id, force=force)
         finally:
             busy.discard(tmdb_id)
+
+    # Solicitudes de descarga de la web (ver core/download_requests.py).
+    _DOWNLOAD_REQUESTS_STARTUP_DELAY = 120
+    _DOWNLOAD_REQUESTS_EXPAND_CAP = 50
+
+    def _start_download_requests_worker(self):
+        """Hilo daemon que atiende aIBechos_solicitudes.json: arranca con
+        retardo tras abrir la app y repite cada download_requests_interval
+        (defecto 5 min). Reclama pendientes (first-claim-wins con
+        app_user_name), lanza las descargas en aMule con el mismo embudo
+        que el autocompletado y marca done/failed. Ver
+        _download_requests_cycle. Nunca lanza: cualquier fallo queda en
+        app.log y el siguiente ciclo reintenta."""
+        def _loop():
+            _time.sleep(self._DOWNLOAD_REQUESTS_STARTUP_DELAY)
+            while True:
+                try:
+                    interval = int(self.config_data.get("download_requests_interval", 300) or 300)
+                except (TypeError, ValueError):
+                    interval = 300
+                try:
+                    self._download_requests_cycle()
+                except Exception:
+                    _log.exception("Solicitudes: fallo en el ciclo")
+                _time.sleep(max(60, interval))
+        if self._download_requests_worker is None or not self._download_requests_worker.is_alive():
+            self._download_requests_worker = threading.Thread(target=_loop, daemon=True)
+            self._download_requests_worker.start()
+
+    def _download_requests_user(self) -> str:
+        """Quién reclama: app_user_name, o Equipo-<host> si está vacío
+        (dos PCs sin nombre reclamarían igual y se pisarían el claim)."""
+        user = (self.config_data.get("app_user_name", "") or "").strip()
+        if user:
+            return user
+        try:
+            import socket as _socket
+            return f"Equipo-{_socket.gethostname()}"
+        except Exception:
+            return "Equipo"
+
+    def _download_requests_remote_path(self) -> str:
+        folder = (self.config_data.get("shared_data_ftp_path", "") or "").strip()
+        if not folder:
+            return ""
+        from core.shared_data import filename
+        return f"{folder.rstrip('/')}/{filename('solicitudes')}"
+
+    def _download_requests_ftp(self):
+        """Cliente FTP conectado según Ajustes, o None (sin red/credenciales).
+        Quien lo recibe debe disconnect() en finally."""
+        own_ftp = self._new_ftp_client()
+        try:
+            ok, _msg = own_ftp.connect(
+                self.config_data.get("ftp_host", ""),
+                int(self.config_data.get("ftp_port", 21)),
+                self.config_data.get("ftp_user", ""),
+                self.config_data.get("ftp_password", ""),
+                self.config_data.get("ftp_use_tls", False))
+        except Exception:
+            return None
+        if not ok:
+            try:
+                own_ftp.disconnect()
+            except Exception:
+                pass
+            return None
+        return own_ftp
+
+    def _download_requests_push(self, data: dict, remote_path: str) -> bool:
+        """Relee el remoto, fusiona *data* encima (gana lo más nuevo por
+        solicitud, ver core/download_requests.merge) y sube. True si se
+        guardó. Patrón anti-carrera de _toggle_favorite."""
+        import json as _json
+        from core import download_requests as _dr
+        from core.shared_data import read_shared_json
+        own_ftp = self._download_requests_ftp()
+        if own_ftp is None:
+            return False
+        try:
+            fresh, _is_new = read_shared_json(own_ftp, remote_path, "dict")
+        except Exception:
+            fresh = None
+        try:
+            if fresh is None:
+                return False
+            merged = _dr.prune(_dr.merge(data, fresh))
+            payload = _json.dumps(merged, ensure_ascii=False).encode("utf-8")
+            ok, _msg = own_ftp.upload_bytes(payload, remote_path)
+            return bool(ok)
+        except Exception:
+            _log.exception("Solicitudes: fallo subiendo %s", remote_path)
+            return False
+        finally:
+            try:
+                own_ftp.disconnect()
+            except Exception:
+                pass
+
+    def _download_requests_cycle(self):
+        """Una pasada: done/stuck de mis activas, reclamar hasta el tope,
+        lanzar descargas y subir cambios. Sin carpeta compartida o con el
+        worker desactivado no hace nada."""
+        from core import download_requests as _dr
+        from core.shared_data import read_shared_json
+        if not self.config_data.get("download_requests_enabled", True):
+            return
+        remote_path = self._download_requests_remote_path()
+        if not remote_path:
+            return
+        user = self._download_requests_user()
+        try:
+            max_active = int(self.config_data.get("download_requests_max_active", 5) or 5)
+        except (TypeError, ValueError):
+            max_active = 5
+        own_ftp = self._download_requests_ftp()
+        if own_ftp is None:
+            return
+        try:
+            data, _is_new = read_shared_json(own_ftp, remote_path, "dict")
+        except Exception:
+            data = None
+        finally:
+            try:
+                own_ftp.disconnect()
+            except Exception:
+                pass
+        if data is None:
+            return
+        # Cambios que no se pudieron subir en el ciclo anterior (Fallo de
+        # red al final): se fusionan primero para no perder claims.
+        carry = getattr(self, "_download_requests_carry", None) or {}
+        if carry:
+            data = _dr.merge(data, carry)
+            self._download_requests_carry = {}
+        data = _dr.prune(data)
+        my_ids = [rid for rid, e in data.items()
+                  if isinstance(e, dict) and e.get("claimed_by") == user
+                  and e.get("status") in ("claimed", "downloading")]
+        changed = False
+        for rid in my_ids:
+            outcome = self._download_request_check_done(data.get(rid) or {})
+            if outcome == "done":
+                nd = _dr.mark_status(data, rid, "done", user=user)
+                if nd is not None:
+                    data = nd
+                    changed = True
+                    _log.info("Solicitudes: %s completada (%s)", rid, _dr.describe(data.get(rid) or {}))
+            elif outcome == "stuck":
+                nd = _dr.release(data, rid, user=user, error="sin verificar en 7 días")
+                if nd is not None:
+                    data = nd
+                    changed = True
+        active = sum(1 for _rid, e in data.items()
+                     if isinstance(e, dict) and e.get("claimed_by") == user
+                     and e.get("status") in ("claimed", "downloading"))
+        claimed_now = []
+        for rid, _entry in _dr.pending_for_worker(data):
+            if active >= max(1, max_active):
+                break
+            nd = _dr.claim(data, rid, user)
+            if nd is None:
+                continue
+            data = nd
+            active += 1
+            changed = True
+            claimed_now.append(rid)
+        if claimed_now:
+            # Publicar los claims ANTES de lanzar (búsquedas de minutos):
+            # así otro PC los ve reclamados y no duplica el trabajo.
+            if self._download_requests_push(data, remote_path):
+                changed = False
+            else:
+                self._download_requests_carry = _dr.merge(
+                    getattr(self, "_download_requests_carry", None) or {}, data)
+        for rid in list(claimed_now) + [rid for rid in my_ids
+                                        if isinstance(data.get(rid), dict)
+                                        and data.get(rid).get("status") == "claimed"]:
+            entry = data.get(rid) or {}
+            if entry.get("claimed_by") != user or entry.get("status") != "claimed":
+                continue
+            nd, _launched = self._download_request_launch(data, rid)
+            if nd is not None:
+                data = nd
+                changed = True
+        if changed:
+            if not self._download_requests_push(data, remote_path):
+                self._download_requests_carry = _dr.merge(
+                    getattr(self, "_download_requests_carry", None) or {}, data)
+
+    def _download_request_check_done(self, entry: dict) -> str | None:
+        """Revisa si lo pedido ya está en el servidor: "done" (ya no
+        falta), "stuck" (downloading sin verificar en más de
+        STUCK_AFTER_SECONDS) o None (sigue pendiente). Solo mira las
+        filas en memoria + completas en caché, sin red."""
+        from core import download_requests as _dr
+        if not isinstance(entry, dict):
+            return None
+        try:
+            tmdb_id = int(entry.get("tmdb_id"))
+        except (TypeError, ValueError):
+            return None
+        media_type = entry.get("media_type")
+        season = entry.get("season")
+        episode = entry.get("episode")
+        if media_type == "movie":
+            for row in (self._movies_results or []):
+                try:
+                    if int(row.get("tmdb_id")) != tmdb_id:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                return "done" if row.get("in_server") else None
+            return None
+        row = None
+        for r in (self._missing_ep_results or []):
+            try:
+                if int(r.get("tmdb_id")) == tmdb_id:
+                    row = r
+                    break
+            except (TypeError, ValueError):
+                continue
+        if row is not None:
+            missing = row.get("missing") or {}
+            if season is None:
+                return "done" if not missing else None
+            eps = missing.get(season, missing.get(str(season), [])) or []
+            if episode is not None:
+                return "done" if episode not in eps else None
+            return "done" if not eps else None
+        try:
+            complete = self._load_complete_series_from_cache() or []
+        except Exception:
+            complete = []
+        for r in complete:
+            try:
+                if int(r.get("tmdb_id")) == tmdb_id:
+                    return "done"
+            except (TypeError, ValueError):
+                continue
+        if (entry.get("status") == "downloading"
+                and _dr.is_claim_stale(entry, ttl=_dr.STUCK_AFTER_SECONDS)):
+            return "stuck"
+        return None
+
+    def _download_request_canonical(self, entry: dict) -> tuple[str, str]:
+        """(título, año) canónicos vía TMDB para construir la query de
+        aMule (respeta series_search_patterns); si TMDB falla, lo que
+        traiga la solicitud tal cual."""
+        title = str(entry.get("title") or "").strip()
+        year = str(entry.get("year") or "").strip()
+        if not title:
+            return title, year
+        try:
+            prefer = "movie" if entry.get("media_type") == "movie" else "tv"
+            results = self.tmdb.search_multi(title, prefer_type=prefer)
+            if results:
+                info = self.tmdb.build_media_info(results[0])
+                return (info.title or title), (info.year or year)
+        except Exception:
+            pass
+        return title, year
+
+    def _download_request_targets(self, entry: dict, name: str) -> list:
+        """Qué descargar para la solicitud: lista de ("episode", s, e),
+        ("season_pack", s) o [("movie",)]. Serie/temporada se expanden a
+        episodios (hueco de la fila si se conoce, si no lo emitido según
+        TMDB), con tope _DOWNLOAD_REQUESTS_EXPAND_CAP; si no hay
+        episodios localizables, un pack de temporada como último recurso."""
+        media_type = entry.get("media_type")
+        season = entry.get("season")
+        episode = entry.get("episode")
+        if media_type == "movie":
+            return [("movie",)]
+        if season is not None and episode is not None:
+            return [("episode", int(season), int(episode))]
+        try:
+            tmdb_id = int(entry.get("tmdb_id"))
+        except (TypeError, ValueError):
+            return []
+        wanted = {}
+        for r in (self._missing_ep_results or []):
+            try:
+                if int(r.get("tmdb_id")) == tmdb_id:
+                    wanted = r.get("missing") or {}
+                    break
+            except (TypeError, ValueError):
+                continue
+        if not wanted:
+            try:
+                expected = self._tmdb_expected_episodes(tmdb_id) or {}
+            except Exception:
+                expected = {}
+            wanted = expected
+        if season is not None:
+            eps = wanted.get(season, wanted.get(str(season), [])) or []
+            if eps:
+                return [("episode", int(season), int(e))
+                        for e in eps[:self._DOWNLOAD_REQUESTS_EXPAND_CAP]]
+            return [("season_pack", int(season))]
+        targets = []
+        for s in sorted(wanted, key=lambda x: int(x)):
+            for e in wanted.get(s, []) or []:
+                targets.append(("episode", int(s), int(e)))
+                if len(targets) >= self._DOWNLOAD_REQUESTS_EXPAND_CAP:
+                    _log.warning("Solicitudes: %s supera el tope de %d descargas por ciclo",
+                                 entry.get("title"), self._DOWNLOAD_REQUESTS_EXPAND_CAP)
+                    return targets
+        if targets:
+            return targets
+        # Serie sin hueco conocido ni TMDB: al menos un pack T1.
+        return [("season_pack", 1)]
+
+    def _download_request_launch(self, data: dict, req_id: str):
+        """Lanza en aMule lo que pide la solicitud (ya reclamada por este
+        equipo): devuelve (nuevo_data, lanzó_algo). Todo ok -> mark
+        downloading; todo falla -> release con el motivo (suelta el claim
+        para que otro equipo lo reintente, con intentos acotados)."""
+        from core import download_requests as _dr
+        from core.amule_search import build_amule_query, build_amule_season_query
+        entry = data.get(req_id) or {}
+        user = self._download_requests_user()
+        name, year = self._download_request_canonical(entry)
+        if not name:
+            return _dr.release(data, req_id, user=user, error="sin título"), False
+        is_movie = entry.get("media_type") == "movie"
+        try:
+            templates = self.config_data.get("series_search_patterns", {}) or {}
+        except Exception:
+            templates = {}
+        try:
+            prefers = bool(self._series_prefers_castellano(name))
+        except Exception:
+            prefers = False
+        try:
+            typical = self._typical_size_for_series(name, entry.get("season"))
+        except Exception:
+            typical = None
+        targets = self._download_request_targets(entry, name)
+        if not targets:
+            return _dr.release(data, req_id, user=user, error="sin objetivos"), False
+        ok_any = False
+        last_error = ""
+        for target in targets:
+            try:
+                if target[0] == "movie":
+                    query = build_amule_query(name, None, None, year, templates, prefers)
+                    ok, motivo, _h = self._auto_amule_download_series(
+                        query, is_movie=True, expected_year=int(year) if str(year).isdigit() else None)
+                elif target[0] == "season_pack":
+                    query = build_amule_season_query(name, target[1], templates, prefers)
+                    ok, motivo, _h = self._auto_amule_download_series(query, is_movie=False)
+                else:
+                    _t, s, e = target
+                    query = build_amule_query(name, s, e, year, templates, prefers)
+                    ok, motivo, _h = self._auto_amule_download_series(
+                        query, is_movie=False, typical_size=typical)
+            except Exception as ex:
+                ok, motivo = False, str(ex)[:200]
+            if ok:
+                ok_any = True
+            else:
+                last_error = motivo
+                _log.warning("Solicitudes: %s sin candidato (%s): %s",
+                             _dr.describe(entry), query, motivo)
+        if ok_any:
+            _log.info("Solicitudes: %s en descarga", _dr.describe(entry))
+            return _dr.mark_status(data, req_id, "downloading", user=user), True
+        return _dr.release(data, req_id, user=user, error=last_error or "sin candidato"), False
 
     def _tmdb_expected_episodes(self, tmdb_id: int) -> dict:
         """Episodios YA EMITIDOS de todas las temporadas de una serie según

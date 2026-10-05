@@ -37,6 +37,7 @@ SHARED_DATA_FILES = {
     "episodios_que_faltan":             "episodios_que_faltan.json",
     "peliculas":                        "peliculas.json",
     "auto_series":                      "auto_series.json",
+    "solicitudes":                      "solicitudes.json",
 }
 
 
