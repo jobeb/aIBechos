@@ -1,12 +1,13 @@
 name: Tests
 
-# En cada push a main y en cada PR. Instala requirements-dev.txt
-# (= requirements.txt + pytest + pyflakes): parte de los tests importa
-# gui/app.py y core/media_server_refresh (plexapi), así que instalar
-# solo requests/keyring rompe la recolección con ModuleNotFoundError
-# (visto en CI). python3-tk + xvfb porque customtkinter necesita tkinter
-# presente y, por si algún test futuro instancia widgets, display
-# virtual (xvfb-run) en el runner sin entorno gráfico.
+# En cada push a main y en cada PR. Corre en Windows porque parte de la
+# suite asume ese entorno (rutas C:\, WinRAR/UnRAR, insensibilidad a
+# mayúsculas del FS) y porque es la plataforma principal de la app: en
+# ubuntu esos tests fallan por el entorno, no por el código. Instala
+# requirements-dev.txt (= requirements.txt + pytest + pyflakes) porque
+# parte de los tests importa gui/app.py y core/media_server_refresh
+# (customtkinter, plexapi): instalar solo requests/keyring rompía la
+# recolección con ModuleNotFoundError (visto en CI).
 on:
   push:
     branches: [main]
@@ -14,10 +15,11 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     defaults:
       run:
         working-directory: aIBechos
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
 
@@ -25,18 +27,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependencias del sistema (Tk + display virtual)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-tk xvfb
-
       - name: Instalar dependencias
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
       - name: Ejecutar tests
-        run: xvfb-run -a python -m pytest tests/ -q --tb=short
+        run: python -m pytest tests/ -q --tb=short
 
       # pyflakes NO importa el módulo, solo lo parsea -- red de seguridad
       # estática además de pytest: pilló tres NameError reales de un tirón

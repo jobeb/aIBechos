@@ -200,6 +200,17 @@ def test_refresh_configured_servers_never_raises_on_failure(monkeypatch):
 
 # ── trigger_refresh (antirrebote + hilo aparte) ─────────────────────────
 
+def _wait_for_calls(calls, want=1, timeout=10.0):
+    """Espera hasta que *calls* tenga *want* elementos (sondeo con fecha
+    límite en vez de sleep fijo: en un runner de CI cargado 50 ms pueden
+    no bastar para que el hilo de fondo arranque -- visto en CI)."""
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    while len(calls) < want and _time.monotonic() < deadline:
+        _time.sleep(0.05)
+    return calls
+
+
 def test_trigger_refresh_runs_immediately_the_first_time(monkeypatch):
     msr._reset_debounce_for_tests()
     calls = []
@@ -207,10 +218,8 @@ def test_trigger_refresh_runs_immediately_the_first_time(monkeypatch):
     cfg = _FakeConfig({})
 
     msr.trigger_refresh(cfg, min_interval_seconds=60)
-    import time as _time
-    _time.sleep(0.05)   # dar tiempo al hilo de fondo
 
-    assert calls == [1]
+    assert _wait_for_calls(calls) == [1]
 
 
 def test_trigger_refresh_debounces_rapid_calls(monkeypatch):
@@ -222,10 +231,8 @@ def test_trigger_refresh_debounces_rapid_calls(monkeypatch):
     msr.trigger_refresh(cfg, min_interval_seconds=60)
     msr.trigger_refresh(cfg, min_interval_seconds=60)
     msr.trigger_refresh(cfg, min_interval_seconds=60)
-    import time as _time
-    _time.sleep(0.05)
 
-    assert calls == [1], "las llamadas seguidas deberian colapsar en una sola"
+    assert _wait_for_calls(calls) == [1], "las llamadas seguidas deberian colapsar en una sola"
 
 
 # ── Series/episodios de Jellyfin y Plex (detector de huecos) ────────────
