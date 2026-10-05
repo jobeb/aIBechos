@@ -334,6 +334,38 @@ def get_jellyfin_episodes(host: str, api_key: str, series_id: str, timeout: int 
     return present
 
 
+def get_jellyfin_episodes_audio(host: str, api_key: str, series_id: str,
+                                timeout: int = 15) -> Optional[dict]:
+    """{(temporada, episodio): True|False|None} según las PISTAS DE AUDIO
+    reales indexadas en Jellyfin (ver core/server_audio.py): True =
+    castellano confirmado, False = audio sin castellano, None = sin dato.
+    None si falla la petición. Misma llamada que get_jellyfin_episodes
+    pero con Fields=MediaStreams para que vengan las pistas."""
+    if not host or not api_key or not series_id:
+        return None
+    from core.server_audio import classify_audio_tracks
+    base = host.rstrip("/")
+    try:
+        resp = requests.get(
+            f"{base}/Shows/{series_id}/Episodes",
+            headers={"X-Emby-Token": api_key},
+            params={"Fields": "MediaStreams"},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        _log.warning("Jellyfin: fallo al listar audio de %s: %s", series_id, e)
+        return None
+    audio = {}
+    for ep in data.get("Items", []) or []:
+        season, episode = ep.get("ParentIndexNumber"), ep.get("IndexNumber")
+        if season is None or episode is None:
+            continue
+        audio[(season, episode)] = classify_audio_tracks(ep.get("MediaStreams") or [])
+    return audio
+
+
 def get_plex_series(host: str, token: str, timeout: int = 15) -> Optional[list]:
     """Lista todas las series de todas las secciones de tipo "show" de Plex.
     Devuelve [{"rating_key": str, "name": str, "tmdb_id": int|None}, ...] o
@@ -484,6 +516,42 @@ def get_plex_episodes(host: str, token: str, rating_key: str, timeout: int = 15)
         if season is not None and episode is not None:
             present.add((season, episode))
     return present
+
+
+def get_plex_episodes_audio(host: str, token: str, rating_key: str,
+                            timeout: int = 15) -> Optional[dict]:
+    """{(temporada, episodio): True|False|None} según las PISTAS DE AUDIO
+    reales indexadas en Plex (ver core/server_audio.py). allLeaves ya trae
+    Media[].Parts[].Streams[] cuando el servidor lo expone; si un episodio
+    no trae pistas, su veredicto es None (sin dato, no se supone). None si
+    falla la petición."""
+    if not host or not token or not rating_key:
+        return None
+    from core.server_audio import classify_audio_tracks
+    base = host.rstrip("/")
+    try:
+        resp = requests.get(
+            f"{base}/library/metadata/{rating_key}/allLeaves",
+            params={"X-Plex-Token": token},
+            headers={"Accept": "application/json"},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("MediaContainer", {}).get("Metadata", []) or []
+    except Exception as e:
+        _log.warning("Plex: fallo al listar audio de %s: %s", rating_key, e)
+        return None
+    audio = {}
+    for ep in items:
+        season, episode = ep.get("parentIndex"), ep.get("index")
+        if season is None or episode is None:
+            continue
+        streams = []
+        for media in ep.get("Media", []) or []:
+            for part in media.get("Part", []) or []:
+                streams.extend(part.get("Stream", []) or [])
+        audio[(season, episode)] = classify_audio_tracks(streams)
+    return audio
 
 
 def get_plex_machine_identifier(host: str, token: str, timeout: int = 10) -> Optional[str]:

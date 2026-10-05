@@ -114,7 +114,8 @@ def test_file_status_text_adelgazando_solo_slim_subiendo():
     assert _file_status_text(SimpleNamespace(status="subiendo", is_slim=True)) == "Adelgazando"
     assert _file_status_text(SimpleNamespace(status="subiendo", is_slim=False)) == "Subiendo"
     assert _file_status_text(SimpleNamespace(status="subiendo")) == "Subiendo"
-    assert _file_status_text(SimpleNamespace(status="en_cola", is_slim=True)) == "En cola"
+    assert _file_status_text(SimpleNamespace(status="en_cola", is_slim=True)) == "Adelgazando"
+    assert _file_status_text(SimpleNamespace(status="en_cola", is_slim=False)) == "En cola"
     assert _file_status_text(SimpleNamespace(status="listo", is_slim=True)) == "Listo"
 
 

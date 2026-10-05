@@ -174,12 +174,12 @@ def _store_cleanup_retree(trees: dict, cache: dict, ftp_path: str, tree: dict, n
 
 def _file_status_text(entry) -> str:
     """Texto de la columna Estado para una fila de Archivos: "Adelgazando"
-    en vez de "Subiendo" cuando el archivo viene de un adelgazamiento
-    (ver FileEntry.is_slim, lo marca el watcher al emparejar el
-    pendiente). El estado INTERNO no cambia ("subiendo"): filtros,
-    objetivos de subida, rankings y repos solo ven ese."""
+    en vez de "Subiendo"/"En cola" cuando el archivo viene de un
+    adelgazamiento (ver FileEntry.is_slim, lo marca el watcher al emparejar
+    el pendiente). El estado INTERNO no cambia ("subiendo"/"en_cola"):
+    filtros, objetivos de subida, rankings y repos solo ven ese."""
     try:
-        if getattr(entry, "status", "") == "subiendo" and getattr(entry, "is_slim", False):
+        if getattr(entry, "is_slim", False) and getattr(entry, "status", "") in ("subiendo", "en_cola"):
             return "Adelgazando"
     except Exception:
         pass
@@ -191,6 +191,43 @@ def _file_status_text(entry) -> str:
 
 def _truncate(text, max_len):
     return text if len(text) <= max_len else text[:max_len - 1] + "..."
+
+def _dedupe_missing_ep_rows(rows: list) -> list:
+    """Quita filas repetidas de "Episodios que faltan" (misma serie dos
+    veces, real: Dragon Ball Daima): una por tmdb_id (acepta int y str
+    mezclados, ver _finish_single_missing_ep_rescan), y para filas sin
+    tmdb_id una por nombre normalizado. Se queda con la primera aparición,
+    no reordena. Cinturón además del dedupe del escaneo (ver
+    _scan_missing_episodes._add_shows): si dos fuentes traen la serie con
+    el id en distinto tipo, o un reescaneo cambia el id, aquí no se cuela
+    el duplicado a la tabla."""
+    seen = set()
+    out = []
+    for r in rows or ():
+        if not isinstance(r, dict):
+            continue
+        tid = r.get("tmdb_id")
+        key = None
+        if tid:
+            try:
+                key = ("id", int(tid))
+            except (TypeError, ValueError):
+                key = ("id", str(tid))
+        else:
+            try:
+                from core.series_match import normalize_series_name
+                norm = normalize_series_name(r.get("name", ""))
+            except Exception:
+                norm = str(r.get("name", "") or "").lower()
+            if norm:
+                key = ("name", norm)
+        if key is None:
+            out.append(r)   # sin identidad aprovechable: no se puede dedupicar
+        elif key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
 
 def _fit_text(text: str, px_width: int, font) -> str:
     """Trunca texto para que quepa en px_width píxeles, usando el ancho real de *font*.
@@ -2698,7 +2735,23 @@ class App(_AppBase):
                 return
 
             if entry is None:
-                return  # archivo no en lista, ignorar
+                # Evento huérfano: el archivo no tiene fila en Archivos
+                # (típico en adelgazamientos: la ligera cae sola vía aMule a
+                # la vigilada sin pasar por +Archivos, o la fila se filtró
+                # por otra página). Antes se descartaba en silencio y la
+                # subida ocurría igual en el servidor sin dejar rastro en la
+                # GUI (real: Fargo T4 "sube pero no cambia de Renombrado").
+                # Se registra para diagnóstico, y un "uploaded" huérfano
+                # guarda igualmente su entrada en el Historial.
+                _log.warning("Evento auto '%s' sin fila para %s (nombre %s)",
+                             tipo, path, new_name)
+                if tipo == "uploaded":
+                    try:
+                        self._save_history_entry(Path(path).name, remote_full or path,
+                                                 "ok", size or 0, local_path=path)
+                    except Exception:
+                        pass
+                return
 
             if tipo == "renamed":
                 entry.new_name = new_name or ""
@@ -2794,8 +2847,12 @@ class App(_AppBase):
         # Todo menos los ticks de progreso ("uploading", que se repiten
         # solos al siguiente chunk) es crítico: si se descarta, la fila
         # queda desincronizada para siempre (p.ej. "Renombrado" con el
-        # archivo ya subido y borrado).
-        self._after_from_worker(_update, critical=(tipo != "uploading"))
+        # archivo ya subido y borrado). El PRIMER tick (progress 0.0) es
+        # la transición de estado renombrado/en_cola -> subiendo, no un
+        # mero avance de barra: también es crítico (real: Fargo T4 se
+        # quedaba en "Renombrado" con la barra a 0 aunque subía).
+        _first_tick = (tipo == "uploading" and (progress or 0.0) <= 0)
+        self._after_from_worker(_update, critical=(tipo != "uploading" or _first_tick))
 
     # Navegación unificada (barra de pestañas segmentada en el header,
     # ver _build_header) -- las 4 vistas (Archivos/Episodios/Historial/
@@ -9456,6 +9513,34 @@ class App(_AppBase):
                      text_color=PENDING_COLOR, font=self._cfg_font_desc, justify="center").grid(
             row=21, column=0, columnspan=2, pady=(0, 8))
 
+        # ── Streaming Availability (doblaje ES por episodio en España) ──
+        # Señal de audio real por plataforma (ver
+        # core/streaming_availability.py): audios spa+ESP por episodio para
+        # saber hasta dónde llega el doblaje castellano. Sin key la fuente
+        # queda desactivada y mandan eldoblaje/wiki/servidor.
+        ctk.CTkLabel(tmdb, text="Streaming Availability (doblaje ES) -- opcional",
+                     font=self._cfg_font_subtitle).grid(
+            row=22, column=0, columnspan=2, pady=(16, 4))
+        ctk.CTkLabel(tmdb, text="API Key:").grid(row=23, column=0, sticky="e", padx=10, pady=6)
+        self._streaming_avail_key_entry = ctk.CTkEntry(
+            tmdb, width=240, show="*",
+            placeholder_text="Opcional -- gratis en developers.movieofthenight.com")
+        self._streaming_avail_key_entry.insert(0, self.config_data.get("streaming_availability_key", ""))
+        self._streaming_avail_key_entry.grid(row=23, column=1, padx=10, pady=6, sticky="ew")
+        self._streaming_avail_key_status = ctk.CTkLabel(tmdb, text="", text_color=PENDING_COLOR)
+        self._streaming_avail_key_status.grid(row=24, column=0, columnspan=2, pady=4)
+        bf6 = ctk.CTkFrame(tmdb, fg_color="transparent")
+        bf6.grid(row=25, column=0, columnspan=2, pady=8)
+        val_sa_btn = ctk.CTkButton(bf6, text="Validar API Key", command=self._validate_streaming_avail_key)
+        attach_tooltip(val_sa_btn, lambda: "Comprobar que la clave de Streaming Availability es válida. "
+                       "Sin ella, el doblaje se decide con eldoblaje/wiki/servidor.")
+        val_sa_btn.pack(side="left", padx=4)
+        ctk.CTkLabel(tmdb,
+                     text="developers.movieofthenight.com → plan gratis (1000 req/mes, sin tarjeta)\n"
+                          "1 llamada = 1 serie completa (audios por episodio en España).",
+                     text_color=PENDING_COLOR, font=self._cfg_font_desc, justify="center").grid(
+            row=26, column=0, columnspan=2, pady=(0, 8))
+
     def _build_templates_tab(self, tab):
         scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         scroll.pack(fill="both", expand=True)
@@ -12029,24 +12114,26 @@ class App(_AppBase):
     def _on_toggle_hide_no_dub(self):
         """Al activar "Ocultar sin doblaje ES": si hay episodios pendientes
         de comprobar (o caducados, ver is_stale), pregunta primero si
-        comprobarlos en TMDB ahora (tarda, una llamada por episodio
-        pendiente) o reutilizar tal cual el último resultado guardado --
-        antes se lanzaba el chequeo automáticamente, pero para una serie
-        con muchos huecos sin comprobar eso se sentía como si la app se
-        quedara "escaneando el servidor" sin haberlo pedido. Reutilizar
-        simplemente redibuja: los episodios sin comprobar no se ocultan
-        (ver filter_missing_by_spanish_dub), se quedan visibles hasta que
-        se comprueben de verdad. Sin nada pendiente, o al desactivar el
-        interruptor, no hace falta preguntar nada -- basta con redibujar
-        (o, si hay pendientes y el usuario confirma, lanzar el chequeo con
-        barra de progreso, ver _start_spanish_dub_check). Este chequeo
-        automático (TMDB) es el comportamiento por defecto -- tiene un
-        fallo conocido (falso positivo en series con doblaje parcial, ver
-        el docstring de core.missing_episodes.episode_has_spanish_text),
-        que el usuario puede corregir serie a serie pulsando "🤖 Preguntar
-        a la IA" en el panel lateral (ver
-        _ask_ai_about_current_missing_ep_show) -- nunca al revés, y nunca
-        automáticamente."""
+        comprobarlos ahora (eldoblaje.com/wiki por serie, más audio del
+        servidor para los presentes) o reutilizar tal cual el último
+        resultado guardado -- antes se lanzaba el chequeo automáticamente,
+        pero para una serie con muchos huecos sin comprobar eso se sentía
+        como si la app se quedara "escaneando el servidor" sin haberlo
+        pedido. Reutilizar simplemente redibuja: los episodios sin comprobar
+        también se ocultan (ver filter_missing_by_spanish_dub con
+        hide_unverified) hasta que se comprueben de verdad. Sin nada
+        pendiente, o al desactivar el interruptor, no hace falta preguntar
+        nada -- basta con redibujar (o, si hay pendientes y el usuario
+        confirma, lanzar el chequeo con barra de progreso, ver
+        _start_spanish_dub_check).
+        Episodios sin veredicto de ninguna fuente quedan "sin verificar":
+        ocultos en tabla con el interruptor encendido (pero revisables en
+        el diálogo del contador y con el botón 🔄 por serie), visibles en
+        ámbar con el interruptor apagado, y siempre bloqueados en
+        autocompletado. El usuario puede
+        corregir serie a serie pulsando "🤖 Preguntar a la IA" en el panel
+        lateral (ver _ask_ai_about_current_missing_ep_show) -- nunca al
+        revés, y nunca automáticamente."""
         if not self._missing_ep_hide_no_dub_var.get():
             self._render_missing_episodes_table()
             return
@@ -12056,8 +12143,8 @@ class App(_AppBase):
         if _ConfirmDialog(
                 self, "Comprobar doblaje castellano",
                 "Hay episodios sin comprobar (o cuyo resultado ya caducó). "
-                "¿Comprobarlos ahora en TMDB o reutilizar el último resultado guardado?",
-                "Comprobar ahora consulta TMDB episodio a episodio (puede tardar si faltan muchos). "
+                "¿Comprobarlos ahora (eldoblaje.com/wiki/Crunchyroll/RTVE) o reutilizar el último resultado guardado?",
+                "Comprobar ahora consulta eldoblaje.com, la wiki de doblaje, Crunchyroll y RTVE Play por serie (puede tardar si faltan muchas). "
                 "Reutilizar el último escaneo es inmediato, pero los episodios aún sin comprobar "
                 "se quedarán visibles hasta que se comprueben de verdad.",
                 confirm_text="Comprobar ahora", cancel_text="Reutilizar lo que haya").result:
@@ -12067,11 +12154,11 @@ class App(_AppBase):
 
     def _missing_ep_dub_pending_checks(self) -> list:
         """Episodios (tmdb_id, name, season, ep) que _start_spanish_dub_check
-        tendría que consultar a TMDB -- sin entrada en
-        self._spanish_dub_cache, o con una caducada (ver is_stale).
-        Extraído de _start_spanish_dub_check para poder preguntar al
-        usuario ANTES de lanzar el chequeo si quiere comprobar de nuevo o
-        reutilizar el último resultado (ver _on_toggle_hide_no_dub)."""
+        tendría que cubrir -- sin veredicto en self._spanish_dub_cache, o
+        con la entrada caducada (ver is_stale). Extraído de
+        _start_spanish_dub_check para poder preguntar al usuario ANTES de
+        lanzar el chequeo si quiere comprobar de nuevo o reutilizar el
+        último resultado (ver _on_toggle_hide_no_dub)."""
         from core.spanish_dub_cache import is_stale
         known_cache = self._spanish_dub_cache
         now = _time.time()
@@ -12089,37 +12176,45 @@ class App(_AppBase):
 
     def _on_force_recheck(self, tmdb_id):
         """Botón "🔄" de _DubHiddenDialog -- fuerza un repaso inmediato del
-        doblaje TMDB de UNA sola serie. Borra su entrada de
+        doblaje de UNA sola serie. Borra su entrada de
         self._spanish_dub_cache (is_stale() la trata como caducada al no
-        tener "checked_at") y reutiliza _start_spanish_dub_check tal
-        cual: como es la ÚNICA serie caducada en ese momento, el repaso
-        que hace ya queda acotado a ella sola, sin tener que duplicar esa
-        lógica para un caso "una sola serie"."""
+        tener "checked_at") y lanza _start_spanish_dub_check acotado a
+        ella (only_tmdb_id) para no repasar de paso el resto de series
+        pendientes."""
         self._spanish_dub_cache.pop(str(tmdb_id), None)
-        self._start_spanish_dub_check()
+        self._start_spanish_dub_check(only_tmdb_id=tmdb_id)
 
-    def _start_spanish_dub_check(self):
+    def _start_spanish_dub_check(self, only_tmdb_id=None):
         """Comprueba el doblaje ES de todos los episodios que faltan (de
-        series no ignoradas) que aún no estén en self._spanish_dub_cache --
-        una llamada a /watch/providers por serie (cacheada en memoria
-        durante todo el chequeo, para no repetirla por cada episodio de la
-        misma serie) más una a /season/.../episode/... con language=es-ES
-        por episodio pendiente. Reutiliza la barra de progreso y el botón
+        series no ignoradas) que aún no tengan veredicto en
+        self._spanish_dub_cache -- SIN TMDB (fuera por dar falsos positivos
+        de texto traducido: ver core/missing_episodes.episode_has_spanish_text).
+        Fuentes, en orden: corte de eldoblaje.com (verdad de referencia,
+        ver core/eldoblaje.py), wiki de doblaje como respaldo cuando
+        eldoblaje no da corte (ver core/doblaje_wiki.py), Crunchyroll por
+        audio es-ES anónimo (ver core/crunchyroll_client.py, solo anime),
+        RTVE Play por idioma "es" de sus vídeos (ver core/rtve_client.py,
+        sobre todo producción española), y audio real del
+        servidor para los presentes (ver core/server_audio.py, se rellena
+        en el reescaneo, no aquí). Reutiliza la barra de progreso y el botón
         "Cancelar" del escaneo normal (_set_missing_ep_scanning_ui) -- ambos
-        comparten self._missing_ep_scanning para no competir por el mismo
-        límite de peticiones de TMDB. Ver _missing_ep_dub_pending_checks
-        para cómo se decide qué está pendiente."""
+        comparten self._missing_ep_scanning. Ver _missing_ep_dub_pending_checks
+        para cómo se decide qué está pendiente. Con *only_tmdb_id* el repaso
+        se acota a esa serie (usado por _on_force_recheck y por el
+        reescaneo individual de serie, ver
+        _finish_single_missing_ep_rescan)."""
         if self._missing_ep_scanning:
             return
         known_cache = self._spanish_dub_cache   # solo lectura mientras corre el worker
         now = _time.time()
         pending = self._missing_ep_dub_pending_checks()
+        if only_tmdb_id is not None:
+            pending = [p for p in pending if str(p[0]) == str(only_tmdb_id)]
 
         if not pending:
             self._render_missing_episodes_table()
             return
 
-        from core.spanish_dub_cache import is_stale
         self._missing_ep_scanning = True
         self._missing_ep_cancel_event = threading.Event()
         cancel_event = self._missing_ep_cancel_event
@@ -12127,9 +12222,7 @@ class App(_AppBase):
         self._missing_ep_progress.set(0)
 
         def worker():
-            from core.missing_episodes import has_spanish_availability, episode_has_spanish_text, \
-                episode_has_spanish_translation
-            updates = {}   # tmdb_id_str -> {"spanish_available": bool|None, "episodes": {...}}
+            updates = {}   # tmdb_id_str -> {"episodes": {...}, "eldoblaje": {...}, "crunchyroll": {...}, "rtve": {...}}
             total = len(pending)
             for i, (tmdb_id, name, season, ep) in enumerate(pending):
                 if cancel_event.is_set():
@@ -12141,108 +12234,183 @@ class App(_AppBase):
                     old_entry = known_cache.get(key, {})
                     entry = dict(old_entry)
                     entry["episodes"] = dict(entry.get("episodes", {}))
-                    if is_stale(old_entry, now):
-                        # Caducada -- también se vuelve a comprobar
-                        # spanish_available, no solo los episodios (podría
-                        # haber cambiado de plataforma desde la última vez).
-                        entry["spanish_available"] = None
-                    else:
-                        entry.setdefault("spanish_available", None)
+                    entry.setdefault("spanish_available", None)
                     entry["checked_at"] = now   # ver core.spanish_dub_cache.is_stale
                     updates[key] = entry
 
-                    # eldoblaje.com AUTOMÁTICO (verdad de referencia sobre el
-                    # doblaje al castellano, ver core/eldoblaje.py): una vez
-                    # por serie y con caché propia de 30 días (is_stale sobre
-                    # entry["eldoblaje"], no sobre la entrada general, para
-                    # no re-preguntar en cada chequeo). Un corte fresco manda
-                    # sobre el texto de TMDB para sus temporadas (ver el
-                    # atajo por episodio más abajo); sin ficha, sin corte
-                    # parseable o con fallo de red se sigue con TMDB como
-                    # si esta consulta no existiera.
+                    # eldoblaje.com + wiki (verdad de referencia), Streaming
+                    # Availability (audio ESP por episodio), Crunchyroll
+                    # (audio es-ES anónimo, ver core/crunchyroll_client.py)
+                    # y RTVE Play (idioma "es" de sus vídeos, ver
+                    # core/rtve_client.py): una vez por serie, cada fuente
+                    # con frescura propia (ver
+                    # core/eldoblaje.cutoff_is_fresh: 30 días con datos, 3
+                    # sin ellos para series en emisión).
+                    from core.eldoblaje import cutoff_is_fresh
                     eld = entry.get("eldoblaje") or {}
-                    if is_stale(eld, now):
-                        eld = {"cutoff": {}, "checked_at": now}
-                        try:
-                            from core.eldoblaje import search_series, get_dub_summary, \
-                                parse_dub_cutoff, has_absolute_dub_count
-                            cands = search_series(name)
-                            if cands:
-                                summary = get_dub_summary(cands[0]["id"])
-                                series_seasons = sorted({s for (t, _n, s, _e) in pending if t == tmdb_id})
-                                cutoff = parse_dub_cutoff(summary, series_seasons)
-                                if not cutoff and has_absolute_dub_count(summary):
-                                    sizes = {}
-                                    for s in series_seasons:
-                                        try:
-                                            sizes[s] = len(self.tmdb.get_season_episodes(tmdb_id, s))
-                                        except Exception:
-                                            pass
-                                    if sizes:
-                                        cutoff = parse_dub_cutoff(summary, series_seasons, sizes)
-                                eld["cutoff"] = cutoff
-                        except Exception:
-                            pass
-                        entry["eldoblaje"] = eld
+                    want_eld = not cutoff_is_fresh(eld, now)
+                    st = entry.get("streaming") or {}
+                    want_st = not cutoff_is_fresh(st, now)
+                    cr = entry.get("crunchyroll") or {}
+                    want_cr = not cutoff_is_fresh(cr, now)
+                    rt = entry.get("rtve") or {}
+                    want_rt = not cutoff_is_fresh(rt, now)
+                    if want_eld or want_st or want_cr or want_rt:
+                        fresh = self._fetch_dub_cutoff(
+                            tmdb_id, name, pending,
+                            want_eldoblaje=want_eld, want_streaming=want_st,
+                            want_crunchyroll=want_cr, want_rtve=want_rt)
+                        if want_eld and "eldoblaje" in fresh:
+                            entry["eldoblaje"] = fresh["eldoblaje"]
+                        if want_st and "streaming" in fresh:
+                            entry["streaming"] = fresh["streaming"]
+                        if want_cr and "crunchyroll" in fresh:
+                            entry["crunchyroll"] = fresh["crunchyroll"]
+                        if want_rt and "rtve" in fresh:
+                            entry["rtve"] = fresh["rtve"]
 
-                # available: solo para ESTE episodio/intento. Si la consulta
-                # de disponibilidad falla, entry["spanish_available"] se deja
-                # en None (no se persiste una suposición) para reintentarla
-                # la próxima vez -- pero se sigue comprobando el episodio
-                # ahora mismo, en vez de bloquear todo el resto del chequeo
-                # por un fallo puntual de red.
-                available = entry["spanish_available"]
-                if available is None:
-                    try:
-                        providers = self.tmdb.get_watch_providers(tmdb_id)
-                        available = has_spanish_availability(providers)
-                        entry["spanish_available"] = available
-                    except Exception:
-                        available = True
-
+                # Los cortes mandan para sus temporadas: se deriva el
+                # veredicto por episodio (ep <= cut). Temporada no cubierta
+                # por ninguno -> sin dato (se deja fuera de la caché: en
+                # tabla visible, en auto bloqueado -- ver
+                # core/missing_episodes.is_ep_dub_confirmed).
                 ep_key = f"{season}x{ep:02d}"
-                if not available:
-                    entry["episodes"][ep_key] = False
-                    continue
-                # Corte de eldoblaje (ver bloque por serie arriba): manda
-                # sobre TMDB para sus temporadas y ahorra sus llamadas. Las
-                # claves salen de json como texto tras recargar de disco, de
-                # ahí el get doble int/str. 0 = nada doblado (ep <= 0 nunca).
-                eld_cutoff = (entry.get("eldoblaje") or {}).get("cutoff") or {}
-                cut = eld_cutoff.get(season, eld_cutoff.get(str(season)))
+                cut = self._merged_dub_cut(
+                    (entry.get("eldoblaje") or {}).get("cutoff") or {},
+                    (entry.get("streaming") or {}).get("cutoff") or {},
+                    season,
+                    (entry.get("crunchyroll") or {}).get("cutoff") or {},
+                    (entry.get("rtve") or {}).get("cutoff") or {})
                 if cut is not None:
                     entry["episodes"][ep_key] = ep <= cut
-                    continue
-                try:
-                    # Sin traducción al español (lista sin fallback de TMDB,
-                    # ver episode_has_spanish_translation): el episodio ni
-                    # siquiera tiene texto en español, se marca sin doblaje
-                    # sin gastar la llamada de texto. Si ESTA consulta falla,
-                    # no se supone nada y se sigue con el chequeo de texto
-                    # de siempre.
-                    trans = self.tmdb.get_episode_translations(tmdb_id, season, ep)
-                    if not episode_has_spanish_translation(trans):
-                        entry["episodes"][ep_key] = False
-                        continue
-                except Exception:
-                    pass
-                try:
-                    info = self.tmdb.get_episode_info_es(tmdb_id, season, ep)
-                    entry["episodes"][ep_key] = episode_has_spanish_text(info)
-                except Exception:
-                    pass   # sin dato fiable -- se deja fuera de la caché, se reintenta la próxima vez
             self.after(0, lambda: self._finish_spanish_dub_check(updates))
         threading.Thread(target=worker, daemon=True).start()
+
+    def _fetch_dub_cutoff(self, tmdb_id: int, name: str, pending: list,
+                          want_eldoblaje: bool = True, want_streaming: bool = True,
+                          want_crunchyroll: bool = True,
+                          want_rtve: bool = True) -> dict:
+        """{"eldoblaje": {...}, "streaming": {...}, "crunchyroll": {...},
+        "rtve": {...}} con el corte de doblaje fresco para una serie (cada
+        uno {"cutoff", "checked_at", "source"}): eldoblaje.com hasta 3
+        candidatos (con reintento de cuenta absoluta vía tamaños TMDB),
+        Streaming Availability por audio ESP en España si hay key (ver
+        core/streaming_availability.py), Crunchyroll por audio es-ES
+        anónimo (ver core/crunchyroll_client.py -- solo da corte en anime,
+        para no-anime devuelve {} barato), RTVE Play por idioma "es" de
+        sus vídeos (ver core/rtve_client.py -- sobre todo producción
+        española; fuera de ella devuelve {} barato), wiki de doblaje como
+        respaldo si todas dan {}. Solo se consulta lo pedido (want_*):
+        cada fuente tiene su propia frescura (ver
+        core/eldoblaje.cutoff_is_fresh: 30 días con datos, 3 sin ellos)."""
+        import time as _t
+        now = _t.time()
+        out = {}
+        series_seasons = sorted({s for (t, _n, s, _e) in pending if t == tmdb_id})
+        sizes: dict = {}
+        if want_eldoblaje:
+            out["eldoblaje"] = {"cutoff": {}, "checked_at": now, "source": "none"}
+            try:
+                from core.eldoblaje import search_series, get_dub_summary, \
+                    parse_dub_cutoff, has_absolute_dub_count
+                for cand in (search_series(name) or [])[:3]:
+                    summary = get_dub_summary(cand["id"])
+                    if not summary:
+                        continue
+                    cutoff = parse_dub_cutoff(summary, series_seasons)
+                    if not cutoff and has_absolute_dub_count(summary):
+                        if not sizes:
+                            sizes = self._dub_season_sizes(tmdb_id, series_seasons)
+                        if sizes:
+                            cutoff = parse_dub_cutoff(summary, series_seasons, sizes)
+                    if cutoff:
+                        out["eldoblaje"] = {"cutoff": cutoff, "checked_at": now,
+                                            "source": "eldoblaje"}
+                        break
+            except Exception:
+                pass
+        if want_streaming:
+            out["streaming"] = {"cutoff": {}, "checked_at": now, "source": "none"}
+            try:
+                sa_key = (self.config_data.get("streaming_availability_key", "") or "").strip()
+                if sa_key:
+                    from core.streaming_availability import cutoff_for_series
+                    if not sizes:
+                        sizes = self._dub_season_sizes(tmdb_id, series_seasons)
+                    cutoff = cutoff_for_series(sa_key, tmdb_id, sizes) if sizes else {}
+                    if cutoff:
+                        out["streaming"] = {"cutoff": cutoff, "checked_at": now,
+                                            "source": "streaming_availability"}
+            except Exception:
+                pass
+        if want_crunchyroll:
+            out["crunchyroll"] = {"cutoff": {}, "checked_at": now, "source": "none"}
+            try:
+                from core.crunchyroll_client import CrunchyrollClient
+                if getattr(self, "_crunchyroll_client", None) is None:
+                    self._crunchyroll_client = CrunchyrollClient()
+                cutoff = self._crunchyroll_client.cutoff_for_series(name, series_seasons)
+                if cutoff:
+                    out["crunchyroll"] = {"cutoff": cutoff, "checked_at": now,
+                                          "source": "crunchyroll"}
+            except Exception:
+                pass
+        if want_rtve:
+            out["rtve"] = {"cutoff": {}, "checked_at": now, "source": "none"}
+            try:
+                from core.rtve_client import RTVEClient
+                if getattr(self, "_rtve_client", None) is None:
+                    self._rtve_client = RTVEClient()
+                cutoff = self._rtve_client.cutoff_for_series(name, series_seasons)
+                if cutoff:
+                    out["rtve"] = {"cutoff": cutoff, "checked_at": now,
+                                   "source": "rtve"}
+            except Exception:
+                pass
+        if (want_eldoblaje and out.get("eldoblaje", {}).get("cutoff")) or \
+           (want_streaming and out.get("streaming", {}).get("cutoff")) or \
+           (want_crunchyroll and out.get("crunchyroll", {}).get("cutoff")) or \
+           (want_rtve and out.get("rtve", {}).get("cutoff")):
+            return out
+        if want_eldoblaje:
+            try:
+                from core.doblaje_wiki import cutoff_for_series as wiki_cutoff
+                cutoff = wiki_cutoff(name, series_seasons)
+                if cutoff:
+                    out["eldoblaje"] = {"cutoff": cutoff, "checked_at": now,
+                                        "source": "wiki"}
+            except Exception:
+                pass
+        return out
+
+    def _dub_season_sizes(self, tmdb_id: int, seasons: list) -> dict:
+        """{temporada: nº_episodios} vía TMDB -- solo recuentos para validar
+        mapeos posicionales y repartir cuentas absolutas, nunca veredicto
+        de doblaje (TMDB no sabe de audio)."""
+        sizes = {}
+        for s in seasons:
+            try:
+                sizes[s] = len(self.tmdb.get_season_episodes(tmdb_id, s))
+            except Exception:
+                pass
+        return sizes
 
     def _finish_spanish_dub_check(self, updates: dict):
         self._missing_ep_scanning = False
         self._set_missing_ep_scanning_ui(False)
         for key, entry in updates.items():
             existing = self._spanish_dub_cache.setdefault(key, {"spanish_available": None, "episodes": {}})
-            existing["spanish_available"] = entry["spanish_available"]
+            if entry.get("spanish_available") is not None:
+                existing["spanish_available"] = entry["spanish_available"]
             existing["episodes"].update(entry["episodes"])
             if entry.get("eldoblaje"):
                 existing["eldoblaje"] = entry["eldoblaje"]
+            if entry.get("streaming"):
+                existing["streaming"] = entry["streaming"]
+            if entry.get("crunchyroll"):
+                existing["crunchyroll"] = entry["crunchyroll"]
+            if entry.get("rtve"):
+                existing["rtve"] = entry["rtve"]
         from core.spanish_dub_cache import save_cache
         save_cache(self._spanish_dub_cache)
         self._update_missing_ep_status_text()
@@ -12337,6 +12505,22 @@ class App(_AppBase):
             n_complete = self._missing_ep_complete_count()
             if n_complete:
                 text += f" -- mostrando además {n_complete} completa(s)"
+        # Con "Ocultar sin doblaje ES" activo ya no hay "sin verificar"
+        # visibles (se ocultan como el resto de no confirmados) -- este
+        # aviso solo puede salir con el interruptor apagado, donde sirve
+        # de recordatorio junto al resaltado ámbar "?N" de las filas.
+        try:
+            _hide_dub = bool(self._missing_ep_hide_no_dub_var.get())
+        except Exception:
+            _hide_dub = False
+        if _hide_dub and pending:
+            try:
+                n_unver = sum(len(self._missing_ep_unverified_eps(r)) for r in pending)
+            except Exception:
+                n_unver = 0
+            if n_unver:
+                text += (f" -- {n_unver} episodio(s) sin verificar doblaje "
+                         "(se muestran con ?)")
         self._missing_ep_status_lbl.configure(text=text)
 
     _MISSING_EP_SEARCH_DEBOUNCE_MS = 200   # ver _on_missing_ep_search_key
@@ -12391,14 +12575,24 @@ class App(_AppBase):
 
         Una serie que esté en las dos listas (p.ej. si el cruce con el FTP
         dejó su hueco a cero en memoria y la caché ya se reescribió) se
-        cuenta una sola vez, con la fila viva de _missing_ep_results."""
+        cuenta una sola vez, con la fila viva de _missing_ep_results. Y
+        _dedupe_missing_ep_rows quita cualquier repetido que llegue hasta
+        aquí (real: Dragon Ball Daima dos veces por ids en distinto tipo
+        según la fuente)."""
         if self._missing_ep_hide_complete_var.get():
-            return self._missing_ep_results
+            return _dedupe_missing_ep_rows(self._missing_ep_results)
         if self._missing_ep_complete_rows is None:
             self._missing_ep_complete_rows = self._load_complete_series_from_cache()
-        known = {r["tmdb_id"] for r in self._missing_ep_results}
-        return self._missing_ep_results + [r for r in self._missing_ep_complete_rows
-                                            if r["tmdb_id"] not in known]
+
+        def _norm_id(v):
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return v
+        known = {_norm_id(r.get("tmdb_id")) for r in self._missing_ep_results}
+        rows = self._missing_ep_results + [r for r in self._missing_ep_complete_rows
+                                           if _norm_id(r.get("tmdb_id")) not in known]
+        return _dedupe_missing_ep_rows(rows)
 
     def _invalidate_missing_ep_complete_rows(self):
         """La lista de series completas se recalcula desde la caché en
@@ -12558,26 +12752,37 @@ class App(_AppBase):
         _toggle_missing_ep_episode_ignore) y "Mostrar ignoradas" desactivado,
         devuelve una COPIA con "missing" recortado -- mismo mecanismo para
         ambos casos, se pueden combinar. Con doblaje: solo los episodios
-        con doblaje confirmado -- por defecto según el chequeo automático
-        de TMDB (self._spanish_dub_cache, ver _start_spanish_dub_check),
-        SALVO que el usuario haya pulsado "🤖 Preguntar a la IA" para esta
-        serie concreta (ver _ask_ai_about_current_missing_ep_show): en ese
-        caso el veredicto de la IA (r["ai_verdict"]["doblaje_castellano"])
-        sustituye por completo al de TMDB para esta serie, nunca al revés.
+        con doblaje confirmado -- veredicto de la IA si existe para la
+        serie (ver _ask_ai_about_current_missing_ep_show), si no corte de
+        eldoblaje/wiki en caché (ver _dub_cutoff_for_series), si no
+        veredictos por episodio (audio del servidor para los presentes).
+        Episodios sin veredicto de ninguna fuente quedan ocultos con el
+        interruptor encendido ("sin verificar", revisables en el diálogo
+        del contador) y visibles en ámbar con el interruptor apagado (los
+        confirmados sin doblaje, en rojo).
         Si tras recortar no queda ningún hueco (ni unknown_seasons), la
         fila entera se oculta. Usado tanto por _render_missing_episodes_table
         como por _append_missing_ep_result_live, para que ambos apliquen
         exactamente el mismo criterio."""
         from core.missing_episodes import format_missing_summary, apply_ignored_filter
 
-        query = self._missing_ep_search_entry.get().strip().lower()
-        show_ignored = self._missing_ep_show_ignored_var.get()
-        hide_ai_dismissed = self._missing_ep_hide_ai_var.get()
+        try:
+            query = (self._missing_ep_search_entry.get() or "").strip().lower()
+        except Exception:
+            query = ""   # cuadro destruido/recreado: sin filtro, no tumbar el pintado
+        try:
+            show_ignored = bool(self._missing_ep_show_ignored_var.get())
+        except Exception:
+            show_ignored = False
+        try:
+            hide_ai_dismissed = bool(self._missing_ep_hide_ai_var.get())
+        except Exception:
+            hide_ai_dismissed = False
         ai_verdict = r.get("ai_verdict")
         ai_dismissed = bool(ai_verdict) and ai_verdict.get("veredicto") == "numeracion_distinta"
         if not (show_ignored or not r.get("ignored")):
             return None
-        if query and query not in r["name"].lower():
+        if query and query not in (r.get("name") or "").lower():
             return None
         if hide_ai_dismissed and ai_dismissed:
             return None
@@ -12620,36 +12825,204 @@ class App(_AppBase):
         display["summary"] = format_missing_summary(r["name"], missing) if missing else r["summary"]
         return display
 
+    def _refresh_server_audio(self, source: str, server_id: str, tmdb_id: int):
+        """Lee las pistas de audio reales de la serie en Jellyfin/Plex y
+        guarda True/False por episodio PRESENTE en spanish_dub_cache (ver
+        core/server_audio.py: castellano exigido, latino no vale, sin dato
+        no se escribe). Solo con "Ocultar sin doblaje ES" activo (si no,
+        es una llamada con MediaStreams de más por serie y escaneo). La
+        escritura en caché se programa en el hilo principal (este método se
+        llama desde workers de reescaneo). Nunca lanza."""
+        try:
+            if not self._missing_ep_hide_no_dub_var.get():
+                return
+        except Exception:
+            return
+        if not server_id or not tmdb_id:
+            return
+        try:
+            if source == "jellyfin":
+                from core.media_server_refresh import get_jellyfin_episodes_audio
+                audio = get_jellyfin_episodes_audio(
+                    self.config_data.get("jellyfin_host", ""),
+                    self.config_data.get("jellyfin_api_key", ""), server_id)
+            else:
+                from core.media_server_refresh import get_plex_episodes_audio
+                audio = get_plex_episodes_audio(
+                    self.config_data.get("plex_host", ""),
+                    self.config_data.get("plex_token", ""), server_id)
+        except Exception:
+            return
+        if not audio:
+            return
+        try:
+            from core.server_audio import audio_map_to_episodes
+            episodes = audio_map_to_episodes(audio)
+        except Exception:
+            return
+        if not episodes:
+            return
+
+        def _apply():
+            try:
+                entry = self._spanish_dub_cache.setdefault(
+                    str(tmdb_id), {"spanish_available": None, "episodes": {}})
+                entry.setdefault("episodes", {}).update(episodes)
+                from core.spanish_dub_cache import save_cache
+                save_cache(self._spanish_dub_cache)
+            except Exception:
+                pass
+        try:
+            self._after_from_worker(_apply, critical=True)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _merged_dub_cut(cutoff_a: dict, cutoff_b: dict, season: int,
+                        cutoff_c: dict | None = None,
+                        cutoff_d: dict | None = None) -> int | None:
+        """Corte aplicable a *season* fusionando hasta cuatro fuentes
+        (eldoblaje/wiki, Streaming Availability, Crunchyroll y RTVE): si
+        varias cubren la temporada, el MÍNIMO (los episodios por debajo
+        los confirman todas; por encima al menos una dice que no hay
+        doblaje); si solo una la cubre, esa. None si ninguna. Claves int
+        o str (json). *cutoff_c* (Crunchyroll) y *cutoff_d* (RTVE) son
+        opcionales para no romper llamadas existentes."""
+        cuts = [cutoff_a, cutoff_b]
+        if cutoff_c is not None:
+            cuts.append(cutoff_c)
+        if cutoff_d is not None:
+            cuts.append(cutoff_d)
+        vals = []
+        for cut in cuts:
+            v = (cut or {}).get(season, (cut or {}).get(str(season)))
+            if v is None:
+                continue
+            try:
+                vals.append(int(v))
+            except (TypeError, ValueError):
+                return v
+        if not vals:
+            return None
+        return min(vals)
+
+    def _dub_cutoff_for_series(self, tmdb_id, ai_verdict=None) -> dict | None:
+        """Corte {temporada: último_doblado} aplicable a la serie: veredicto
+        de la IA si lo hay (sustituye a todo lo demás), si no fusión de
+        eldoblaje/wiki + Streaming Availability + Crunchyroll + RTVE (ver
+        _merged_dub_cut), si no None (sin dato: la tabla muestra, el auto
+        bloquea)."""
+        if ai_verdict and "doblaje_castellano" in ai_verdict:
+            return ai_verdict["doblaje_castellano"]
+        try:
+            cache_entry = (self._spanish_dub_cache or {}).get(str(tmdb_id), {})
+            eld = (cache_entry.get("eldoblaje") or {}).get("cutoff") or {}
+            st = (cache_entry.get("streaming") or {}).get("cutoff") or {}
+            cr = (cache_entry.get("crunchyroll") or {}).get("cutoff") or {}
+            rt = (cache_entry.get("rtve") or {}).get("cutoff") or {}
+            merged = {}
+            for s in set(list(eld.keys()) + list(st.keys()) + list(cr.keys()) + list(rt.keys())):
+                try:
+                    season = int(s)
+                except (TypeError, ValueError):
+                    continue
+                cut = self._merged_dub_cut(eld, st, season, cr, rt)
+                if cut is not None:
+                    merged[season] = cut
+            return merged or None
+        except Exception:
+            return None
+
     def _missing_ep_dub_filtered(self, r: dict) -> dict:
-        """El "missing" de *r* recortado a solo los episodios sin doblaje
-        castellano confirmado -- IA si la serie tiene doblaje_castellano
-        (ver _ask_ai_about_current_missing_ep_show), si no TMDB
-        (self._spanish_dub_cache). Extraído de _visible_missing_ep_row para
-        reutilizarlo también en _missing_ep_dub_hidden_rows (el contador
-        "N series ocultas por doblaje") sin duplicar el criterio."""
+        """El "missing" de *r* recortado a solo los episodios con doblaje
+        castellano CONFIRMADO -- corte (IA, si no eldoblaje/wiki en caché)
+        si lo hay, si no veredictos por episodio (audio del servidor para
+        los presentes, corte derivado para los faltantes cubiertos). Lo
+        SIN VERIFICAR también se recorta (hide_unverified): con el
+        interruptor "Ocultar sin doblaje ES" solo queda lo confirmado.
+        Extraído de _visible_missing_ep_row para reutilizarlo también en
+        _missing_ep_dub_hidden_rows (el contador "N series ocultas por
+        doblaje") sin duplicar el criterio."""
         ai_verdict = r.get("ai_verdict")
         if ai_verdict and "doblaje_castellano" in ai_verdict:
             from core.missing_episodes import filter_missing_by_dub_cutoff
-            return filter_missing_by_dub_cutoff(r["missing"], ai_verdict["doblaje_castellano"])
+            return filter_missing_by_dub_cutoff(r["missing"], ai_verdict["doblaje_castellano"],
+                                               hide_unverified=True)
+        cutoff = self._dub_cutoff_for_series(r.get("tmdb_id"))
+        if cutoff:
+            from core.missing_episodes import filter_missing_by_dub_cutoff
+            # Corte parcial: solo recorta sus temporadas; el resto cae al
+            # veredicto por episodio de abajo (visible por defecto).
+            from core.missing_episodes import filter_missing_by_spanish_dub
+            dub_episodes = self._spanish_dub_cache.get(str(r["tmdb_id"]), {}).get("episodes", {})
+            by_cutoff = filter_missing_by_dub_cutoff(r["missing"], cutoff, hide_unverified=True)
+            uncovered = {s: eps for s, eps in r["missing"].items()
+                         if cutoff.get(s, cutoff.get(str(s))) is None}
+            by_ep = filter_missing_by_spanish_dub(uncovered, dub_episodes, hide_unverified=True)
+            merged = dict(by_cutoff)
+            for s, eps in by_ep.items():
+                if s in merged:
+                    merged[s] = sorted(set(merged[s]) | set(eps))
+                else:
+                    merged[s] = eps
+            return merged
         from core.missing_episodes import filter_missing_by_spanish_dub
         dub_episodes = self._spanish_dub_cache.get(str(r["tmdb_id"]), {}).get("episodes", {})
-        return filter_missing_by_spanish_dub(r["missing"], dub_episodes)
+        return filter_missing_by_spanish_dub(r["missing"], dub_episodes, hide_unverified=True)
+
+    def _missing_ep_unverified_eps(self, r: dict) -> list:
+        """[(temporada, episodio), ...] de la fila *r* sin ningún veredicto
+        de doblaje (ver core/missing_episodes.unverified_dub_episodes) --
+        misma precedencia que el resto (ver _dub_cutoff_for_series).
+        Independiente del interruptor: con "Ocultar sin doblaje ES"
+        apagado alimenta el resaltado "?N" de la fila; con él encendido
+        esos episodios ya están ocultos y la lista sale vacía sola.
+        Barato: solo recorre el hueco de la fila."""
+        try:
+            from core.missing_episodes import unverified_dub_episodes
+            ai_verdict = (r or {}).get("ai_verdict") or {}
+            cutoff = self._dub_cutoff_for_series((r or {}).get("tmdb_id"), ai_verdict)
+            cache_entry = (self._spanish_dub_cache or {}).get(str((r or {}).get("tmdb_id")), {})
+            return unverified_dub_episodes((r or {}).get("missing") or {},
+                                           cache_entry.get("episodes"), cutoff)
+        except Exception:
+            return []
+
+    def _missing_ep_dub_absent_eps(self, r: dict) -> list:
+        """[(temporada, episodio), ...] de la fila *r* con doblaje
+        confirmado AUSENTE (False explícito o más allá del corte) --
+        para el resaltado en rojo con el interruptor apagado (ver
+        _build_missing_ep_row). Independiente del interruptor, igual que
+        _missing_ep_unverified_eps."""
+        try:
+            from core.missing_episodes import dub_status_for_episode
+            ai_verdict = (r or {}).get("ai_verdict") or {}
+            cutoff = self._dub_cutoff_for_series((r or {}).get("tmdb_id"), ai_verdict)
+            cache_entry = (self._spanish_dub_cache or {}).get(str((r or {}).get("tmdb_id")), {})
+            dub = (cache_entry or {}).get("episodes") or {}
+            out = []
+            for season, eps in ((r or {}).get("missing") or {}).items():
+                for ep in eps or []:
+                    if dub_status_for_episode(season, ep, dub, cutoff) == "absent":
+                        out.append((season, ep))
+            return out
+        except Exception:
+            return []
 
     def _missing_ep_dub_warning_eps(self, r: dict, season: int, eps: list) -> list:
         """Episodios de *eps* (temporada *season* de la serie *r*) sin
         doblaje ES confirmado -- para avisar antes del ⬇ con "Ocultar sin
         doblaje ES" activo (ver core/missing_episodes.py::
-        eps_without_confirmed_dub). Misma precedencia que la tabla: veredicto
-        de la IA si existe, si no corte de eldoblaje en caché, si no TMDB.
-        Sin el interruptor, o sin ningún veredicto para esos episodios,
+        eps_without_confirmed_dub). Misma precedencia que la tabla (ver
+        _dub_cutoff_for_series): IA, si no fusión eldoblaje/wiki +
+        Streaming Availability, si no veredictos por episodio. Sin el
+        interruptor, o sin ningún veredicto para esos episodios,
         devuelve [] y el ⬇ no avisa."""
         if not self._missing_ep_hide_no_dub_var.get():
             return []
         ai_verdict = (r or {}).get("ai_verdict") or {}
-        cutoff = ai_verdict.get("doblaje_castellano")
+        cutoff = self._dub_cutoff_for_series((r or {}).get("tmdb_id"), ai_verdict)
         cache_entry = self._spanish_dub_cache.get(str((r or {}).get("tmdb_id")), {})
-        if cutoff is None:
-            cutoff = (cache_entry.get("eldoblaje") or {}).get("cutoff") or None
         from core.missing_episodes import eps_without_confirmed_dub
         return eps_without_confirmed_dub(season, eps, cache_entry.get("episodes"), cutoff)
 
@@ -12880,9 +13253,31 @@ class App(_AppBase):
             summary += " ⚠"
         if ai_verdict:
             summary += " 🤖"
+        # Doblaje en el resumen: con el interruptor apagado los episodios
+        # sin castellano CONFIRMADO (ausente explícito o más allá del
+        # corte) tiñen el resumen de rojo, y los SIN VERIFICAR mantienen
+        # el "?N" ámbar (con el interruptor encendido ninguno de los dos
+        # aparece: esos episodios ya están ocultos, no hay nada que
+        # resaltar). El tooltip cuenta ambos. Sin glifos nuevos (ver el
+        # comentario del triángulo v/>: varios Unicode se ven con
+        # recuadro en este sistema) -- solo color + "?N" ya existente.
+        n_unverified = 0
+        n_absent = 0
+        try:
+            n_unverified = len(self._missing_ep_unverified_eps(r))
+        except Exception:
+            n_unverified = 0
+        try:
+            n_absent = len(self._missing_ep_dub_absent_eps(r))
+        except Exception:
+            n_absent = 0
+        if n_unverified:
+            summary += f" ?{n_unverified}"
         if ai_verdict and ai_verdict.get("veredicto") == "numeracion_distinta":
             summary_color = PENDING_COLOR   # la IA lo descarta -- ya no hace falta el color de aviso
-        elif has_warning:
+        elif n_absent:
+            summary_color = ERROR_COLOR   # hay episodios sin doblaje confirmado
+        elif has_warning or n_unverified:
             summary_color = WARNING_COLOR
         elif not n_missing:
             summary_color = SUCCESS_COLOR   # serie completa
@@ -12892,6 +13287,15 @@ class App(_AppBase):
         summary_lbl = ctk.CTkLabel(c, text=summary, font=self._missing_ep_summary_font,
                                    text_color=summary_color, anchor="w")
         summary_lbl.pack(fill="both", expand=True)
+        if n_unverified or n_absent:
+            parts = []
+            if n_absent:
+                parts.append(f"{n_absent} sin doblaje castellano (confirmado ausente)")
+            if n_unverified:
+                parts.append(f"{n_unverified} sin verificar (ninguna fuente confirma ni desmiente)")
+            attach_tooltip(summary_lbl, lambda p="; ".join(parts): (
+                f"Doblaje: {p}. El autocompletado no descarga episodios "
+                "sin castellano confirmado."))
 
         score = trending_score(r.get("play_count", 0), r.get("last_played_ts"), _time.time())
         c = _cell("trending")
@@ -12927,7 +13331,7 @@ class App(_AppBase):
                       command=lambda row=r: self._rescan_single_missing_ep_series(row))
         attach_tooltip(rescan_btn, lambda: "Volver a comprobar esta serie contra el servidor: "
                        "recalcula qué episodios faltan de verdad ahora mismo, sin esperar "
-                       "al siguiente escaneo completo.")
+                       "al siguiente escaneo completo, y repasa su doblaje castellano.")
         rescan_btn.pack(fill="both", expand=True)
 
         # padx trailing=12 (no 0): margen deliberado al final de la fila,
@@ -13259,10 +13663,29 @@ class App(_AppBase):
         r = widgets["r"]
         detail_font = self._missing_ep_detail_font
         episode_links = self.config_data.get("custom_links_episode", [])
+        # Color por capítulo según doblaje (solo se nota con el
+        # interruptor apagado: encendido, los no confirmados ya están
+        # ocultos): rojo = castellano confirmado ausente, ámbar = sin
+        # verificar, gris = doblado. Misma precedencia que el resumen
+        # (ver dub_status_for_episode).
+        try:
+            from core.missing_episodes import dub_status_for_episode
+            _ai = (r.get("ai_verdict") or {})
+            _cutoff = self._dub_cutoff_for_series(tmdb_id, _ai)
+            _dub = ((self._spanish_dub_cache or {}).get(str(tmdb_id)) or {}).get("episodes") or {}
+        except Exception:
+            _cutoff, _dub = None, {}
 
         ep_row = 0
         for _season, ep, title, name, air_date in widgets["lines"]:
-            ctk.CTkLabel(episodes_fr, text=name, font=detail_font, text_color=PENDING_COLOR,
+            try:
+                _st = dub_status_for_episode(season, ep, _dub, _cutoff)
+            except Exception:
+                _st = "ok"
+            ep_color = (ERROR_COLOR if _st == "absent"
+                        else WARNING_COLOR if _st == "unverified"
+                        else PENDING_COLOR)
+            ctk.CTkLabel(episodes_fr, text=name, font=detail_font, text_color=ep_color,
                          anchor="w").grid(row=ep_row, column=0, sticky="w", pady=1)
             ctk.CTkLabel(episodes_fr, text=_fmt_air_date(air_date), font=detail_font,
                          text_color=PENDING_COLOR, anchor="w", width=80).grid(
@@ -14296,11 +14719,43 @@ class App(_AppBase):
                 if action == auto_complete_state.ATTEMPT:
                     pending.append((season, ep))
 
+        # Con "Ocultar sin doblaje ES" activo, el autocompletado NO descarga
+        # capítulos sin doblaje CONFIRMADO (real: Dragon Ball Daima descargaba
+        # capítulos aún sin doblar aunque la tabla los ocultaba). A diferencia
+        # de la tabla -- visible por defecto mientras se comprueba -- aquí lo
+        # no comprobado bloquea: mejor faltante que V.O.S. descargada sola.
+        # Precedencia igual que el aviso manual: IA, si no corte de eldoblaje
+        # en caché, si no veredictos por episodio de TMDB (ver
+        # core/missing_episodes.py::is_ep_dub_confirmed).
         to_download = list(pending)
+        try:
+            _hide_no_dub = bool(self._missing_ep_hide_no_dub_var.get())
+        except Exception:
+            _hide_no_dub = False
+        if _hide_no_dub and pending:
+            try:
+                from core.missing_episodes import is_ep_dub_confirmed
+                _ai = ((row or {}).get("ai_verdict") or {}) if "row" in locals() else {}
+                _cutoff = self._dub_cutoff_for_series(tmdb_id, _ai)
+                _cache_entry = (self._spanish_dub_cache or {}).get(str(tmdb_id), {})
+                _dub_eps = _cache_entry.get("episodes") or {}
+                _blocked = [(s, e) for (s, e) in pending
+                            if not is_ep_dub_confirmed(s, e, _dub_eps, _cutoff)]
+                if _blocked:
+                    _log.info("Autocompletado: '%s' %d capítulo(s) sin doblaje confirmado, no se descargan (%s)",
+                              series_name, len(_blocked),
+                              ", ".join(f"{s}x{e:02d}" for s, e in _blocked[:8]))
+                to_download = [(s, e) for (s, e) in pending
+                               if is_ep_dub_confirmed(s, e, _dub_eps, _cutoff)]
+            except Exception:
+                _log.exception("Autocompletado: filtro de doblaje falló para '%s', se sigue sin filtrar", series_name)
+                to_download = list(pending)
 
         if not to_download:
             try:
-                self.after(0, lambda n=series_name: self._set_status(f"{n}: sin huecos nuevos", SUCCESS_COLOR))
+                _msg = (f"{series_name}: {len(pending)} en espera de doblaje ES"
+                        if pending else f"{series_name}: sin huecos nuevos")
+                self.after(0, lambda m=_msg: self._set_status(m, SUCCESS_COLOR))
             except Exception:
                 pass
             return
@@ -17350,6 +17805,12 @@ class App(_AppBase):
             else:
                 present = get_plex_episodes(self.config_data.get("plex_host", ""),
                                             self.config_data.get("plex_token", ""), server_id)
+            if present is not None:
+                # El fallback trae presencia del servidor: aprovechar para
+                # leer también sus pistas de audio reales (ver
+                # core/server_audio.py) -- True/False por episodio presente
+                # en spanish_dub_cache, solo con el interruptor de doblaje.
+                self._refresh_server_audio(source, server_id, tmdb_id)
         if present is None:
             return [r], None   # sin dato fiable ahora mismo -- se deja la fila tal cual
 
@@ -17488,8 +17949,18 @@ class App(_AppBase):
         se quita cualquier fila que ya hubiera con el tmdb_id nuevo, para
         no acabar con dos filas de la misma serie."""
         if results is not None:
-            new_ids = {row["tmdb_id"] for row in results} | {tmdb_id}
-            self._missing_ep_results = [r for r in self._missing_ep_results if r["tmdb_id"] not in new_ids]
+            # Comparación insensible a tipos (int/str): según la fuente el
+            # mismo tmdb_id puede llegar en un tipo u otro, y comparar tal
+            # cual ("236994" not in {236994}) dejaba la fila vieja + la
+            # nueva = serie duplicada (real: Dragon Ball Daima dos veces).
+            def _norm(v):
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    return v
+            new_ids = {_norm(row.get("tmdb_id")) for row in results} | {_norm(tmdb_id)}
+            self._missing_ep_results = [r for r in self._missing_ep_results
+                                        if _norm(r.get("tmdb_id")) not in new_ids]
             self._missing_ep_results.extend(results)
             # El reescaneo reescribió la caché en disco: esta serie puede
             # acabar de pasar a "completa" (o dejar de serlo).
@@ -17505,6 +17976,22 @@ class App(_AppBase):
             else:
                 self._set_status(f"\"{name}\" ya no tiene huecos -- se quitó de la lista", SUCCESS_COLOR)
             self._render_missing_episodes_table(reset_page=False)
+            # El reescaneo de la fila también repasa el doblaje de esta
+            # serie (mismo efecto que el botón "🔄" del diálogo de
+            # doblaje): si solo recalculara huecos, un veredicto
+            # caducado/vacío -- p. ej. un corte que ya existe en una
+            # fuente nueva -- no se actualizaría nunca sin pasar por el
+            # diálogo. Solo si sigue teniendo huecos (sin ellos no hay
+            # nada que comprobar) y si no hay otro chequeo en curso (si
+            # lo hubiera, _on_force_recheck no arrancaría y la entrada
+            # ya borrada se quedaría sin repasar).
+            if results and not self._missing_ep_scanning:
+                new_tmdb_id = (results[0].get("tmdb_id")
+                               if results and isinstance(results[0], dict)
+                               else tmdb_id) or tmdb_id
+                if str(new_tmdb_id) != str(tmdb_id):
+                    self._spanish_dub_cache.pop(str(tmdb_id), None)
+                self._on_force_recheck(new_tmdb_id)
         else:
             widgets = self._missing_ep_row_widgets.get(tmdb_id)
             if widgets and widgets.get("rescan_btn"):
@@ -17646,10 +18133,14 @@ class App(_AppBase):
         def _add_shows(source, shows_list):
             for s in shows_list or []:
                 tmdb_id = s.get("tmdb_id")
-                if tmdb_id and tmdb_id in seen_tmdb_ids:
+                try:
+                    norm = int(tmdb_id) if tmdb_id else None
+                except (TypeError, ValueError):
+                    norm = tmdb_id
+                if norm and norm in seen_tmdb_ids:
                     continue
-                if tmdb_id:
-                    seen_tmdb_ids.add(tmdb_id)
+                if norm:
+                    seen_tmdb_ids.add(norm)
                 shows.append((source, s))
 
         if self.config_data.get("jellyfin_enabled"):
@@ -17804,10 +18295,15 @@ class App(_AppBase):
             # la última vez le faltaban episodios (por si se rellenó a mano).
             if source == "jellyfin":
                 present = get_jellyfin_episodes(self.config_data.get("jellyfin_host", ""),
-                                                 self.config_data.get("jellyfin_api_key", ""), show["id"])
+                                                  self.config_data.get("jellyfin_api_key", ""), show["id"])
             else:
                 present = get_plex_episodes(self.config_data.get("plex_host", ""),
-                                             self.config_data.get("plex_token", ""), show["rating_key"])
+                                              self.config_data.get("plex_token", ""), show["rating_key"])
+            # Audio real del servidor para los presentes (ver
+            # core/server_audio.py): con el interruptor de doblaje guarda
+            # True/False por episodio en spanish_dub_cache.
+            self._refresh_server_audio(source, show["id"] if source == "jellyfin" else show["rating_key"],
+                                       tmdb_id)
             # None = falló la consulta (sin red, servidor caído...) -- eso sí
             # se salta, no hay dato fiable. Un set() VACÍO es una respuesta
             # válida ("Jellyfin/Plex no tiene indexado nada de esta serie")
@@ -18789,6 +19285,9 @@ class App(_AppBase):
 
             _set_entry(self._google_books_key_entry, self.config_data.get("google_books_api_key", ""))
             self.book_client.set_api_key(self.config_data.get("google_books_api_key", ""))
+
+            _set_entry(self._streaming_avail_key_entry,
+                       self.config_data.get("streaming_availability_key", ""))
 
             if self.config_data.get("ai_fallback_enabled"):
                 self._ai_fallback_switch.select()
@@ -22020,6 +22519,27 @@ class App(_AppBase):
                 text=msg, text_color=SUCCESS_COLOR if ok else ERROR_COLOR))
         threading.Thread(target=worker, daemon=True).start()
 
+    def _validate_streaming_avail_key(self):
+        """La key es opcional (vacía = fuente desactivada). Valida con una
+        consulta ligera (sin granularidad por episodio)."""
+        key = self._streaming_avail_key_entry.get().strip()
+        if not key:
+            self._streaming_avail_key_status.configure(
+                text="Vacía: fuente desactivada (vale eldoblaje/wiki/servidor)",
+                text_color=PENDING_COLOR)
+            return
+        self._streaming_avail_key_status.configure(text="Validando...", text_color=WARNING_COLOR)
+        def worker():
+            try:
+                from core.streaming_availability import get_show
+                ok = get_show(key, 456, granularity="show") is not None
+            except Exception:
+                ok = False
+            msg = "API Key válida" if ok else "API Key inválida"
+            self.after(0, lambda: self._streaming_avail_key_status.configure(
+                text=msg, text_color=SUCCESS_COLOR if ok else ERROR_COLOR))
+        threading.Thread(target=worker, daemon=True).start()
+
     def _open_learned_terms_dialog(self):
         """Ver/añadir/quitar a mano los términos que el fallback de IA ha
         ido aprendiendo (core/learned_terms.py) -- por si alguno resultó ser
@@ -22219,6 +22739,7 @@ class App(_AppBase):
 
                 "comicvine_api_key": self._comicvine_key_entry.get().strip(),
                 "google_books_api_key": self._google_books_key_entry.get().strip(),
+                "streaming_availability_key": self._streaming_avail_key_entry.get().strip(),
             })
         if self._config_tab_built("templates"):
             data.update({

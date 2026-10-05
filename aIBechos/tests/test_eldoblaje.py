@@ -1,4 +1,4 @@
-from core.eldoblaje import parse_dub_cutoff, has_absolute_dub_count
+from core.eldoblaje import parse_dub_cutoff, has_absolute_dub_count, cutoff_is_fresh
 
 
 def test_hasta_temporada_oculta_posteriores():
@@ -56,3 +56,27 @@ def test_texto_doblada_no_produce_corte():
     assert parse_dub_cutoff(text, [1, 2]) == {}
     assert parse_dub_cutoff("", [1]) == {}
     assert parse_dub_cutoff(text, []) == {}
+
+
+def test_temporada_en_emision_marca_sin_doblar():
+    """Real Daima: 'La temporada 1 en emisión, doblaje en curso' marca 0 en
+    esa temporada en vez de {} (que caía al falso positivo de TMDB)."""
+    text = "La temporada 1 en emisión, doblaje en curso en los estudios de Madrid."
+    assert parse_dub_cutoff(text, [1]) == {1: 0}
+
+def test_absoluta_sin_primeros_tambien_reparte():
+    """"Se doblaron 50 episodios" (sin "primeros") también es cuenta absoluta."""
+    text = "Se doblaron 50 episodios de la serie."
+    assert has_absolute_dub_count(text)
+    assert parse_dub_cutoff(text, [1, 2], {1: 30, 2: 30}) == {2: 20}
+
+
+def test_cutoff_vacio_caduca_antes_que_con_datos():
+    """{} sin datos (serie en emisión) se re-pregunta a los 3 días; un corte
+    con datos aguanta 30."""
+    assert cutoff_is_fresh({"cutoff": {}, "checked_at": 1000000.0}, 1000000.0 + 4 * 86400) is False
+    assert cutoff_is_fresh({"cutoff": {}, "checked_at": 1000000.0}, 1000000.0 + 2 * 86400) is True
+    assert cutoff_is_fresh({"cutoff": {1: 5}, "checked_at": 1000000.0}, 1000000.0 + 29 * 86400) is True
+    assert cutoff_is_fresh({"cutoff": {1: 5}, "checked_at": 1000000.0}, 1000000.0 + 31 * 86400) is False
+    assert cutoff_is_fresh({}, 1000000.0) is False
+

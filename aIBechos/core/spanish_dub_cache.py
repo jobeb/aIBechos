@@ -6,7 +6,26 @@ activar el interruptor, no en cada escaneo normal de huecos.
 
 Formato: {tmdb_id_como_texto: {"spanish_available": bool|None,
 "episodes": {"{temporada}x{episodio:02d}": bool}, "checked_at": epoch_segundos,
-"eldoblaje": {"cutoff": {"{temporada}": ultimo_episodio_doblado}, "checked_at": epoch_segundos}}}
+"eldoblaje": {"cutoff": {"{temporada}": ultimo_episodio_doblado}, "checked_at": epoch_segundos, "source": "eldoblaje"|"wiki"|"none"},
+"streaming": {"cutoff": {...}, "checked_at": epoch_segundos, "source": "streaming_availability"|"none"},
+"crunchyroll": {"cutoff": {...}, "checked_at": epoch_segundos, "source": "crunchyroll"|"none"},
+"rtve": {"cutoff": {...}, "checked_at": epoch_segundos, "source": "rtve"|"none"}}}
+
+"crunchyroll" es el corte de doblaje {temporada: último_episodio_doblado}
+por audio es-ES de la API interna de Crunchyroll (ver
+core/crunchyroll_client.py -- anónimo, sin cuenta; solo da corte en
+anime, para no-anime queda en {} con source "none"), con su propio
+"checked_at" y la misma frescura que eldoblaje (ver
+core/eldoblaje.cutoff_is_fresh: 30 días con datos, 3 sin ellos). En la
+fusión de cortes (ver App._merged_dub_cut) manda el MÍNIMO de las
+fuentes que cubran cada temporada.
+
+"rtve" es el corte por idioma "es" de los vídeos de RTVE Play (ver
+core/rtve_client.py -- sobre todo producción española; fuera de ella
+queda en {} con source "none"), con su propio "checked_at" y la misma
+frescura. La búsqueda usa slug directo + índice local de programas
+(`rtve_programs_index.json` en la carpeta de datos, refresco máximo
+cada 7 días -- ver core/rtve_client.INDEX_MAX_AGE_DAYS).
 
 "spanish_available" es el resultado (cacheado, una vez por serie) de
 /tv/{id}/watch/providers para la región "ES" -- evita repetir esa consulta
@@ -14,8 +33,11 @@ por cada episodio de la misma serie.
 
 "eldoblaje" es el corte de doblaje {temporada: último_episodio_doblado}
 extraído automáticamente del texto libre de eldoblaje.com (ver
-core/eldoblaje.py::parse_dub_cutoff, 0 = nada doblado de esa temporada),
-con su propio "checked_at" para no re-preguntar al sitio en cada chequeo
+core/eldoblaje.py::parse_dub_cutoff, 0 = nada doblado de esa temporada)
+o, como respaldo, de la wiki de doblaje (ver core/doblaje_wiki.py --
+"source" dice cuál: "eldoblaje", "wiki" o "none"), con su propio
+"checked_at" y frescura propia (ver core/eldoblaje.cutoff_is_fresh: 30
+días con datos, 3 días sin ellos para series en emisión).
 -- manda sobre el texto de TMDB para sus temporadas (ver
 App._start_spanish_dub_check). Las claves de "cutoff" salen de json como
 texto tras recargar: quien lo lee acepta int y str (ver el atajo por
@@ -33,13 +55,15 @@ que existiera este campo no tienen "checked_at" -- se tratan como
 caducadas (None cuenta como "hace más de MAX_AGE_DAYS"), no como un
 error.
 
-Este chequeo basado en TMDB es el comportamiento POR DEFECTO del
-interruptor -- se sabe que puede dar falsos positivos (TMDB traduce el
-texto de episodios sin relación con si hay audio doblado, ver el caso real
-de Bleach en gui/app.py::_visible_missing_ep_row), pero es gratis y
-automático. Si el usuario pulsa "🤖 Preguntar a la IA" para una serie
-concreta, el veredicto de la IA (ver core/missing_episodes_ai.py) SUSTITUYE
-a este para esa serie -- nunca al revés.
+Este chequeo basado en TMDB está ELIMINADO como veredicto (decisión del
+usuario: TMDB solo sabe de texto traducido, nunca de audio -- daba falsos
+positivos, ver el caso real de Bleach en gui/app.py): la caché ahora se
+rellena con el corte de eldoblaje.com/wiki ({"SxEE": bool} derivado para
+las temporadas cubiertas) y con el audio real del servidor para los
+episodios presentes (ver core/server_audio.py). Sin veredicto para un
+episodio no se escribe nada: la tabla lo muestra "sin verificar" y el
+autocompletado no lo descarga (ver
+core/missing_episodes.is_ep_dub_confirmed).
 """
 
 import json

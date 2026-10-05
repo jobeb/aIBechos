@@ -319,6 +319,32 @@ def test_get_plex_episodes_parses_season_and_episode(monkeypatch):
     assert present == {(1, 1), (1, 2), (2, 1)}
 
 
+def test_get_jellyfin_episodes_audio_clasifica_pistas(monkeypatch):
+    payload = {"Items": [
+        {"ParentIndexNumber": 1, "IndexNumber": 1,
+         "MediaStreams": [{"Type": "Audio", "Language": "spa", "DisplayTitle": "Español"}]},
+        {"ParentIndexNumber": 1, "IndexNumber": 2,
+         "MediaStreams": [{"Type": "Audio", "Language": "spa", "DisplayTitle": "Latino"}]},
+        {"ParentIndexNumber": 1, "IndexNumber": 3, "MediaStreams": []},
+    ]}
+    monkeypatch.setattr(msr.requests, "get", lambda *a, **kw: _FakeResponse(payload))
+    audio = msr.get_jellyfin_episodes_audio("http://jellyfin:8096", "key123", "series1")
+    assert audio == {(1, 1): True, (1, 2): False, (1, 3): None}
+
+
+def test_get_plex_episodes_audio_clasifica_streams(monkeypatch):
+    payload = {"MediaContainer": {"Metadata": [
+        {"parentIndex": 1, "index": 1, "Media": [{"Part": [{"Stream": [
+            {"streamType": 1, "codec": "h264"},
+            {"streamType": 2, "codec": "ac3", "languageTag": "es", "language": "Español"},
+        ]}]}]},
+        {"parentIndex": 1, "index": 2},   # sin Media -> sin dato
+    ]}}
+    monkeypatch.setattr(msr.requests, "get", lambda *a, **kw: _FakeResponse(payload))
+    audio = msr.get_plex_episodes_audio("http://plex:32400", "tok123", "100")
+    assert audio == {(1, 1): True, (1, 2): None}
+
+
 # ── Jellyfin: datos de uso (liberar espacio) ────────────────────────────────
 
 def test_get_jellyfin_usage_stats_without_config_returns_none():

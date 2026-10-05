@@ -8,6 +8,9 @@ from core.missing_episodes import (find_missing_episodes, format_missing_summary
                                     has_spanish_availability, episode_has_spanish_text,
                                     episode_has_spanish_translation,
                                     eps_without_confirmed_dub,
+                                    is_ep_dub_confirmed,
+                                    unverified_dub_episodes,
+                                    dub_status_for_episode,
                                     filter_missing_by_spanish_dub, filter_missing_by_dub_cutoff,
                                     apply_ignored_filter)
 
@@ -326,6 +329,39 @@ def test_filter_missing_by_dub_cutoff_empty_cutoff_keeps_everything():
     assert filter_missing_by_dub_cutoff(missing, {}) == missing
 
 
+def test_filter_missing_by_spanish_dub_hide_unverified_hides_unchecked():
+    missing = {1: [1, 2, 3]}
+    dub = {"1x01": True, "1x02": False}   # "1x03" todavía no se ha comprobado
+    assert filter_missing_by_spanish_dub(missing, dub, hide_unverified=True) == {1: [1]}
+
+
+def test_filter_missing_by_spanish_dub_hide_unverified_drops_all_unchecked_season():
+    missing = {1: [1, 2]}
+    assert filter_missing_by_spanish_dub(missing, {}, hide_unverified=True) == {}
+
+
+def test_filter_missing_by_dub_cutoff_hide_unverified_drops_uncovered_season():
+    missing = {1: [1, 2], 2: [1]}
+    dub_cutoff = {1: 109}   # sin veredicto para la temporada 2
+    assert filter_missing_by_dub_cutoff(missing, dub_cutoff, hide_unverified=True) == {1: [1, 2]}
+
+
+def test_filter_missing_by_dub_cutoff_hide_unverified_empty_cutoff_hides_all():
+    missing = {1: [1, 2]}
+    assert filter_missing_by_dub_cutoff(missing, {}, hide_unverified=True) == {}
+
+
+def test_dub_status_for_episode_ok_absent_unverified():
+    assert dub_status_for_episode(1, 7, {"1x07": True}, {1: 8}) == "ok"
+    assert dub_status_for_episode(1, 9, {"1x09": False}, {1: 8}) == "absent"
+    assert dub_status_for_episode(1, 9, {}, {1: 8}) == "absent"   # más allá del corte
+    assert dub_status_for_episode(2, 1, {}, {1: 8}) == "unverified"   # temporada sin corte
+    assert dub_status_for_episode(1, 1, {"1x01": True}) == "ok"
+    assert dub_status_for_episode(1, 2, {"1x02": False}) == "absent"
+    assert dub_status_for_episode(1, 3, {}) == "unverified"
+    assert dub_status_for_episode(1, 3, None, None) == "unverified"
+
+
 def test_apply_ignored_filter_removes_ignored_episode():
     missing = {1: [1, 2, 3]}
     assert apply_ignored_filter(missing, [], {1: [2]}) == {1: [1, 3]}
@@ -480,3 +516,23 @@ def test_hxh_sin_normalizar_daria_falsos_faltan():
                                     | {(3, e) for e in range(1, 13)})
     assert missing[2] == list(range(75, 137))
     assert missing[3] == list(range(137, 149))
+
+def test_is_ep_dub_confirmed_estricto_para_auto():
+    """El auto solo descarga lo CONFIRMADO: True pasa, False y ausente bloquean."""
+    assert is_ep_dub_confirmed(1, 5, {"1x05": True}, None)
+    assert not is_ep_dub_confirmed(1, 6, {"1x05": True}, None)
+    assert not is_ep_dub_confirmed(1, 6, {"1x06": False}, None)
+    assert is_ep_dub_confirmed(1, 5, {}, {1: 5})
+    assert not is_ep_dub_confirmed(1, 6, {}, {1: 5})
+
+
+def test_unverified_solo_lo_sin_veredicto():
+    """False ES veredicto (confirmado sin doblaje); el corte cubre su
+    temporada; solo None es 'sin verificar'."""
+    missing = {1: [5, 6, 7, 8]}
+    dub_eps = {"1x05": True, "1x06": False}
+    assert unverified_dub_episodes(missing, dub_eps, None) == [(1, 7), (1, 8)]
+    assert unverified_dub_episodes(missing, dub_eps, {1: 8}) == []
+    assert unverified_dub_episodes(missing, None, None) == [(1, 5), (1, 6), (1, 7), (1, 8)]
+    assert unverified_dub_episodes({}, dub_eps, None) == []
+

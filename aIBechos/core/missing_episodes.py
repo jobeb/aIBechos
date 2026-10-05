@@ -220,16 +220,20 @@ def format_missing_summary(show_name: str, missing: dict) -> str:
 
 
 def has_spanish_availability(providers: dict) -> bool:
-    """True si la serie aparece en /tv/{id}/watch/providers para la región
-    "ES" -- primer filtro (barato, una llamada por serie) del interruptor
-    "Ocultar sin doblaje ES": si ni siquiera está disponible en España, no
-    hace falta gastar una llamada por episodio para comprobar el doblaje."""
+    """EN DESUSO como veredicto de doblaje (decisión del usuario: TMDB solo
+    sabe de texto/disponibilidad, nunca de audio -- daba falsos positivos,
+    ver episode_has_spanish_text). Se conserva por compatibilidad y tests.
+    True si la serie aparece en /tv/{id}/watch/providers para la región
+    "ES"."""
     return "ES" in (providers.get("results") or {})
 
 
 def episode_has_spanish_text(episode_info: dict) -> bool:
-    """True si /tv/{id}/season/{s}/episode/{e}?language=es-ES devuelve texto
-    localizado real -- TMDB, cuando no tiene traducción, suele devolver
+    """EN DESUSO como veredicto de doblaje (decisión del usuario: TMDB
+    traduce el texto con independencia del audio -- caso Bleach: texto ES
+    en ~366 episodios, castellano real hasta el 109). Se conserva por
+    compatibilidad y tests. True si /tv/{id}/season/{s}/episode/{e}?language=es-ES
+    devuelve texto localizado real.
     'overview'/'name' vacíos en vez de dar error, así que hay que mirar el
     contenido, no solo si la llamada tuvo éxito.
 
@@ -246,7 +250,9 @@ def episode_has_spanish_text(episode_info: dict) -> bool:
 
 
 def episode_has_spanish_translation(translations: dict) -> bool:
-    """True si /tv/{id}/season/{s}/episode/{e}/translations lista el español
+    """EN DESUSO como veredicto de doblaje (decisión del usuario: lista de
+    traducciones de TEXTO, no de audio). Se conserva por compatibilidad y
+    tests. True si /tv/{id}/season/{s}/episode/{e}/translations lista el español
     ("es", cualquier región) entre los idiomas con traducción REAL.
 
     Primera señal del interruptor "Ocultar sin doblaje ES", ANTES de mirar
@@ -290,22 +296,73 @@ def eps_without_confirmed_dub(season: int, eps: list, dub_episodes: dict = None,
     return [ep for ep in eps if dub.get(f"{season}x{ep:02d}") is False]
 
 
-def filter_missing_by_spanish_dub(missing: dict, dub_by_episode: dict) -> dict:
+def unverified_dub_episodes(missing: dict, dub_episodes: dict = None,
+                            dub_cutoff: dict = None) -> list:
+    """[(temporada, episodio), ...] SIN ningún veredicto de doblaje: ni corte
+    (IA/eldoblaje/wiki/streaming) que cubra su temporada, ni veredicto por
+    episodio (audio del servidor o corte derivado). OJO: False ES veredicto
+    (doblaje confirmado ausente) -- solo None cuenta como "sin verificar".
+    Para distinguir en la tabla lo "doblado" de lo "sin datos" (real:
+    Dragon Ball Daima mostraba todo como doblado porque ninguna fuente
+    tenía dato y lo sin comprobar se muestra por defecto)."""
+    dub = dub_episodes or {}
+    out = []
+    for season, eps in (missing or {}).items():
+        cut = None
+        if dub_cutoff is not None:
+            cut = dub_cutoff.get(season, dub_cutoff.get(str(season)))
+        for ep in eps or []:
+            if cut is not None:
+                continue
+            if dub.get(f"{season}x{ep:02d}") is None:
+                out.append((season, ep))
+    return out
+
+
+def is_ep_dub_confirmed(season: int, ep: int, dub_episodes: dict = None,
+                        dub_cutoff: dict = None) -> bool:
+    """True solo si el episodio tiene doblaje ES CONFIRMADO -- para el
+    autocompletado automático (ver gui/app.py::_auto_complete_series_single_impl),
+    que a diferencia de la tabla/manual no puede permitirse el "visible por
+    defecto": con "Ocultar sin doblaje ES" activo, lo no comprobado NO se
+    descarga hasta que TMDB/eldoblaje/IA lo confirme (real: Dragon Ball Daima
+    descargaba capítulos aún sin doblar). Precedencia igual que la tabla:
+    corte (IA o eldoblaje) si cubre la temporada (ep <= cut); si no,
+    veredicto por episodio de TMDB (True explícito). False, ausente o más
+    allá del corte -> False."""
+    if dub_cutoff is not None:
+        cut = dub_cutoff.get(season, dub_cutoff.get(str(season)))
+        if cut is not None:
+            return ep <= cut
+    dub = dub_episodes or {}
+    return dub.get(f"{season}x{ep:02d}") is True
+
+
+def filter_missing_by_spanish_dub(missing: dict, dub_by_episode: dict,
+                                  hide_unverified: bool = False) -> dict:
     """Reduce *missing* ({temporada: [episodios]}) a solo los episodios con
     doblaje ES confirmado -- dub_by_episode: {"{temporada}x{episodio:02d}":
     bool}. Un episodio que TODAVÍA no se ha comprobado (no está en
-    dub_by_episode) se considera visible por defecto: el worker en segundo
-    plano lo irá rellenando, y ocultarlo de entrada escondería contenido
-    real mientras se comprueba, en vez de solo lo ya confirmado sin doblaje."""
+    dub_by_episode) se considera visible por defecto, salvo
+    *hide_unverified* (el interruptor "Ocultar sin doblaje ES": también
+    esconde lo sin comprobar, no solo lo confirmado sin doblaje): el
+    worker en segundo plano lo irá rellenando, y ocultarlo de entrada
+    escondería contenido real mientras se comprueba, en vez de solo lo
+    ya confirmado sin doblaje."""
     result = {}
     for season, episodes in missing.items():
-        kept = [ep for ep in episodes if dub_by_episode.get(f"{season}x{ep:02d}", True)]
+        if hide_unverified:
+            kept = [ep for ep in episodes
+                    if dub_by_episode.get(f"{season}x{ep:02d}") is True]
+        else:
+            kept = [ep for ep in episodes if dub_by_episode.get(f"{season}x{ep:02d}", True)]
         if kept:
             result[season] = kept
     return result
 
 
-def filter_missing_by_dub_cutoff(missing: dict, dub_cutoff: dict) -> dict:
+def filter_missing_by_dub_cutoff(missing: dict, dub_cutoff: dict,
+                                 hide_unverified: bool = False) -> dict:
     """Igual que filter_missing_by_spanish_dub, pero a partir del veredicto
     de la IA (ver core/missing_episodes_ai.py) -- dub_cutoff:
     {temporada: último_episodio_doblado}. Se usa SOLO para series para las
@@ -313,14 +370,45 @@ def filter_missing_by_dub_cutoff(missing: dict, dub_cutoff: dict) -> dict:
     gui/app.py::_visible_missing_ep_row): su veredicto sustituye al chequeo
     automático de TMDB para esa serie, nunca al revés. Una temporada que no
     aparece en dub_cutoff (la IA no dio veredicto para ella, o el doblaje
-    está completo) se deja tal cual, visible por defecto."""
+    está completo) se deja tal cual, visible por defecto, salvo
+    *hide_unverified* (ver filter_missing_by_spanish_dub)."""
     result = {}
     for season, episodes in missing.items():
         cutoff = dub_cutoff.get(season)
+        if cutoff is None and hide_unverified:
+            continue
         kept = [ep for ep in episodes if cutoff is None or ep <= cutoff]
         if kept:
             result[season] = kept
     return result
+
+
+def dub_status_for_episode(season: int, ep: int, dub_episodes: dict = None,
+                           dub_cutoff: dict = None) -> str:
+    """Estado de doblaje de UN episodio para pintarlo: "ok" (castellano
+    confirmado), "absent" (confirmado ausente: False explícito o más allá
+    del corte) o "unverified" (sin ningún veredicto). Misma precedencia
+    que is_ep_dub_confirmed/eps_without_confirmed_dub (corte si cubre la
+    temporada, si no veredicto por episodio) -- ver
+    gui/app.py::_build_missing_ep_row (resumen) y
+    _build_missing_ep_season_episode_rows (detalle por capítulo)."""
+    if dub_cutoff is not None:
+        cut = dub_cutoff.get(season, dub_cutoff.get(str(season)))
+        if cut is not None:
+            try:
+                return "ok" if int(ep) <= int(cut) else "absent"
+            except (TypeError, ValueError):
+                pass
+    dub = dub_episodes or {}
+    try:
+        verdict = dub.get(f"{season}x{int(ep):02d}")
+    except (TypeError, ValueError):
+        return "unverified"
+    if verdict is True:
+        return "ok"
+    if verdict is False:
+        return "absent"
+    return "unverified"
 
 
 def apply_ignored_filter(missing: dict, ignored_seasons, ignored_episodes: dict) -> dict:

@@ -761,6 +761,23 @@ def test_entre_dos_candidatos_manda_la_calidad():
     assert best.number == 1
 
 
+def test_titulo_corto_generico_no_acepta_substring():
+    """Real: buscando "From 2x02" se descargó "Mike Judge Presents Tales From
+    the Tour Bus 2x02..." porque "from" está contenido en el título largo.
+    Los títulos cuya parte corta tiene <5 chars exigen coincidencia exacta o
+    similarity estricta, nunca substring. El alias largo ("Slime") sigue
+    aceptado (ver test_un_nombre_corto_contenido_en_otro_se_acepta)."""
+    tour = _r(1, "Mike Judge Presents Tales From the Tour Bus 2x02 Rick James (Parte uno) [HDiT 720p h264 AC3 5.1 subs][spanish-english][grupots].mkv",
+              size="800 MB", sources=20, complete=True)
+    assert score_download(tour, "From 2x02") == 0.0
+    assert best_result([tour], "From 2x02") is None
+    # El exacto sí pasa
+    real = _r(2, "From 2x02 720p WEB-DL Castellano.mkv",
+              size="600 MB", sources=5, complete=True)
+    assert best_result([tour, real], "From 2x02") is not None
+    assert best_result([tour, real], "From 2x02").number == 2
+
+
 MB = 1024 * 1024
 
 

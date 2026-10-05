@@ -90,6 +90,24 @@ def get_dub_summary(fichapelicula_id: int, timeout: int = 10) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# Frescura del corte cacheado (ver core/spanish_dub_cache.py): un corte
+# con datos se re-pregunta cada 30 días; un {} SIN datos (ficha aún sin
+# rellenar, serie en emisión como Daima) cada 3 -- la ficha puede aparecer
+# en cualquier momento y un {} de hace 29 días bloqueaba saberlo.
+CUTOFF_MAX_AGE_DAYS = 30.0
+EMPTY_CUTOFF_MAX_AGE_DAYS = 3.0
+
+
+def cutoff_is_fresh(eld_entry: dict, now: float) -> bool:
+    """True si el corte cacheado de eldoblaje/wiki sigue vigente."""
+    checked_at = (eld_entry or {}).get("checked_at")
+    if checked_at is None:
+        return False
+    cutoff = (eld_entry or {}).get("cutoff") or {}
+    max_age = CUTOFF_MAX_AGE_DAYS if cutoff else EMPTY_CUTOFF_MAX_AGE_DAYS
+    return (now - checked_at) / 86400 <= max_age
+
+
 # ---- Corte de doblaje automático (sin IA) ----
 #
 # El texto libre de "Más información" es la verdad de referencia sobre el
@@ -127,14 +145,18 @@ _SEASON_REF_RE = re.compile(
     re.IGNORECASE)
 _NEGATIVE_RE = re.compile(
     r"sin\s+doblar(?:se)?|no\s+(?:fue|fueron|ha\s+sido|han\s+sido|se|est[áa])[^.]{0,40}dobla"
-    r"|no\s+consta[^.]{0,40}dobla|sin\s+doblaje|no\s+doblada|pendiente\s+de\s+doblaje",
+    r"|no\s+consta[^.]{0,40}dobla|sin\s+doblaje|no\s+doblada|pendiente\s+de\s+doblaje"
+    r"|doblaje\s+en\s+curso|en\s+proceso\s+de\s+doblaje|en\s+emisi[óo]n|emiti[ée]ndose"
+    r"|actualmente[^.]{0,40}dobla|de\s+momento[^.]{0,40}dobla",
     re.IGNORECASE)
-# "solo fueron doblados los 109 primeros" / "se doblaron 50 episodios" --
-# cuenta ABSOLUTA de episodios (de la serie entera): necesita season_sizes
-# {temporada: nº_episodios} para repartirla por temporadas (ver abajo).
+# "solo fueron doblados los 109 primeros" / "se doblaron 50 episodios" /
+# "doblados 12 episodios de los 20" -- cuenta ABSOLUTA de episodios (de
+# la serie entera): necesita season_sizes {temporada: nº_episodios} para
+# repartirla por temporadas (ver abajo).
 _ABSOLUTE_RE = re.compile(
     r"(?:solo\s+)?(?:fueron|han\s+sido|se)\s+doblados?\s+(?:los\s+)?(\d+)\s+primeros?"
-    r"|[úu]nicamente\s+se\s+doblaron\s+(\d+)",
+    r"|[úu]nicamente\s+se\s+doblaron\s+(\d+)"
+    r"|(?:se\s+doblaron|fueron\s+doblados|doblados?)\s+(\d+)\s+episodios?",
     re.IGNORECASE)
 # Toda la serie sin doblar (sin mencionar temporadas): "la serie no fue
 # doblada" / "no se dobló" / "sin doblaje al castellano" / "no consta su
@@ -207,7 +229,7 @@ def parse_dub_cutoff(text: str, seasons: list[int] | tuple[int, ...],
 
     m = _ABSOLUTE_RE.search(text)
     if m and season_sizes:
-        total = int(m.group(1) or m.group(2))
+        total = int(m.group(1) or m.group(2) or m.group(3))
         rest = total
         for s in sorted(scope):
             size = season_sizes.get(s, season_sizes.get(str(s), 0)) or 0

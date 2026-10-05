@@ -1,0 +1,171 @@
+name: Release
+
+# Publica en GitHub Releases al pushear un tag v* (p. ej. v1.8.8):
+# compila Windows (portable + instalador Inno), macOS (dmg) y Linux
+# (tar.gz) y los adjunta a la Release. Los workflows build-*.yml
+# manuales se mantienen para probar builds sin publicar.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: aIBechos
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Instalar Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Leer versión de core/version.py
+        id: version
+        run: |
+          $v = python -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', (Get-Content core/version.py -Raw)).Group(1))"
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Compilar con PyInstaller
+        run: |
+          if (Test-Path dist\aIBechos) { Remove-Item -Recurse -Force dist\aIBechos }
+          if (Test-Path build) { Remove-Item -Recurse -Force build }
+          python -m PyInstaller --noconfirm aIBechos.spec
+
+      - name: Generar instalador Inno Setup
+        run: |
+          if (Test-Path installer_output) { Remove-Item -Recurse -Force installer_output }
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' setup.iss
+
+      - name: Comprimir portable
+        run: |
+          Compress-Archive -Path dist\aIBechos -DestinationPath "aIBechos_${{ steps.version.outputs.version }}_windows.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aIBechos-windows
+          path: |
+            aIBechos/installer_output/aIBechos_Setup_*.exe
+            aIBechos/aIBechos_*_windows.zip
+
+  macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: aIBechos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Compilar con PyInstaller
+        run: pyinstaller aIBechos.spec
+
+      - name: Leer versión de core/version.py
+        id: version
+        run: |
+          VERSION=$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('core/version.py', encoding='utf-8').read()).group(1))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Empaquetar en DMG
+        run: |
+          mkdir dmg_root
+          cp -R dist/aIBechos.app dmg_root/
+          ln -s /Applications dmg_root/Applications
+          hdiutil create -volname aIBechos -srcfolder dmg_root -ov -format UDZO "aIBechos_${{ steps.version.outputs.version }}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aIBechos-macos
+          path: aIBechos/aIBechos_${{ steps.version.outputs.version }}.dmg
+
+  linux:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aIBechos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias del sistema (Tk, para PyInstaller)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Instalar dependencias
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Compilar con PyInstaller
+        run: pyinstaller aIBechos.spec
+
+      - name: Leer versión de core/version.py
+        id: version
+        run: |
+          VERSION=$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('core/version.py', encoding='utf-8').read()).group(1))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Empaquetar en tar.gz
+        run: |
+          cp aIBechos.desktop IconoSinFondo.png dist/aIBechos/
+          tar -C dist -czf "aIBechos_${{ steps.version.outputs.version }}_linux.tar.gz" aIBechos
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aIBechos-linux
+          path: aIBechos/aIBechos_${{ steps.version.outputs.version }}_linux.tar.gz
+
+  publish:
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist-artifacts/*
+          generate_release_notes: true
+          body: |
+            ## aIBechos ${{ github.ref_name }}
+
+            ### Novedades
+            - Nuevas fuentes de doblaje castellano: Crunchyroll (anime) y RTVE Play (producción española).
+            - El botón ↻ de cada serie también repasa su doblaje.
+            - "Ocultar sin doblaje ES" ahora oculta también lo sin verificar; con el interruptor apagado, lo no confirmado se resalta en color (rojo = sin doblaje, ámbar = sin verificar).
+            - Arreglo del 403 de la wiki de doblaje.
+
+            ### Instalación
+            - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).
+            - **macOS**: `aIBechos_*.dmg` (sin firmar: clic derecho → Abrir la primera vez).
+            - **Linux**: `aIBechos_*_linux.tar.gz`.
+
+            Sin firma de código: SmartScreen/Gatekeeper avisarán la primera vez.

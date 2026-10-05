@@ -118,6 +118,12 @@ DEFAULTS = {
     # propia (console.cloud.google.com, activar "Books API") da cuota per-
     # proyecto en vez de la anónima compartida.
     "google_books_api_key": "",
+    # Streaming Availability API (Movie of the Night) como señal de doblaje
+    # al castellano por episodio en España (ver
+    # core/streaming_availability.py): clave gratuita propia
+    # (developers.movieofthenight.com, 1000 req/mes sin tarjeta). Vacía =
+    # fuente desactivada. 1 llamada = 1 serie completa.
+    "streaming_availability_key": "",
     # Refresco de biblioteca en Plex/Jellyfin tras subir -- cada uno
     # independiente, se puede activar solo uno, los dos, o ninguno.
     "plex_enabled": False,
