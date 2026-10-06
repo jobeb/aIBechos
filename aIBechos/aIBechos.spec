@@ -17,7 +17,7 @@ with open(os.path.join(SPECPATH, 'core', 'version.py'), encoding='utf-8') as _vf
 # plataforma se construya, y el .spec elige el que usa PyInstaller para el
 # icono del propio ejecutable/bundle según la plataforma de build.
 datas = [
-    ('iconoPrincipal.ico', '.'),
+    ('LogoaIBechos.ico', '.'),
     ('iconoPrincipal.icns', '.'),
     ('IconoSinFondo.png', '.'),
     ('plex_logo.png', '.'),
@@ -93,7 +93,7 @@ if _is_macos:
 elif _is_linux:
     _icon = None
 else:
-    _icon = 'iconoPrincipal.ico'
+    _icon = 'LogoaIBechos.ico'
 
 # upx=False a propósito: en un build onedir el espacio ahorrado no compensa
 # la descompresión en cada carga de DLL, y los binarios empaquetados con UPX

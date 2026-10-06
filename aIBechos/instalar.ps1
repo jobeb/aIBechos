@@ -75,7 +75,7 @@ try {
     $Shortcut.Arguments     = "`"$scriptDir\main.py`""
     $Shortcut.WorkingDirectory = $scriptDir
     $Shortcut.Description   = "aIBechos - Renombrador de series y películas"
-    $iconPath = Join-Path $scriptDir "iconoPrincipal.ico"
+    $iconPath = Join-Path $scriptDir "LogoaIBechos.ico"
     if (Test-Path $iconPath) {
         $Shortcut.IconLocation = "$iconPath,0"
     } else {

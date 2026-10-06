@@ -1423,7 +1423,7 @@ class App(_AppBase):
                 base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             if is_windows():
                 # Tk en macOS/Linux no soporta .ico vía iconbitmap.
-                ico = os.path.join(base, "iconoPrincipal.ico")
+                ico = os.path.join(base, "LogoaIBechos.ico")
                 if os.path.exists(ico):
                     self._icon_path = ico
             else:

@@ -53,7 +53,7 @@ def create_shortcut():
     shortcut.Arguments = f'"{script_dir / "main.py"}"'
     shortcut.WorkingDirectory = str(script_dir)
     shortcut.Description = "aIBechos - Renombrador de series y películas"
-    icon_path = script_dir / "iconoPrincipal.ico"
+    icon_path = script_dir / "LogoaIBechos.ico"
     if icon_path.exists():
         shortcut.IconLocation = str(icon_path)
     shortcut.Save()
