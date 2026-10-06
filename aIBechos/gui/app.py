@@ -14709,8 +14709,25 @@ class App(_AppBase):
                   if isinstance(e, dict) and e.get("claimed_by") == user
                   and e.get("status") in ("claimed", "downloading")]
         changed = False
+        # Índice directo del servidor para las que no tienen fila en
+        # memoria/caché (una sola ronda de listados por ciclo).
+        wanted_tv, wanted_movies = set(), set()
         for rid in my_ids:
-            outcome = self._download_request_check_done(data.get(rid) or {})
+            entry = data.get(rid) or {}
+            try:
+                tid = int(entry.get("tmdb_id"))
+            except (TypeError, ValueError):
+                continue
+            if entry.get("media_type") == "movie":
+                wanted_movies.add(tid)
+            else:
+                wanted_tv.add(tid)
+        try:
+            server_index = self._download_requests_server_index(wanted_tv, wanted_movies)
+        except Exception:
+            server_index = {}
+        for rid in my_ids:
+            outcome = self._download_request_check_done(data.get(rid) or {}, server_index)
             if outcome == "done":
                 nd = _dr.mark_status(data, rid, "done", user=user)
                 if nd is not None:
@@ -14759,11 +14776,15 @@ class App(_AppBase):
                 self._download_requests_carry = _dr.merge(
                     getattr(self, "_download_requests_carry", None) or {}, data)
 
-    def _download_request_check_done(self, entry: dict) -> str | None:
+    def _download_request_check_done(self, entry: dict, server_index: dict | None = None) -> str | None:
         """Revisa si lo pedido ya está en el servidor: "done" (ya no
         falta), "stuck" (downloading sin verificar en más de
-        STUCK_AFTER_SECONDS) o None (sigue pendiente). Solo mira las
-        filas en memoria + completas en caché, sin red."""
+        STUCK_AFTER_SECONDS) o None (sigue pendiente). Mira las filas en
+        memoria + completas en caché y, si la serie/peli no tiene fila
+        (p. ej. una peli que nunca entró en las listas de Películas),
+        pregunta directo al servidor de medios (ver
+        _download_requests_server_index, sin TMDB). Sin red salvo ese
+        último recurso."""
         from core import download_requests as _dr
         if not isinstance(entry, dict):
             return None
@@ -14782,7 +14803,9 @@ class App(_AppBase):
                 except (TypeError, ValueError):
                     continue
                 return "done" if row.get("in_server") else None
-            return None
+            if (server_index or {}).get("movies", set()) and tmdb_id in server_index["movies"]:
+                return "done"
+            return self._download_request_check_done_stuck(entry)
         row = None
         for r in (self._missing_ep_results or []):
             try:
@@ -14809,10 +14832,108 @@ class App(_AppBase):
                     return "done"
             except (TypeError, ValueError):
                 continue
-        if (entry.get("status") == "downloading"
+        present = (server_index or {}).get("series", {}).get(tmdb_id)
+        if present is not None:
+            if season is not None and episode is not None:
+                return "done" if (int(season), int(episode)) in present else None
+            if season is not None:
+                try:
+                    expected = self._tmdb_expected_episodes(tmdb_id).get(int(season), [])
+                except Exception:
+                    expected = []
+                if expected and all(e in present for e in expected):
+                    return "done"
+                return None
+            try:
+                expected_all = self._tmdb_expected_episodes(tmdb_id) or {}
+            except Exception:
+                expected_all = {}
+            if expected_all and all(e in present
+                                   for s, eps in expected_all.items() for e in eps):
+                return "done"
+            return None
+        return self._download_request_check_done_stuck(entry)
+
+    @staticmethod
+    def _download_request_check_done_stuck(entry: dict) -> str | None:
+        """"stuck" si lleva downloading sin verificar más de
+        STUCK_AFTER_SECONDS (el worker lo libera para reintento)."""
+        from core import download_requests as _dr
+        if (isinstance(entry, dict) and entry.get("status") == "downloading"
                 and _dr.is_claim_stale(entry, ttl=_dr.STUCK_AFTER_SECONDS)):
             return "stuck"
         return None
+
+    def _download_requests_server_index(self, wanted_tv=(), wanted_movies=()) -> dict:
+        """Presencia directa en el servidor de medios para los tmdb dados:
+        {"movies": {tmdb}, "series": {tmdb: {(s, e)}}}. Respaldo cuando la
+        fila no existe en memoria/caché (p. ej. peli fuera de las listas
+        de Películas). Jellyfin primero, Plex después; lo que falle se
+        omite (ausencia de dato, no de contenido). Solo se llama con los
+        tmdb que de verdad hacen falta en el ciclo."""
+        index: dict = {"movies": set(), "series": {}}
+        wanted_tv = {int(t) for t in wanted_tv or () if str(t).isdigit()}
+        wanted_movies = {int(t) for t in wanted_movies or () if str(t).isdigit()}
+        if not wanted_tv and not wanted_movies:
+            return index
+        try:
+            from core import media_server_refresh as _msr
+        except Exception:
+            return index
+        jhost = (self.config_data.get("jellyfin_host", "") or "").strip()
+        jkey = (self.config_data.get("jellyfin_api_key", "") or "").strip()
+        if jhost and jkey:
+            try:
+                if wanted_movies:
+                    for m in _msr.get_jellyfin_movies(jhost, jkey) or []:
+                        try:
+                            tid = int(m.get("tmdb_id"))
+                        except (TypeError, ValueError):
+                            continue
+                        if tid in wanted_movies:
+                            index["movies"].add(tid)
+                if wanted_tv:
+                    shows = [s for s in _msr.get_jellyfin_series(jhost, jkey) or []]
+                    for s in shows:
+                        try:
+                            tid = int(s.get("tmdb_id"))
+                        except (TypeError, ValueError):
+                            continue
+                        if tid in wanted_tv and tid not in index["series"]:
+                            try:
+                                eps = _msr.get_jellyfin_episodes(jhost, jkey, s.get("id"))
+                            except Exception:
+                                eps = None
+                            index["series"][tid] = set(eps) if eps else set()
+            except Exception:
+                pass
+        if (wanted_movies - index["movies"]) or (wanted_tv - set(index["series"])):
+            phost = (self.config_data.get("plex_host", "") or "").strip()
+            ptoken = (self.config_data.get("plex_token", "") or "").strip()
+            if phost and ptoken:
+                try:
+                    from core import media_server_refresh as _msr2
+                    for m in _msr2.get_plex_movies(phost, ptoken) or []:
+                        try:
+                            tid = int(m.get("tmdb_id"))
+                        except (TypeError, ValueError):
+                            continue
+                        if tid in wanted_movies:
+                            index["movies"].add(tid)
+                    for s in _msr2.get_plex_series(phost, ptoken) or []:
+                        try:
+                            tid = int(s.get("tmdb_id"))
+                        except (TypeError, ValueError):
+                            continue
+                        if tid in wanted_tv and tid not in index["series"]:
+                            try:
+                                eps = _msr2.get_plex_episodes(phost, ptoken, s.get("rating_key"))
+                            except Exception:
+                                eps = None
+                            index["series"][tid] = set(eps) if eps else set()
+                except Exception:
+                    pass
+        return index
 
     def _download_request_canonical(self, entry: dict) -> tuple[str, str]:
         """(título, año) canónicos vía TMDB para construir la query de
