@@ -14745,13 +14745,24 @@ class App(_AppBase):
                 if nd is not None:
                     data = nd
                     changed = True
+        # Solo ocupan hueco las recientes: una descarga de más de
+        # CLAIM_TTL_SECONDS sigue en aMule esperando fuentes (el done
+        # llega al subirse) y contarla bloqueaba la cola entera -- caso
+        # real: 5 capítulos sin fuentes desde la mañana y nada nuevo se
+        # lanzaba en horas.
         active = sum(1 for _rid, e in data.items()
                      if isinstance(e, dict) and e.get("claimed_by") == user
-                     and e.get("status") in ("claimed", "downloading"))
+                     and e.get("status") in ("claimed", "downloading")
+                     and not _dr.is_claim_stale(e))
         claimed_now = []
         for rid, _entry in _dr.pending_for_worker(data):
             if active >= max(1, max_active):
                 break
+            if (_entry.get("claimed_by") == user
+                    and _entry.get("status") == "downloading"):
+                # Ya está en MI aMule: relanzarla repetiría la búsqueda y
+                # podría bajar otra copia. Otro equipo sí puede cogerla.
+                continue
             nd = _dr.claim(data, rid, user)
             if nd is None:
                 continue
