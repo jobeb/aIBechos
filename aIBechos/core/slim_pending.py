@@ -24,6 +24,15 @@ Fichero slim_pending.json en app_data_dir(): [{media_type ("tv" o
 episode (solo tv), year (solo movie, "" si se desconoce),
 heavy_remote_file (ruta remota completa del gordo), heavy_size,
 max_light_size, query (informativo), added_ts, added_by}].
+
+Sustituciones pedidas desde la web (ver core/download_requests.py,
+flag "replace"): mismo fichero y mismo flujo, con "kind": "request".
+Ahí no se conoce de antemano el archivo viejo (heavy_remote_file
+vacío, sin tope de tamaño: se sustituye por lo que llegue, pese lo
+que pese) y además se guarda tmdb_id, que manda sobre el título si
+el watcher lo trae. El viejo es el duplicado que AutoWatcher
+encuentra en la carpeta de destino, y se borra igual que el gordo:
+solo DESPUÉS de subir el nuevo con éxito.
 """
 
 from __future__ import annotations
@@ -60,7 +69,17 @@ def norm_key(name: str) -> str:
 def _entry_key(entry: dict) -> tuple:
     e = entry or {}
     return (e.get("media_type") or "", e.get("key_norm") or "",
-            e.get("season"), e.get("episode"), e.get("year") or "")
+            e.get("season"), e.get("episode"), e.get("year") or "",
+            e.get("kind") or "")
+
+
+def is_request(entry: dict) -> bool:
+    """True si el pendiente es una sustitución pedida desde la web
+    (no un adelgazamiento) -- nunca lanza."""
+    try:
+        return (entry or {}).get("kind") == "request"
+    except Exception:
+        return False
 
 
 def _prune(entries: list) -> list:
@@ -149,10 +168,13 @@ def consume(entry: dict) -> None:
 
 def find_match(entries: list, media_type: str, title: str,
                season=None, episode=None, year: str = "",
-               local_size: int = 0) -> dict | None:
+               local_size: int = 0, tmdb_id=None) -> dict | None:
     """¿Es esta llegada la ligera de algún gordo pendiente? Pura,
     testeable. Exige identidad (título normalizado + temporada/episodio
-    o año) Y que pese <= max_light_size del pendiente."""
+    o año) Y que pese <= max_light_size del pendiente. Las sustituciones
+    de la web ("kind": "request") no tienen tope de tamaño ni gordo
+    conocido, y si ambos lados traen *tmdb_id* casan por él en vez de
+    por título."""
     if media_type not in ("tv", "movie"):
         return None
     try:
@@ -162,14 +184,24 @@ def find_match(entries: list, media_type: str, title: str,
     if local_size <= 0:
         return None
     want = norm_key(title)
-    if not want:
-        return None
+    try:
+        want_tmdb = int(tmdb_id) if tmdb_id is not None else None
+    except (TypeError, ValueError):
+        want_tmdb = None
     for e in entries or []:
         if not isinstance(e, dict):
             continue
         if e.get("media_type") != media_type:
             continue
-        if (e.get("key_norm") or "") != want:
+        request = is_request(e)
+        try:
+            e_tmdb = int(e.get("tmdb_id")) if e.get("tmdb_id") is not None else None
+        except (TypeError, ValueError):
+            e_tmdb = None
+        if request and want_tmdb is not None and e_tmdb is not None:
+            if e_tmdb != want_tmdb:
+                continue
+        elif not want or (e.get("key_norm") or "") != want:
             continue
         if media_type == "tv":
             try:
@@ -181,6 +213,8 @@ def find_match(entries: list, media_type: str, title: str,
             want_year = str(year or "").strip()
             if e.get("year") and want_year and str(e.get("year")) != want_year:
                 continue
+        if request:
+            return e
         try:
             max_light = int(e.get("max_light_size") or 0)
         except (TypeError, ValueError):

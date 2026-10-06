@@ -998,10 +998,13 @@ class AutoWatcher:
             # para reintentar. El chequeo de duplicados de abajo deja
             # pasar la ligera aunque el gordo aún esté (solo si es ÉL).
             _slimpend = None
+            _reqpend = None           # sustitución pedida desde la web (ver abajo)
+            _req_old = ""             # archivo viejo que sustituye (el duplicado hallado)
             _heavy_remote_size = -1   # medido antes de subir; -1 = sin medir (ver evento "slim_replaced")
             _slim_heavy_gone = False  # el gordo ya no estaba al medir (ver rama de reemplazo)
             try:
-                from core.slim_pending import load_pending, find_match, consume as _consume_pending
+                from core.slim_pending import (load_pending, find_match, is_request,
+                                               consume as _consume_pending)
                 try:
                     _slim_local_size = Path(new_path).stat().st_size
                 except OSError:
@@ -1009,9 +1012,21 @@ class AutoWatcher:
                 _slimpend = find_match(
                     load_pending(), media_info.media_type, media_info.title,
                     getattr(media_info, "season", None), getattr(media_info, "episode", None),
-                    str(media_info.year or ""), _slim_local_size)
+                    str(media_info.year or ""), _slim_local_size,
+                    tmdb_id=getattr(media_info, "tmdb_id", None))
+                if _slimpend is not None and is_request(_slimpend):
+                    # Sustitución pedida desde la web (flag "replace", ver
+                    # core/download_requests.py): no hay gordo conocido ni
+                    # tope de tamaño; el viejo es el duplicado que se
+                    # encuentre más abajo y se borra tras subir, igual
+                    # que en el adelgazamiento.
+                    _reqpend, _slimpend = _slimpend, None
             except Exception:
-                _slimpend = None
+                _slimpend = _reqpend = None
+            if _reqpend is not None:
+                _log.info("Sustitución pedida desde la web: %s se sube aunque ya exista", new_name)
+                self.on_event("info", f"Sustitución pedida: subiendo {new_name} "
+                                      "(el viejo se borra después)")
             if _slimpend is not None:
                 _heavy = _slimpend.get("heavy_remote_file", "")
                 try:
@@ -1063,7 +1078,11 @@ class AutoWatcher:
                 local_size = Path(new_path).stat().st_size
             except OSError:
                 local_size = 0
-            if remote_size is not None and remote_size >= local_size:
+            if remote_size is not None and _reqpend is not None:
+                # Mismo nombre: el STOR lo sobrescribe (sin reanudar, ver
+                # upload_file try_resume=False), no hay viejo que borrar.
+                _log.info("Sustitución: %s se sobrescribe en el servidor", remote_filename)
+            elif remote_size is not None and remote_size >= local_size:
                 _log.info("Ya existe en el servidor, se omite: %s (ya existe %s)", new_name, remote_filename)
                 self.on_event("skip", f"Ya existe en el servidor ({remote_filename}): {new_name}")
                 self.on_file_event(new_path, "skip", new_name=new_name,
@@ -1093,6 +1112,10 @@ class AutoWatcher:
                 if _heavy_base and dup == _heavy_base:
                     _log.info("Reemplazo: el duplicado es el gordo pendiente (%s), se continúa", dup)
                     dup = None
+            if dup and _reqpend is not None:
+                _req_old = dup
+                _log.info("Sustitución: el duplicado %s se borrará tras subir %s", dup, new_name)
+                dup = None
             if dup:
                 _log.info("Duplicado detectado, se omite: %s (ya existe %s)", new_name, dup)
                 self.on_event("skip", f"Duplicado (ya existe {dup}): {new_name}")
@@ -1271,6 +1294,9 @@ class AutoWatcher:
                     except Exception:
                         pass
                     _slimpend = None
+            if _reqpend is not None:
+                self._finish_request_replacement(_reqpend, remote_path, remote_filename,
+                                                 _req_old, new_name)
             if _slimpend is not None:
                 # Esta subida era un reemplazo por adelgazamiento (gordo
                 # borrado tras confirmar la ligera —o ya no estaba—):
@@ -1310,6 +1336,38 @@ class AutoWatcher:
             self.on_event("error", f"Error FTP al subir {new_name}: {msg3}")
             self.on_file_event(new_path, "error", new_name=new_name, reason=f"Error FTP al subir: {msg3}")
             _mark_both("error_ftp", new_name=new_name)
+
+    def _finish_request_replacement(self, pending: dict, remote_path: str,
+                                    remote_filename: str, old_name: str, new_name: str):
+        """Tras subir con éxito una sustitución pedida desde la web (ver
+        core/slim_pending.py, "kind": "request"): borra el archivo viejo
+        (*old_name*, en la misma carpeta) si era otro nombre y consume el
+        pendiente. Si el borrado falla, lo nuevo YA está subido: se avisa
+        para borrar el viejo a mano y se consume igual (sin estado a
+        medias que nunca se reintentaría, mismo criterio que el gordo)."""
+        from core.slim_pending import consume as _consume_pending
+        if old_name and old_name != remote_filename:
+            old_full = f"{remote_path.rstrip('/')}/{old_name}"
+            ok_del, msg_del = False, ""
+            try:
+                with self._ftp_lock:
+                    ok_del, msg_del = self.ftp.delete_file(old_full)
+            except Exception as e:
+                ok_del, msg_del = False, str(e)
+            if ok_del:
+                _log.info("Sustituido (petición web): borrado %s, en servidor %s", old_full, new_name)
+                self.on_event("info", f"Sustituido: borrado {old_name}, en servidor {new_name}")
+            else:
+                _log.warning("Sustitución subida pero no se pudo borrar %s (%s): bórralo a mano",
+                             old_full, msg_del)
+                self.on_event("error", f"Sustitución subida, pero no se pudo borrar {old_name}: {msg_del}")
+        else:
+            _log.info("Sustituido (petición web): %s", new_name)
+            self.on_event("info", f"Sustituido: {new_name}")
+        try:
+            _consume_pending(pending)
+        except Exception:
+            pass
 
     # ── Carpeta de serie en el FTP ─────────────────────────────────────────────
 

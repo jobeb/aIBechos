@@ -305,3 +305,83 @@ def test_watcher_normal_no_emite_slim_replaced(tmp_path):
 
     assert len(upload_calls) == 1
     assert not any(len(a) > 1 and a[1] == "slim_replaced" for (a, kw) in file_events)
+
+
+# --- sustituciones pedidas desde la web ("kind": "request") ------------------
+
+def _req_entry(**kw):
+    e = {"kind": "request", "media_type": "tv", "key_norm": norm_key("Mi Serie"),
+         "tmdb_id": 1, "season": 1, "episode": 6, "year": "",
+         "heavy_remote_file": "", "heavy_size": 0, "max_light_size": 0,
+         "query": "", "added_ts": time.time(), "added_by": "web"}
+    e.update(kw)
+    return e
+
+
+def test_find_match_request_sin_tope_y_por_tmdb():
+    e = _req_entry()
+    # Sin tope de tamaño ni gordo conocido: casa pese lo que pese.
+    assert find_match([e], "tv", "Mi Serie", 1, 6, "", 10 ** 12, tmdb_id=1) is e
+    # El tmdb_id manda sobre el título (TMDB puede traducirlo distinto).
+    assert find_match([e], "tv", "My Show", 1, 6, "", 80, tmdb_id=1) is e
+    assert find_match([e], "tv", "Mi Serie", 1, 6, "", 80, tmdb_id=2) is None
+    # Sin tmdb del watcher, por título como siempre.
+    assert find_match([e], "tv", "Mi Serie", 1, 6, "", 80) is e
+    assert find_match([e], "tv", "Mi Serie", 1, 7, "", 80, tmdb_id=1) is None
+    assert find_match([e], "tv", "Mi Serie", 1, 6, "", 0, tmdb_id=1) is None
+
+
+def test_upsert_request_no_pisa_adelgazamiento_misma_clave():
+    entries = upsert([_tv_entry()], _req_entry())
+    assert len(entries) == 2
+
+
+def test_watcher_sustitucion_sube_y_borra_viejo_despues(tmp_path):
+    record(_req_entry())
+    original = _ligera(tmp_path)
+    watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher()
+    ftp.list_files.return_value = ["Mi Serie 1x06 Viejo.mkv"]
+    seen = {}
+
+    def _delete(p):
+        seen["uploads_before_delete"] = len(upload_calls)
+        delete_calls.append(p)
+        return True, p
+    ftp.delete_file.side_effect = _delete
+
+    watcher._process(original)
+
+    assert len(upload_calls) == 1, "la sustitución no se omite como duplicada"
+    assert delete_calls == ["/destino/Mi Serie 1x06 Viejo.mkv"]
+    assert seen.get("uploads_before_delete") == 1, "el viejo solo se borra tras subir"
+    assert load_pending() == []
+    assert not any(len(a) > 1 and a[1] == "slim_replaced" for (a, kw) in file_events), \
+        "una sustitución no cuenta como adelgazamiento"
+
+
+def test_watcher_sustitucion_mismo_nombre_sobrescribe(tmp_path):
+    record(_req_entry())
+    original = _ligera(tmp_path)
+    watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher()
+    ftp.get_remote_size.side_effect = lambda p: 10 ** 9  # ya hay uno igual, más grande
+
+    watcher._process(original)
+
+    assert len(upload_calls) == 1, "con sustitución, 'ya existe' no la omite"
+    assert not upload_calls[0].get("try_resume"), "sobrescribe, nunca reanuda"
+    assert delete_calls == [], "mismo nombre: el STOR ya lo sustituye"
+    assert load_pending() == []
+
+
+def test_watcher_sustitucion_fallida_conserva_pendiente_y_viejo(tmp_path):
+    record(_req_entry())
+    original = _ligera(tmp_path)
+    watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher()
+    ftp.list_files.return_value = ["Mi Serie 1x06 Viejo.mkv"]
+    ftp.upload_file.side_effect = lambda *a, **k: (upload_calls.append(k), (False, "boom"))[1]
+
+    watcher._process(original)
+
+    assert len(upload_calls) == 1
+    assert delete_calls == [], "sin la nueva subida el viejo no se toca"
+    assert len(load_pending()) == 1

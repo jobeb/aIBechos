@@ -18,13 +18,24 @@ Formato: {"<req_id>": {"tmdb_id": 1234, "media_type": "tv",
 "season": 1, "episode": 2, "title": "...", "year": "2024",
 "requested_by": "nombre Jellyfin", "requested_at": 1789700000,
 "status": "pending", "claimed_by": "", "claimed_at": 0, "attempts": 0,
-"last_error": "", "completed_at": 0, "updated_at": 1789700000}}
+"last_error": "", "completed_at": 0, "updated_at": 1789700000,
+"replace": true, "replace_since": 1789700100.0}}
 
 - season/episode solo para capítulos sueltos de TV (None = serie o
   temporada entera; las pelis no los usan).
 - "status": pending (nueva) -> claimed (un PC la cogió) ->
   downloading (aMule la aceptó) -> done | failed. La web solo pone
   pending; el escritorio mueve el resto.
+- "replace" (solo true, se omite si no): sustitución pedida desde la
+  web de algo que YA está en el servidor. El worker NO debe darla por
+  hecha al ver presencia (eso haría done inmediato sin descargar):
+  solo es done cuando hay una subida NUEVA al servidor posterior a
+  "replace_since" (ver uploaded_request_since), que el worker sella al
+  lanzar la descarga. AutoWatcher tampoco debe omitirla por
+  duplicada: al lanzarla, el PC que reclama registra un pendiente
+  "kind": "request" en core/slim_pending.py (el mismo mecanismo que
+  el reemplazo por adelgazamiento) y el vigilante sube la nueva y
+  borra la vieja después.
 - "claimed_at" (epoch): un claim de más de CLAIM_TTL_SECONDS se
   considera muerto (PC apagado a medias) y otro cliente puede
   reclamarla (attempts+1).
@@ -379,6 +390,32 @@ def match_any_name(title: str, year, items) -> bool:
     except Exception:
         return False
 
+def is_replacement(entry: dict) -> bool:
+    """True si la solicitud es una sustitución de lo que ya hay en el
+    servidor (flag "replace" de la web) -- nunca lanza."""
+    try:
+        return bool((entry or {}).get("replace"))
+    except Exception:
+        return False
+
+
+def mark_replacement_launched(data: dict, req_id: str,
+                              now: float | None = None) -> dict | None:
+    """Devuelve un dict NUEVO con "replace_since" sellado en *req_id*
+    (=ahora): a partir de ese instante una subida que case (ver
+    uploaded_request_since) es LA sustitución. None si no existe.
+    Nunca lanza."""
+    import time as _time
+
+    entry = _entry(data, req_id)
+    if entry is None:
+        return None
+    ts = now if now is not None else _time.time()
+    result = dict(data)
+    result[req_id] = {**entry, "replace_since": ts, "updated_at": ts}
+    return result
+
+
 def describe(entry: dict) -> str:
     """"Título (año) [T1 / T1E02]" para logs y la web -- nunca lanza."""
     try:
@@ -517,3 +554,25 @@ def uploaded_request(history: list, entry: dict) -> bool:
         return False
     except Exception:
         return False
+
+
+def uploaded_request_since(history: list, entry: dict, since) -> bool:
+    """Como uploaded_request, pero solo cuenta subidas con "ts" >=
+    *since*: para sustituciones (flag "replace") lo que ya había no
+    vale, solo la versión nueva subida tras lanzar la descarga. Sin
+    *since* válido, False. Nunca lanza."""
+    try:
+        since = float(since)
+    except (TypeError, ValueError):
+        return False
+    if since <= 0:
+        return False
+    def _ts(e):
+        try:
+            return float(e.get("ts") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    recent = [e for e in history or []
+              if isinstance(e, dict) and _ts(e) >= since]
+    return uploaded_request(recent, entry)

@@ -14714,6 +14714,8 @@ class App(_AppBase):
         wanted = {}
         for rid in my_ids:
             entry = data.get(rid) or {}
+            if _dr.is_replacement(entry):
+                continue  # ya estaba: la presencia no dice nada (ver check_done)
             try:
                 tid = int(entry.get("tmdb_id"))
             except (TypeError, ValueError):
@@ -14733,6 +14735,11 @@ class App(_AppBase):
                     data = nd
                     changed = True
                     _log.info("Solicitudes: %s completada (%s)", rid, _dr.describe(data.get(rid) or {}))
+            elif outcome == "relaunch":
+                nd = _dr.mark_status(data, rid, "claimed", user=user)
+                if nd is not None:
+                    data = nd
+                    changed = True
             elif outcome == "stuck":
                 nd = _dr.release(data, rid, user=user, error="sin verificar en 7 días")
                 if nd is not None:
@@ -14778,7 +14785,8 @@ class App(_AppBase):
     def _download_request_check_done(self, entry: dict, server_index: dict | None = None) -> str | None:
         """Revisa si lo pedido ya está en el servidor: "done" (ya no
         falta), "stuck" (downloading sin verificar en más de
-        STUCK_AFTER_SECONDS) o None (sigue pendiente). Mira las filas en
+        STUCK_AFTER_SECONDS), "relaunch" (sustitución sin lanzar como
+        tal) o None (sigue pendiente). Mira las filas en
         memoria + completas en caché y, si la serie/peli no tiene fila
         (p. ej. una peli que nunca entró en las listas de Películas),
         pregunta directo al servidor de medios (ver
@@ -14794,6 +14802,22 @@ class App(_AppBase):
         media_type = entry.get("media_type")
         season = entry.get("season")
         episode = entry.get("episode")
+        if _dr.is_replacement(entry):
+            # Sustitución de algo que YA estaba: verlo en el servidor no
+            # dice nada (sería done al instante, sin descargar). Solo
+            # cuenta una subida de este PC posterior al lanzamiento
+            # (replace_since, ver _download_request_launch). Sin
+            # replace_since = la web la convirtió en sustitución cuando ya
+            # se descargaba como normal: se relanza para registrarla.
+            if not entry.get("replace_since"):
+                return "relaunch"
+            try:
+                if _dr.uploaded_request_since(_dr.load_upload_history(), entry,
+                                              entry.get("replace_since")):
+                    return "done"
+            except Exception:
+                pass
+            return self._download_request_check_done_stuck(entry)
         if media_type == "movie":
             for row in (self._movies_results or []):
                 try:
@@ -15103,8 +15127,46 @@ class App(_AppBase):
                              _dr.describe(entry), query, motivo)
         if ok_any:
             _log.info("Solicitudes: %s en descarga", _dr.describe(entry))
-            return _dr.mark_status(data, req_id, "downloading", user=user), True
+            nd = _dr.mark_status(data, req_id, "downloading", user=user)
+            if nd is not None and _dr.is_replacement(entry):
+                self._download_request_record_replacement(entry, name, year)
+                nd = _dr.mark_replacement_launched(nd, req_id) or nd
+            return nd, True
         return _dr.release(data, req_id, user=user, error=last_error or "sin candidato"), False
+
+    def _download_request_record_replacement(self, entry: dict, name: str, year: str):
+        """Sustitución pedida desde la web: registra el pendiente
+        "request" de core/slim_pending.py para que AutoWatcher suba lo
+        que llegue aunque ya exista en el servidor y borre el viejo
+        DESPUÉS (mismo flujo que el reemplazo por adelgazamiento). Solo
+        con la descarga ya lanzada. Sin hilos GUI aquí dentro."""
+        try:
+            from core import download_requests as _dr
+            from core.slim_pending import record as _record_pending, norm_key
+            is_movie = entry.get("media_type") == "movie"
+            try:
+                added_by = str(self.config_data.get("app_user_name", "") or "").strip()
+            except Exception:
+                added_by = ""
+            _record_pending({
+                "kind": "request",
+                "media_type": "movie" if is_movie else "tv",
+                "key_norm": norm_key(name),
+                "tmdb_id": int(entry.get("tmdb_id")),
+                "season": None if is_movie else entry.get("season"),
+                "episode": None if is_movie else entry.get("episode"),
+                "year": str(year or "") if is_movie else "",
+                "heavy_remote_file": "",
+                "heavy_size": 0,
+                "max_light_size": 0,
+                "query": "",
+                "added_ts": _time.time(),
+                "added_by": added_by or str(entry.get("requested_by") or ""),
+            })
+            _log.info("Solicitudes: %s es sustitución, se reemplazará al llegar",
+                      _dr.describe(entry))
+        except Exception:
+            _log.exception("Solicitudes: no se pudo registrar la sustitución")
 
     def _tmdb_expected_episodes(self, tmdb_id: int) -> dict:
         """Episodios YA EMITIDOS de todas las temporadas de una serie según

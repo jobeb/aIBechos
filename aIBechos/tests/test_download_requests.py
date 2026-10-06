@@ -240,3 +240,29 @@ def test_match_any_name_never_raises():
     assert not dr.match_any_name("Torrente", "1998", items)
     assert not dr.match_any_name("X", "2000", None)
     assert not dr.match_any_name("", "", items)
+
+
+def test_uploaded_request_since_solo_cuenta_lo_nuevo():
+    movie = {"tmdb_id": 1, "media_type": "movie", "season": None,
+             "episode": None, "title": "Hit Man. Asesino por casualidad",
+             "year": "2024", "replace": True}
+    remote = "/datos/peliculas//Hit Man. Asesino por casualidad (2024).mkv"
+    old = {"status": "ok", "remote": remote, "ts": 1000}
+    new = {"status": "ok", "remote": remote, "ts": 2000}
+    assert not dr.uploaded_request_since([old], movie, 1500)
+    assert dr.uploaded_request_since([old, new], movie, 1500)
+    assert not dr.uploaded_request_since([old, new], movie, None)
+    assert not dr.uploaded_request_since([{"status": "ok", "remote": remote,
+                                           "ts": "basura"}], movie, 1500)
+
+
+def test_replacement_flags():
+    data = {"a": {"tmdb_id": 1, "status": "downloading", "replace": True},
+            "b": {"tmdb_id": 2, "status": "downloading"}}
+    assert dr.is_replacement(data["a"])
+    assert not dr.is_replacement(data["b"])
+    assert not dr.is_replacement(None)
+    nd = dr.mark_replacement_launched(data, "a", now=1234.0)
+    assert nd["a"]["replace_since"] == 1234.0
+    assert "replace_since" not in data["a"], "no muta el original"
+    assert dr.mark_replacement_launched(data, "zz") is None
