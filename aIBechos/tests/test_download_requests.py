@@ -209,3 +209,34 @@ def test_uploaded_request_only_counts_ok():
     assert not dr.uploaded_request(hist[:1], movie)
     assert not dr.uploaded_request([], movie)
     assert not dr.uploaded_request("basura", movie)
+
+
+def test_norm_title_strips_junk_and_years():
+    assert dr.norm_title(
+        "Deadpool 2  Version Extendida [BluRay Rip][www.descargas2020.com]") == "deadpool 2"
+    assert dr.norm_title("Cortocircuito (John Badham, 1986)") == "cortocircuito"
+    assert dr.norm_title("") == ""
+
+
+def test_names_match_mirror_web_cases():
+    cases = [
+        ("Cortocircuito", "1986", "Cortocircuito (John Badham", "1986", True),
+        ("Deadpool 2", "2018",
+         "Deadpool 2  Version Extendida [BluRay Rip]", "2018", True),
+        ("It", "2017", "It Capitulo 2", "2019", False),
+        ("Dune", "2021", "Dune Parte Dos", "2024", False),
+        ("Avatar", "2009", "Avatar", "", True),
+        ("Breaking Bad", "2008", "I+", "", False),
+        ("Hit Man. Asesino por casualidad", "2024",
+         "Hit Man. Asesino por casualidad", "2024", True),
+    ]
+    for tt, ty, raw, iy, want in cases:
+        assert dr.names_match(tt, ty, raw, iy) is want, (tt, raw)
+
+
+def test_match_any_name_never_raises():
+    items = [("deadpool 2", 2018), ("avatar", 2009)]
+    assert dr.match_any_name("Deadpool 2", "2018", items)
+    assert not dr.match_any_name("Torrente", "1998", items)
+    assert not dr.match_any_name("X", "2000", None)
+    assert not dr.match_any_name("", "", items)

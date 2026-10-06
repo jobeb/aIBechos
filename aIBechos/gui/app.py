@@ -14711,19 +14711,18 @@ class App(_AppBase):
         changed = False
         # Índice directo del servidor para las que no tienen fila en
         # memoria/caché (una sola ronda de listados por ciclo).
-        wanted_tv, wanted_movies = set(), set()
+        wanted = {}
         for rid in my_ids:
             entry = data.get(rid) or {}
             try:
                 tid = int(entry.get("tmdb_id"))
             except (TypeError, ValueError):
                 continue
-            if entry.get("media_type") == "movie":
-                wanted_movies.add(tid)
-            else:
-                wanted_tv.add(tid)
+            wanted[tid] = {"media_type": entry.get("media_type"),
+                           "title": entry.get("title"),
+                           "year": entry.get("year")}
         try:
-            server_index = self._download_requests_server_index(wanted_tv, wanted_movies)
+            server_index = self._download_requests_server_index(wanted)
         except Exception:
             server_index = {}
         for rid in my_ids:
@@ -14803,7 +14802,7 @@ class App(_AppBase):
                 except (TypeError, ValueError):
                     continue
                 return "done" if row.get("in_server") else None
-            if (server_index or {}).get("movies", set()) and tmdb_id in server_index["movies"]:
+            if tmdb_id in (server_index or {}).get("movies", set()):
                 return "done"
             return self._download_request_check_done_stuck(entry)
         row = None
@@ -14875,77 +14874,113 @@ class App(_AppBase):
             return "stuck"
         return None
 
-    def _download_requests_server_index(self, wanted_tv=(), wanted_movies=()) -> dict:
-        """Presencia directa en el servidor de medios para los tmdb dados:
-        {"movies": {tmdb}, "series": {tmdb: {(s, e)}}}. Respaldo cuando la
-        fila no existe en memoria/caché (p. ej. peli fuera de las listas
-        de Películas). Jellyfin primero, Plex después; lo que falle se
-        omite (ausencia de dato, no de contenido). Solo se llama con los
-        tmdb que de verdad hacen falta en el ciclo."""
+    def _download_requests_server_index(self, wanted: dict) -> dict:
+        """Presencia directa en el servidor de medios para lo pedido:
+        {"movies": {tmdb}, "series": {tmdb: {(s, e)}}}.
+        *wanted*: {tmdb: {"media_type", "title", "year"}}.
+
+        Empareja por TMDB exacto O por nombre normalizado (los IDs de
+        Jellyfin/Plex a veces están mal -- caso real: peli con Tmdb
+        erróneo que solo casa por título; ver core/download_requests
+        .names_match, misma regla que la web). Jellyfin primero, Plex
+        solo para lo que falte. Lo que falla se omite (sin dato, no
+        ausencia). Solo se llama con lo que de verdad hace falta.
+        """
+        from core import download_requests as _dr
+
         index: dict = {"movies": set(), "series": {}}
-        wanted_tv = {int(t) for t in wanted_tv or () if str(t).isdigit()}
-        wanted_movies = {int(t) for t in wanted_movies or () if str(t).isdigit()}
-        if not wanted_tv and not wanted_movies:
+        wanted_movies = {t: v for t, v in (wanted or {}).items()
+                         if isinstance(v, dict)
+                         and v.get("media_type") == "movie"}
+        wanted_tv = {t: v for t, v in (wanted or {}).items()
+                     if isinstance(v, dict)
+                     and v.get("media_type") != "movie"}
+        if not wanted_movies and not wanted_tv:
             return index
-        try:
-            from core import media_server_refresh as _msr
-        except Exception:
-            return index
+
+        def _as_int(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        def _find_item(items, tmdb, title, year):
+            for it in items or []:
+                if not isinstance(it, dict):
+                    continue
+                if _as_int(it.get("tmdb_id")) == tmdb:
+                    return it
+            for it in items or []:
+                if not isinstance(it, dict):
+                    continue
+                if _dr.names_match(title, year, it.get("name") or "",
+                                   None):
+                    return it
+            return None
+
         jhost = (self.config_data.get("jellyfin_host", "") or "").strip()
         jkey = (self.config_data.get("jellyfin_api_key", "") or "").strip()
         if jhost and jkey:
             try:
+                from core import media_server_refresh as _msr
                 if wanted_movies:
-                    for m in _msr.get_jellyfin_movies(jhost, jkey) or []:
-                        try:
-                            tid = int(m.get("tmdb_id"))
-                        except (TypeError, ValueError):
+                    jmovies = _msr.get_jellyfin_movies(jhost, jkey) or []
+                    for tmdb, info in wanted_movies.items():
+                        if tmdb in index["movies"]:
                             continue
-                        if tid in wanted_movies:
-                            index["movies"].add(tid)
+                        if _find_item(jmovies, tmdb, info.get("title"),
+                                      info.get("year")) is not None:
+                            index["movies"].add(tmdb)
                 if wanted_tv:
-                    shows = [s for s in _msr.get_jellyfin_series(jhost, jkey) or []]
-                    for s in shows:
-                        try:
-                            tid = int(s.get("tmdb_id"))
-                        except (TypeError, ValueError):
+                    jseries = _msr.get_jellyfin_series(jhost, jkey) or []
+                    for tmdb, info in wanted_tv.items():
+                        if tmdb in index["series"]:
                             continue
-                        if tid in wanted_tv and tid not in index["series"]:
-                            try:
-                                eps = _msr.get_jellyfin_episodes(jhost, jkey, s.get("id"))
-                            except Exception:
-                                eps = None
-                            index["series"][tid] = set(eps) if eps else set()
+                        item = _find_item(jseries, tmdb, info.get("title"),
+                                          info.get("year"))
+                        if item is None:
+                            continue
+                        try:
+                            eps = _msr.get_jellyfin_episodes(
+                                jhost, jkey, item.get("id"))
+                        except Exception:
+                            eps = None
+                        index["series"][tmdb] = set(eps) if eps else set()
             except Exception:
                 pass
-        if (wanted_movies - index["movies"]) or (wanted_tv - set(index["series"])):
+        missing_movies = set(wanted_movies) - index["movies"]
+        missing_tv = set(wanted_tv) - set(index["series"])
+        if (missing_movies or missing_tv):
             phost = (self.config_data.get("plex_host", "") or "").strip()
             ptoken = (self.config_data.get("plex_token", "") or "").strip()
             if phost and ptoken:
                 try:
                     from core import media_server_refresh as _msr2
-                    for m in _msr2.get_plex_movies(phost, ptoken) or []:
-                        try:
-                            tid = int(m.get("tmdb_id"))
-                        except (TypeError, ValueError):
-                            continue
-                        if tid in wanted_movies:
-                            index["movies"].add(tid)
-                    for s in _msr2.get_plex_series(phost, ptoken) or []:
-                        try:
-                            tid = int(s.get("tmdb_id"))
-                        except (TypeError, ValueError):
-                            continue
-                        if tid in wanted_tv and tid not in index["series"]:
+                    if missing_movies:
+                        pmovies = _msr2.get_plex_movies(phost, ptoken) or []
+                        for tmdb in missing_movies:
+                            info = wanted_movies[tmdb]
+                            if _find_item(pmovies, tmdb, info.get("title"),
+                                           info.get("year")) is not None:
+                                index["movies"].add(tmdb)
+                    if missing_tv:
+                        pseries = _msr2.get_plex_series(phost, ptoken) or []
+                        for tmdb in missing_tv:
+                            info = wanted_tv[tmdb]
+                            item = _find_item(pseries, tmdb,
+                                              info.get("title"),
+                                              info.get("year"))
+                            if item is None:
+                                continue
                             try:
-                                eps = _msr2.get_plex_episodes(phost, ptoken, s.get("rating_key"))
+                                eps = _msr2.get_plex_episodes(
+                                    phost, ptoken, item.get("rating_key"))
                             except Exception:
                                 eps = None
-                            index["series"][tid] = set(eps) if eps else set()
+                            index["series"][tmdb] = set(eps) if eps else set()
                 except Exception:
                     pass
         return index
-
     def _download_request_canonical(self, entry: dict) -> tuple[str, str]:
         """(título, año) canónicos vía TMDB para construir la query de
         aMule (respeta series_search_patterns); si TMDB falla, lo que

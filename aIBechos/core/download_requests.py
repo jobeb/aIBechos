@@ -277,6 +277,108 @@ def pending_for_worker(data: dict, now: float | None = None) -> list:
     return out
 
 
+
+# Basura que no identifica título (misma lista que sol_junk_tokens() en
+# solicitudes-web/api/lib.php y JUNK_TOKENS en common.js -- mantener
+# los tres sincronizados: es la regla que empareja lo que Jellyfin
+# identifica mal o sin ProviderId Tmdb).
+_JUNK_TOKENS = frozenset(
+    "2160p 1080p 720p 480p 4k uhd uhq hd sd bluray brrip "
+    "bdrip bdremux webdl webrip web hdtv dvdrip dvdscr dvd hdcam cam ts "
+    "telesync x264 x265 h264 h265 hevc avc av1 ac3 aac dts dd51 atmos "
+    "truehd flac mp3 dual latino castellano spanish espanol vos vose vo "
+    "subtitulada subs sub extended extendida unrated directors theatrical "
+    "remux proper repack r5 complete trilogy version especial special "
+    "by".split())
+
+_YEAR_RE = None  # perezoso, ver _year_in_name()
+
+
+def _year_in_name(text: str):
+    """Año 1900-2035 en *text* o None."""
+    import re as _re
+
+    global _YEAR_RE
+    if _YEAR_RE is None:
+        _YEAR_RE = _re.compile(r"\b(19|20)\d{2}\b")
+    m = _YEAR_RE.search(text or "")
+    if not m:
+        return None
+    year = int(m.group())
+    return year if 1900 <= year <= 2035 else None
+
+
+def norm_title(title: str) -> str:
+    """Título a forma comparable: minúsculas, sin tildes, sin grupos
+    [...]/(...), sin dominios, sin basura técnica y sin años (el año
+    viaja aparte). Espejo de sol_norm_title() (PHP) y normTitle() (JS).
+    """
+    import re as _re
+    import unicodedata as _ud
+
+    text = _ud.normalize("NFKD", str(title or "")).lower()
+    text = "".join(c for c in text if not _ud.combining(c))
+    text = _re.sub(r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}", " ", text)
+    text = _re.sub(
+        r"\b(?:www\.)?\S+\.(?:com|net|org|es|io|to|me|tv|cc|mx|lat)\b",
+        " ", text, flags=_re.IGNORECASE)
+    text = _re.sub(r"[^a-z0-9 ]+", " ", text)
+    words = []
+    for word in text.split():
+        word = word.strip()
+        if not word or word in _JUNK_TOKENS:
+            continue
+        if _year_in_name(word) is not None and len(word) == 4:
+            continue
+        words.append(word)
+    return " ".join(words)
+
+
+def names_match(tmdb_title: str, tmdb_year, item_name: str,
+                item_year=None) -> bool:
+    """¿Es *item_name* (Jellyfin/Plex/archivo) la obra *tmdb_title*?
+    Igual que sol_name_match() (PHP) y nameMatch() (JS): igualdad
+    exacta, o el item empieza por el título (límite de palabra) con año
+    compatible (si ambos lo traen). Conservador a propósito: mejor no
+    emparejar que marcar done lo que no está. Nunca lanza."""
+    try:
+        tmdb_norm = norm_title(tmdb_title)
+        item_norm = norm_title(item_name)
+        if not tmdb_norm or not item_norm:
+            return False
+        if tmdb_norm == item_norm:
+            return True
+        if item_norm.startswith(tmdb_norm + " "):
+            try:
+                ty = int(str(tmdb_year or "")[:4] or 0)
+            except (TypeError, ValueError):
+                ty = 0
+            iy = item_year
+            if iy is None:
+                iy = _year_in_name(item_name)
+            try:
+                iy = int(iy or 0)
+            except (TypeError, ValueError):
+                iy = 0
+            if not ty or not iy or ty == iy:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def match_any_name(title: str, year, items) -> bool:
+    """¿Coincide (*title*, *year*) con alguno de *items* ([(nombre,
+    año_o_None)])? Atajo para listas de Jellyfin/Plex ya normalizadas
+    fuera (ver _download_requests_server_index en gui/app.py)."""
+    try:
+        for name, y in items or []:
+            if names_match(title, year, name, y):
+                return True
+        return False
+    except Exception:
+        return False
+
 def describe(entry: dict) -> str:
     """"Título (año) [T1 / T1E02]" para logs y la web -- nunca lanza."""
     try:
