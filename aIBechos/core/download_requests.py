@@ -292,3 +292,126 @@ def describe(entry: dict) -> str:
         return base
     except Exception:
         return "¿?"
+
+
+_EPISODE_RE = None  # perezoso, ver _episode_numbers_in_name()
+
+
+def _episode_numbers_in_name(stem: str):
+    """(temporada, episodio) si el nombre trae SxxEyy o NNxNN, o
+    (None, None). Solo para confirmar capítulos sueltos."""
+    import re as _re
+
+    global _EPISODE_RE
+    if _EPISODE_RE is None:
+        _EPISODE_RE = _re.compile(
+            r"[Ss](\d{1,2})[Ee](\d{1,3})|(?<!\d)(\d{1,2})[xX](\d{2,3})")
+    m = _EPISODE_RE.search(stem or "")
+    if not m:
+        return None, None
+    if m.group(1) is not None:
+        return int(m.group(1)), int(m.group(2))
+    return int(m.group(3)), int(m.group(4))
+
+
+def _remote_basename(remote: str) -> str:
+    """Nombre de archivo de una ruta remota (o local) del historial."""
+    if not remote or not isinstance(remote, str):
+        return ""
+    base = remote.replace("\\", "/").rsplit("/", 1)[-1]
+    if "." in base:
+        base = base.rsplit(".", 1)[0]
+    return base.strip()
+
+
+def load_upload_history(path=None) -> list:
+    """Registros de upload_history.json (lista) -- [] si no existe o
+    está roto. *path* solo para tests; por defecto el de app_data_dir.
+    Solo importan los "ok" (llegaron al servidor)."""
+    import json as _json
+
+    if path is None:
+        from core.appdirs import app_data_dir
+        path = app_data_dir() / "upload_history.json"
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = _json.load(f)
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def matches_upload(entry: dict, remote: str) -> bool:
+    """True si *remote* (ruta del historial de subidos) ES lo pedido en
+    *entry*: mismo título confirmado con año (ver
+    core/series_match.best_match_with_year: el año del pedido manda y
+    un año distinto en el archivo descarta) y, para capítulos, mismos
+    números S/E en el nombre. Para temporada/serie completa no se
+    puede confirmar con UN archivo: siempre False (eso lo decide el
+    servidor de medios, no el historial). Nunca lanza."""
+    try:
+        from core.series_match import best_match_with_year, series_similarity
+    except Exception:
+        return False
+    try:
+        if not isinstance(entry, dict):
+            return False
+        title = str(entry.get("title") or "").strip()
+        if not title:
+            return False
+        year = str(entry.get("year") or "").strip() or None
+        stem = _remote_basename(remote)
+        if not stem:
+            return False
+
+        def _title_ok(candidate: str) -> bool:
+            if year:
+                best, _ratio = best_match_with_year(
+                    "%s (%s)" % (title, year), [candidate], year,
+                    min_ratio=0.85)
+                return best is not None
+            return series_similarity(title, candidate,
+                                     strict=True) >= 0.85
+
+        media_type = entry.get("media_type")
+        season = entry.get("season")
+        episode = entry.get("episode")
+        if media_type == "movie":
+            return _title_ok(stem)
+        if media_type == "tv" and season is not None \
+                and episode is not None:
+            s_num, e_num = _episode_numbers_in_name(stem)
+            if s_num is None or int(season) != s_num \
+                    or int(episode) != e_num:
+                return False
+            return _title_ok(stem[:_episode_start(stem)])
+        # Temporada/serie completa no se confirma con UN archivo.
+        return False
+    except Exception:
+        return False
+def _episode_start(stem: str) -> int:
+    """Índice donde empieza el marcador S/E en *stem* (0 si no hay)."""
+    s_num, _ = _episode_numbers_in_name(stem)
+    if s_num is None:
+        return 0
+    import re as _re
+
+    m = _re.search(r"[Ss]\d{1,2}[Ee]\d{1,3}|(?<!\d)\d{1,2}[xX]\d{2,3}",
+                   stem or "")
+    return m.start() if m else 0
+
+
+def uploaded_request(history: list, entry: dict) -> bool:
+    """True si ALGÚN registro "ok" del historial es lo pedido (ver
+    matches_upload) -- para dar por completada una solicitud subida a
+    mano o por otro flujo sin pasar por las filas de Episodios/Películas
+    (caso real: peli subida manual que ni está en las listas)."""
+    try:
+        for e in history or []:
+            if not isinstance(e, dict) or e.get("status") != "ok":
+                continue
+            if matches_upload(entry, e.get("remote") or ""):
+                return True
+        return False
+    except Exception:
+        return False

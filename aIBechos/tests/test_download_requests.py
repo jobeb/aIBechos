@@ -165,3 +165,47 @@ def test_describe_never_raises():
     assert dr.describe({"title": "Peli"}) == "Peli"
     assert dr.describe({}) == "¿?"
     assert dr.describe(None) == "¿?"
+
+
+def test_matches_upload_movie_by_title_and_year():
+    movie = {"tmdb_id": 974835, "media_type": "movie", "season": None,
+             "episode": None, "title": "Hit Man. Asesino por casualidad",
+             "year": "2024"}
+    assert dr.matches_upload(
+        movie, "/datos/peliculas//Hit Man. Asesino por casualidad (2024).mkv")
+    assert not dr.matches_upload(
+        movie, "/datos/peliculas//Otra Cosa (2024).mkv")
+    # Año distinto en el pedido descarta (remake/homónimos).
+    assert not dr.matches_upload(dict(movie, year="2023"),
+        "/datos/peliculas//Hit Man. Asesino por casualidad (2024).mkv")
+
+
+def test_matches_upload_episode_needs_numbers_and_series():
+    ep = {"tmdb_id": 1, "media_type": "tv", "season": 1, "episode": 7,
+          "title": "Dragon Ball Daima", "year": ""}
+    ok = "/datos2/series/Dragon Ball Daima/Temporada 01/Dragon Ball Daima 1x07 Glorio.mkv"
+    assert dr.matches_upload(ep, ok)
+    assert not dr.matches_upload(
+        ep, "/datos2/series/x/Dragon Ball Daima 1x08 Cotorra.mkv")
+    assert not dr.matches_upload(
+        ep, "/datos2/series/x/Naruto 1x07 Algo.mkv")
+    assert not dr.matches_upload(
+        ep, "/datos2/series/x/Dragon Ball Daima Especial.mkv")
+    # Alcance temporada/serie no se confirma con un archivo.
+    assert not dr.matches_upload(dict(ep, episode=None), ok)
+    assert not dr.matches_upload({}, ok)
+    assert not dr.matches_upload(ep, "")
+
+
+def test_uploaded_request_only_counts_ok():
+    movie = {"tmdb_id": 1, "media_type": "movie", "season": None,
+             "episode": None, "title": "Hit Man. Asesino por casualidad",
+             "year": "2024"}
+    hist = [
+        {"status": "error", "remote": "/datos/peliculas//Hit Man. Asesino por casualidad (2024).mkv"},
+        {"status": "ok", "remote": "/datos/peliculas//Hit Man. Asesino por casualidad (2024).mkv"},
+    ]
+    assert dr.uploaded_request(hist, movie)
+    assert not dr.uploaded_request(hist[:1], movie)
+    assert not dr.uploaded_request([], movie)
+    assert not dr.uploaded_request("basura", movie)

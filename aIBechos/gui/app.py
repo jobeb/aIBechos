@@ -14832,6 +14832,17 @@ class App(_AppBase):
                     return "done"
             except (TypeError, ValueError):
                 continue
+        # Subido por ESTE pc (a mano o por otro flujo): el historial
+        # local lo registra aunque la peli/serie no tenga fila en
+        # Episodios/Películas (caso real: peli pedida por la web, subida
+        # manual, sin rastro en las listas -- el done no llegaba nunca).
+        try:
+            from core.download_requests import load_upload_history as _luh
+            from core.download_requests import uploaded_request as _ur
+            if _ur(_luh(), entry):
+                return "done"
+        except Exception:
+            pass
         present = (server_index or {}).get("series", {}).get(tmdb_id)
         if present is not None:
             if season is not None and episode is not None:
