@@ -7976,6 +7976,33 @@ class App(_AppBase):
             "Minutos sin avance (bytes/fuentes estancados) y con la descarga ya en marcha\n"
             "necesarios para considerarla atascada y lanzar la alternativa.", "unstuck_file_ttl_minutes", 1440, width=60)
 
+        # ── Solicitudes de la web (ver _download_requests_cycle) ── de cada
+        # equipo, no del servidor: cada PC decide si colabora y cuánto.
+        # El worker lee ambos valores en cada ciclo (sin reiniciar).
+        ro += 1
+        ctk.CTkLabel(amule_fr, text="Solicitudes de la web",
+                     font=self._cfg_font_subtitle).grid(row=ro, column=0, columnspan=2, pady=(14, 2), sticky="w", padx=10)
+        ro += 1
+        ctk.CTkLabel(amule_fr,
+                     text="Este equipo atiende las peticiones hechas desde la web del móvil: las reclama, "
+                          "las busca en aMule y las da por completadas cuando se suben. Con varios equipos "
+                          "colaborando, cada solicitud la atiende solo uno.",
+                     font=self._cfg_font_desc, text_color=PENDING_COLOR, wraplength=600).grid(
+            row=ro, column=0, columnspan=2, pady=(0, 6), sticky="w", padx=10)
+        ro += 1
+        self._download_requests_switch = ctk.CTkSwitch(
+            amule_fr, text="Colaborar con las solicitudes de la web")
+        if self.config_data.get("download_requests_enabled", True):
+            self._download_requests_switch.select()
+        self._download_requests_switch.grid(row=ro, column=0, columnspan=2, pady=6, sticky="w", padx=10)
+        ro += 1
+        dr_fr = ctk.CTkFrame(amule_fr, fg_color="transparent")
+        dr_fr.grid(row=ro, column=0, columnspan=2, sticky="ew", padx=10, pady=6)
+        self._download_requests_max_entry = _mk_num(dr_fr, "Máx. descargas a la vez:",
+            "Cuántas solicitudes lanza este equipo como mucho en las últimas 2 h.\n"
+            "Las que llevan más tiempo esperando fuentes en aMule ya no cuentan.",
+            "download_requests_max_active", 5, width=60)
+
     def _current_protocol_label(self) -> str:
         guardado = self.config_data.get("ftp_protocol", "ftp")
         if str(guardado).lower() == "sftp":
@@ -19958,6 +19985,12 @@ class App(_AppBase):
 
             for key, entry in (getattr(self, "_amule_entries", None) or {}).items():
                 _set_entry(entry, self.config_data.get(key, ""))
+            if self.config_data.get("download_requests_enabled", True):
+                self._download_requests_switch.select()
+            else:
+                self._download_requests_switch.deselect()
+            _set_entry(self._download_requests_max_entry,
+                       self.config_data.get("download_requests_max_active", 5))
 
         if self._config_tab_built("categories"):
             saved = self.config_data.get("ftp_categories", {"tv": [], "movie": [], "libro": []})
@@ -23290,6 +23323,10 @@ class App(_AppBase):
                 unstuck_ttl = max(30, min(10080, int(self._unstuck_ttl_entry.get().strip() or 1440)))
             except ValueError:
                 unstuck_ttl = 1440
+            try:
+                dr_max = max(1, min(200, int(self._download_requests_max_entry.get().strip() or 5)))
+            except ValueError:
+                dr_max = 5
             data.update({
                 "watch_folder":          self._watch_folder_entry.get().strip(),
                 "poll_interval":         poll,
@@ -23310,6 +23347,9 @@ class App(_AppBase):
                 "unstuck_backoff_base_minutes": unstuck_base,
                 "unstuck_backoff_max_minutes":  unstuck_maxmin,
                 "unstuck_file_ttl_minutes":     unstuck_ttl,
+
+                "download_requests_enabled":    self._download_requests_switch.get() in (True, "1", 1),
+                "download_requests_max_active": dr_max,
             })
         if self._config_tab_built("ftp"):
             try:
