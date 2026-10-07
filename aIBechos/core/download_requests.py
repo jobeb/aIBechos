@@ -24,8 +24,13 @@ Formato: {"<req_id>": {"tmdb_id": 1234, "media_type": "tv",
 - season/episode solo para capítulos sueltos de TV (None = serie o
   temporada entera; las pelis no los usan).
 - "status": pending (nueva) -> claimed (un PC la cogió) ->
-  downloading (aMule la aceptó) -> done | failed. La web solo pone
-  pending; el escritorio mueve el resto.
+  downloading (aMule la aceptó) -> done | failed. La web pone pending
+  y "cancelled" (cancelada desde la web por quien la pidió o por un
+  admin, con "cancelled_by"); el escritorio mueve el resto. Una
+  cancelada que algún PC tenía reclamada lleva "cancel_done": false
+  hasta que ese PC quita la descarga de aMule (ver to_cancel).
+  "cancelled" es pegajoso en merge(): ninguna escritura posterior del
+  escritorio la puede deshacer.
 - "replace" (solo true, se omite si no): sustitución pedida desde la
   web de algo que YA está en el servidor. El worker NO debe darla por
   hecha al ver presencia (eso haría done inmediato sin descargar):
@@ -58,11 +63,11 @@ MAX_ATTEMPTS = 5
 STUCK_AFTER_SECONDS = 7 * 86400
 
 #: Estados finales que prune() borra pasados PRUNE_AFTER_SECONDS.
-FINAL_STATUSES = ("done", "failed")
+FINAL_STATUSES = ("done", "failed", "cancelled")
 PRUNE_AFTER_SECONDS = 30 * 86400
 
 _VALID_MEDIA_TYPES = ("tv", "movie")
-_VALID_STATUSES = ("pending", "claimed", "downloading", "done", "failed")
+_VALID_STATUSES = ("pending", "claimed", "downloading", "done", "failed", "cancelled")
 
 
 def new_request_id() -> str:
@@ -243,9 +248,53 @@ def merge(local: dict, remote: dict) -> dict:
             cur_ts = float(current.get("updated_at") or 0)
         except (TypeError, ValueError):
             cur_ts = 0
-        if new_ts >= cur_ts:
+        cur_cancel = current.get("status") == "cancelled"
+        new_cancel = entry.get("status") == "cancelled"
+        if cur_cancel != new_cancel:
+            # Cancelada en un lado: gana siempre (el escritorio pudo
+            # escribir después, p. ej. "downloading" al acabar de lanzar,
+            # sin haber visto la cancelación).
+            merged[req_id] = _sticky_cancel(current if cur_cancel else entry,
+                                            entry if cur_cancel else current)
+        elif new_ts >= cur_ts:
             merged[req_id] = entry
     return merged
+
+
+def _sticky_cancel(cancelled: dict, other: dict) -> dict:
+    """La cancelada, con lo que el otro lado sabía de la descarga: los
+    hashes de aMule y, si la web la canceló aún "pending" mientras un
+    PC la reclamaba, quién la tiene (y entonces ese PC aún debe quitarla
+    de aMule: cancel_done vuelve a False)."""
+    out = dict(cancelled)
+    if not out.get("amule_hashes") and other.get("amule_hashes"):
+        out["amule_hashes"] = other.get("amule_hashes")
+    if not out.get("claimed_by") and other.get("claimed_by"):
+        out["claimed_by"] = other.get("claimed_by")
+        out["cancel_done"] = False
+    return out
+
+
+def to_cancel(data: dict, user: str) -> list:
+    """req_ids cancelados desde la web que *user* tenía reclamados y
+    cuya descarga aún no ha quitado de aMule."""
+    out = []
+    for req_id, entry in (data or {}).items():
+        if (isinstance(entry, dict) and entry.get("status") == "cancelled"
+                and entry.get("claimed_by") == user and not entry.get("cancel_done")):
+            out.append(req_id)
+    return out
+
+
+def mark_cancel_done(data: dict, req_id: str, now: float | None = None) -> dict | None:
+    """Dict NUEVO con la descarga de la cancelada ya quitada de aMule."""
+    entry = _entry(data, req_id)
+    if entry is None or entry.get("status") != "cancelled":
+        return None
+    result = dict(data)
+    result[req_id] = {**entry, "cancel_done": True,
+                      "updated_at": now if now is not None else time.time()}
+    return result
 
 
 def prune(data: dict, now: float | None = None) -> dict:
@@ -583,3 +632,132 @@ def uploaded_request_since(history: list, entry: dict, since) -> bool:
     recent = [e for e in history or []
               if isinstance(e, dict) and _ts(e) >= since]
     return uploaded_request(recent, entry)
+
+
+#: Margen tras lanzar antes de dar una descarga por perdida en aMule
+#: (recién añadida puede tardar en aparecer en la cola).
+LOST_GRACE_SECONDS = 10 * 60
+
+
+def set_amule_hashes(data: dict, req_id: str, hashes) -> dict | None:
+    """Dict NUEVO con los hashes (MD4 hex) de lo que se lanzó en aMule
+    para *req_id* -- para saber después si sigue en la cola (ver
+    lost_in_amule). None si no existe. Nunca lanza."""
+    entry = _entry(data, req_id)
+    if entry is None:
+        return None
+    clean = sorted({str(h).lower() for h in (hashes or []) if h})
+    result = dict(data)
+    result[req_id] = {**entry, "amule_hashes": clean}
+    return result
+
+
+def _name_is_request(entry: dict, name: str) -> bool:
+    """¿El nombre de archivo (cola de aMule o carpeta vigilada) es lo
+    pedido? Capítulos: título + SxE (matches_upload); pelis: mismo
+    título normalizado con año compatible (names_match). Nunca lanza."""
+    try:
+        if entry.get("media_type") == "tv" and entry.get("episode") is not None:
+            return matches_upload(entry, name)
+        stem = _remote_basename(name)
+        return names_match(entry.get("title") or "", entry.get("year"), stem, _year_in_name(stem))
+    except Exception:
+        return False
+
+
+def lost_in_amule(entry: dict, queue: list, local_names, now: float | None = None) -> bool:
+    """True si una solicitud "downloading" ya NO está en aMule ni ha
+    terminado: hay que liberarla para que se vuelva a lanzar (caso real:
+    Obsession, descarga quitada de aMule y la solicitud colgada en
+    "descargando" hasta los 7 días de STUCK).
+
+    - *queue*: cola de aMule [{hash_hex, name}, ...] (quien llama solo
+      pregunta si la pudo leer; sin cola no se decide nada).
+    - *local_names*: archivos de la carpeta vigilada: si alguno es lo
+      pedido, la descarga TERMINÓ y espera a subirse (no está perdida).
+    - Con "amule_hashes" se busca por hash; las antiguas, sin ellos,
+      por nombre. Recién lanzadas (LOST_GRACE_SECONDS) nunca.
+    Solo capítulos sueltos y pelis (temporada/serie lanzan varias
+    descargas y se resuelven por huecos). Nunca lanza."""
+    try:
+        if not isinstance(entry, dict) or entry.get("status") != "downloading":
+            return False
+        if entry.get("media_type") == "tv" and entry.get("episode") is None:
+            return False
+        ts = now if now is not None else time.time()
+        if ts - float(entry.get("claimed_at") or 0) < LOST_GRACE_SECONDS:
+            return False
+        hashes = {str(h).lower() for h in (entry.get("amule_hashes") or [])}
+        for it in queue or []:
+            if not isinstance(it, dict):
+                continue
+            if hashes and str(it.get("hash_hex") or "").lower() in hashes:
+                return False
+            if not hashes and _name_is_request(entry, str(it.get("name") or "")):
+                return False
+        for name in local_names or []:
+            if _name_is_request(entry, str(name)):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+STATUS_ES = {"pending": "Pendiente", "claimed": "Reclamada", "downloading": "Descargando",
+             "done": "Lista", "failed": "Fallida", "cancelled": "Cancelada"}
+
+
+def amule_hashes_to_cancel(entry: dict, queue: list) -> list:
+    """Hashes de la cola de aMule [{hash_hex, name}] que son la descarga
+    de *entry*: por sus "amule_hashes" o, si no los tiene (lanzadas
+    antes de guardarlos), por nombre. Nunca lanza."""
+    try:
+        hashes = {str(h).lower() for h in (entry.get("amule_hashes") or [])}
+        out = []
+        for it in queue or []:
+            if not isinstance(it, dict):
+                continue
+            h = str(it.get("hash_hex") or "").lower()
+            if not h:
+                continue
+            if (h in hashes) if hashes else _name_is_request(entry, str(it.get("name") or "")):
+                out.append(h)
+        return out
+    except Exception:
+        return []
+
+
+def history_rows(data: dict) -> list:
+    """Solicitudes de la cola compartida como filas para Historial ("Ver
+    todo el servidor" + "Solicitudes web"), la más reciente primero:
+    {"kind": "solicitud", "ts", "name", "person", "status", "status_es",
+    "detail"}. detail: quién la tiene (reclamada/descargando) o el último
+    error. Nunca lanza con entradas raras."""
+    rows = []
+    for req_id, entry in (data or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        status = str(entry.get("status") or "")
+        claimed_by = str(entry.get("claimed_by") or "").strip()
+        error = str(entry.get("last_error") or "").strip()
+        if status in ("claimed", "downloading") and claimed_by:
+            detail = f"En el equipo de {claimed_by}"
+        elif status == "cancelled":
+            who = str(entry.get("cancelled_by") or "").strip()
+            detail = f"Cancelada por {who}" if who else "Cancelada"
+        elif error:
+            detail = error
+        else:
+            detail = ""
+        if is_replacement(entry):
+            detail = ("Sustitución · " + detail) if detail else "Sustitución"
+        try:
+            ts = float(entry.get("requested_at") or 0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        rows.append({"kind": "solicitud", "id": req_id, "ts": ts, "name": describe(entry),
+                     "person": str(entry.get("requested_by") or "").strip(),
+                     "status": status, "status_es": STATUS_ES.get(status, status or "¿?"),
+                     "detail": detail})
+    rows.sort(key=lambda r: r["ts"], reverse=True)
+    return rows

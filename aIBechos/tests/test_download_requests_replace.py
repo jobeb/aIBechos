@@ -52,6 +52,7 @@ def _cycle_app(data, launched, pushed):
     app._download_requests_user = lambda: "Jose"
     app._download_requests_ftp = lambda: SimpleNamespace(disconnect=lambda: None)
     app._download_requests_server_index = lambda wanted: {}
+    app._download_requests_amule_state = lambda needed: (None, [])   # sin aMule
     app._download_request_check_done = lambda entry, idx=None: None
 
     def _launch(d, rid):
@@ -128,3 +129,47 @@ def test_url_web_es_configuracion_de_servidor():
     from config import DEFAULTS
     assert "solicitudes_web_url" in SHARED_CONFIG_KEYS
     assert DEFAULTS["solicitudes_web_url"] == "https://aibechos.fordema.es/"
+
+
+def test_ciclo_libera_lo_que_ya_no_esta_en_amule(monkeypatch):
+    """Una descarga propia que ya no está en aMule ni terminó vuelve a
+    pendiente (y se relanza); si aMule no responde, no se toca."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {"obs": {"tmdb_id": 1339713, "media_type": "movie", "title": "Obsession", "year": "2026",
+                    "status": "downloading", "claimed_by": "Jose",
+                    "claimed_at": now - 3 * 86400, "requested_at": now - 3 * 86400, "attempts": 0}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    app._download_requests_notify_web = lambda: None
+    app._download_requests_amule_state = lambda needed: ([{"hash_hex": "x", "name": "Otra.mkv"}], [])
+    App._download_requests_cycle(app)
+    assert "obs" in launched, "liberada y relanzada en el mismo ciclo"
+    # aMule sin responder: no se decide nada
+    launched.clear(); pushed.clear()
+    app._download_requests_amule_state = lambda needed: (None, [])
+    App._download_requests_cycle(app)
+    assert launched == [] and (not pushed or pushed[-1]["obs"]["status"] == "downloading")
+
+
+def test_ciclo_quita_de_amule_lo_cancelado_en_la_web(monkeypatch):
+    """Cancelada desde la web con este PC descargándola: se quita de
+    aMule y se marca cancel_done (sin relanzar nada); si aMule no
+    responde, se reintenta en el siguiente ciclo."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {"c": {"tmdb_id": 5, "media_type": "movie", "title": "Peli", "status": "cancelled",
+                  "cancelled_by": "Efren", "claimed_by": "Jose", "cancel_done": False,
+                  "amule_hashes": ["aa"], "claimed_at": now, "requested_at": now, "updated_at": now,
+                  "attempts": 0}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed, cancelled = [], [], []
+    app = _cycle_app(data, launched, pushed)
+    app._download_request_cancel_amule = lambda entry: False   # aMule caído
+    App._download_requests_cycle(app)
+    assert launched == [] and not pushed
+    app._download_request_cancel_amule = lambda entry: cancelled.append(entry["amule_hashes"]) or True
+    App._download_requests_cycle(app)
+    assert cancelled == [["aa"]] and launched == []
+    assert pushed[-1]["c"]["status"] == "cancelled" and pushed[-1]["c"]["cancel_done"] is True

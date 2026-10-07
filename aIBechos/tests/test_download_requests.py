@@ -290,3 +290,96 @@ def test_uploaded_request_since_sustitucion_de_capitulo():
     hist = [{"status": "ok", "remote": remote, "ts": 2000}]
     assert dr.uploaded_request_since(hist, ep, 1500)
     assert not dr.uploaded_request_since(hist, ep, 2500)
+
+
+def test_lost_in_amule_obsession():
+    """Caso real: Obsession "downloading" desde el 06/10 pero quitada de
+    aMule: se libera para relanzarla. Sigue en aMule, terminada en la
+    carpeta vigilada o recién lanzada: no se toca."""
+    now = 10_000.0
+    old = now - 2 * dr.LOST_GRACE_SECONDS
+    peli = {"tmdb_id": 1339713, "media_type": "movie", "title": "Obsession",
+            "year": "2026", "status": "downloading", "claimed_at": old}
+    assert dr.lost_in_amule(peli, [{"hash_hex": "aa", "name": "Otra cosa 2024.mkv"}], [], now=now)
+    # Sin hashes guardados (antigua): por nombre en la cola
+    assert not dr.lost_in_amule(peli, [{"hash_hex": "bb", "name": "Obsession (2026) 1080p Castellano.mkv"}], [], now=now)
+    # Con hashes: por hash (aunque el nombre no case)
+    con = dict(peli, amule_hashes=["abc123"])
+    assert not dr.lost_in_amule(con, [{"hash_hex": "ABC123", "name": "x.mkv"}], [], now=now)
+    assert dr.lost_in_amule(con, [{"hash_hex": "zzz", "name": "Obsession 2026.mkv"}], [], now=now)
+    # Terminada y esperando a subirse en la carpeta vigilada
+    assert not dr.lost_in_amule(peli, [], ["Obsession.2026.1080p.WEB-DL.Castellano.mkv"], now=now)
+    # Recién lanzada
+    assert not dr.lost_in_amule(dict(peli, claimed_at=now - 60), [], [], now=now)
+    # Temporada / serie completa: no se decide así
+    temporada = {"media_type": "tv", "title": "Reacher", "season": 1, "episode": None,
+                 "status": "downloading", "claimed_at": old}
+    assert not dr.lost_in_amule(temporada, [], [], now=now)
+    # Capítulo: en la cola con SxE
+    cap = {"media_type": "tv", "title": "Reacher", "year": "2022", "season": 1, "episode": 3,
+           "status": "downloading", "claimed_at": old}
+    assert not dr.lost_in_amule(cap, [{"hash_hex": "c", "name": "Reacher 1x03 HDTV.mkv"}], [], now=now)
+    assert dr.lost_in_amule(cap, [{"hash_hex": "c", "name": "Reacher 1x04 HDTV.mkv"}], [], now=now)
+
+
+def test_set_amule_hashes():
+    data = {"a": {"status": "downloading"}}
+    nd = dr.set_amule_hashes(data, "a", ["AB", "", "ab", "cd"])
+    assert nd["a"]["amule_hashes"] == ["ab", "cd"]
+    assert "amule_hashes" not in data["a"]
+    assert dr.set_amule_hashes(data, "zz", ["x"]) is None
+
+
+def test_history_rows():
+    data = {
+        "a": {"title": "Obsession", "year": "2026", "media_type": "movie", "requested_by": "Efren",
+              "requested_at": 100, "status": "downloading", "claimed_by": "Jose"},
+        "b": {"title": "Reacher", "media_type": "tv", "season": 1, "episode": 1, "requested_by": "Jose",
+              "requested_at": 200, "status": "failed", "last_error": "sin fuentes"},
+        "c": "basura",
+    }
+    rows = dr.history_rows(data)
+    assert [r["id"] for r in rows] == ["b", "a"]
+    assert rows[0]["name"] == "Reacher [1x01]"
+    assert rows[0]["detail"] == "sin fuentes" and rows[0]["status_es"] == "Fallida"
+    assert rows[1]["detail"] == "En el equipo de Jose" and rows[1]["person"] == "Efren"
+    assert dr.history_rows(None) == []
+
+
+def test_merge_cancelled_is_sticky():
+    web = {"r": {"status": "cancelled", "cancelled_by": "Efren", "claimed_by": "Jose",
+                 "cancel_done": False, "updated_at": 100}}
+    pc = {"r": {"status": "downloading", "claimed_by": "Jose", "amule_hashes": ["ab"],
+                "updated_at": 200}}
+    for merged in (dr.merge(web, pc), dr.merge(pc, web)):
+        e = merged["r"]
+        assert e["status"] == "cancelled" and e["amule_hashes"] == ["ab"]
+        assert e["cancel_done"] is False
+
+
+def test_merge_cancel_while_claiming_keeps_claimer():
+    # La web la canceló "pending"; a la vez un PC la reclamó y lanzó.
+    web = {"r": {"status": "cancelled", "claimed_by": "", "cancel_done": True, "updated_at": 100}}
+    pc = {"r": {"status": "claimed", "claimed_by": "Jose", "updated_at": 150}}
+    e = dr.merge(pc, web)["r"]
+    assert e["status"] == "cancelled" and e["claimed_by"] == "Jose" and e["cancel_done"] is False
+    assert dr.to_cancel({"r": e}, "Jose") == ["r"]
+    assert dr.to_cancel({"r": e}, "Otro") == []
+    done = dr.mark_cancel_done({"r": e}, "r")
+    assert dr.to_cancel(done, "Jose") == []
+
+
+def test_amule_hashes_to_cancel():
+    queue = [{"hash_hex": "AA", "name": "Obsession (2026).mkv"},
+             {"hash_hex": "bb", "name": "Otra cosa (2020).mkv"}]
+    assert dr.amule_hashes_to_cancel({"amule_hashes": ["aa"]}, queue) == ["aa"]
+    legacy = {"title": "Obsession", "year": "2026", "media_type": "movie"}
+    assert dr.amule_hashes_to_cancel(legacy, queue) == ["aa"]
+    assert dr.amule_hashes_to_cancel({"amule_hashes": ["cc"]}, queue) == []
+
+
+def test_prune_and_history_cancelled():
+    old = {"r": {"status": "cancelled", "updated_at": 0, "cancelled_by": "Ana", "title": "X"}}
+    assert dr.prune(old, now=10 ** 9) == {}
+    row = dr.history_rows({"r": {**old["r"], "updated_at": 5}})[0]
+    assert row["status_es"] == "Cancelada" and row["detail"] == "Cancelada por Ana"

@@ -1807,6 +1807,11 @@ class App(_AppBase):
         # entrar en esa pestaña (ver _sync_activity_history_from_ftp);
         # vacío hasta la primera sincronización real de esta sesión.
         self._shared_activity_history = []
+        # Solicitudes de la web (cola compartida) para Historial, ver
+        # _sync_web_requests_history: filas de core.download_requests.history_rows.
+        self._web_requests_rows = []
+        self._web_requests_error = ""   # por qué no se pudieron leer (vacío = bien)
+        self._last_web_requests_sync_ts = 0.0
 
         # Ranking de subidas por usuario (ver core/upload_stats.py, pestaña
         # Estadísticas) -- mismo criterio que el historial de actividad de
@@ -3022,6 +3027,8 @@ class App(_AppBase):
                 except Exception:
                     pass
             self._sync_activity_history_from_ftp()
+            if self._history_show_all_var.get() and self._history_requests_var.get():
+                self._sync_web_requests_history()
             self._refresh_history_view()   # por si hay subidas nuevas desde la última vez
         elif view_key == "cleanup":
             self._cleanup_frame.grid(row=0, column=0, sticky="nsew")
@@ -14752,6 +14759,15 @@ class App(_AppBase):
                   if isinstance(e, dict) and e.get("claimed_by") == user
                   and e.get("status") in ("claimed", "downloading")]
         changed = False
+        # Canceladas desde la web que tenía este PC: fuera de aMule.
+        for rid in _dr.to_cancel(data, user):
+            if self._download_request_cancel_amule(data.get(rid) or {}):
+                nd = _dr.mark_cancel_done(data, rid)
+                if nd is not None:
+                    data = nd
+                    changed = True
+                    _log.info("Solicitudes: %s cancelada desde la web, descarga quitada de aMule",
+                              _dr.describe(data.get(rid) or {}))
         # Índice directo del servidor para las que no tienen fila en
         # memoria/caché (una sola ronda de listados por ciclo).
         wanted = {}
@@ -14771,8 +14787,13 @@ class App(_AppBase):
         except Exception:
             server_index = {}
         done_now = 0
+        amule_queue, local_names = self._download_requests_amule_state(
+            any((data.get(r) or {}).get("status") == "downloading" for r in my_ids))
         for rid in my_ids:
             outcome = self._download_request_check_done(data.get(rid) or {}, server_index)
+            if outcome is None and amule_queue is not None and _dr.lost_in_amule(
+                    data.get(rid) or {}, amule_queue, local_names):
+                outcome = "lost"
             if outcome == "done":
                 nd = _dr.mark_status(data, rid, "done", user=user)
                 if nd is not None:
@@ -14780,6 +14801,13 @@ class App(_AppBase):
                     changed = True
                     done_now += 1
                     _log.info("Solicitudes: %s completada (%s)", rid, _dr.describe(data.get(rid) or {}))
+            elif outcome == "lost":
+                nd = _dr.release(data, rid, user=user, error="ya no estaba en aMule")
+                if nd is not None:
+                    data = nd
+                    changed = True
+                    _log.info("Solicitudes: %s ya no estaba en aMule, se vuelve a lanzar",
+                              _dr.describe(data.get(rid) or {}))
             elif outcome == "relaunch":
                 nd = _dr.mark_status(data, rid, "claimed", user=user)
                 if nd is not None:
@@ -14840,6 +14868,70 @@ class App(_AppBase):
             else:
                 self._download_requests_carry = _dr.merge(
                     getattr(self, "_download_requests_carry", None) or {}, data)
+
+    def _download_request_cancel_amule(self, entry: dict) -> bool:
+        """Quita de aMule la descarga de una solicitud cancelada desde la
+        web (borra también lo descargado a medias). True si ya no queda
+        nada suyo en aMule; False si aMule no responde (se reintenta en
+        el siguiente ciclo)."""
+        from core import download_requests as _dr
+        try:
+            with self._amule_ec_lock:
+                ec = EcClient(host=self.config_data.get("amule_host", "localhost"),
+                              port=self.config_data.get("amule_port", 4712),
+                              password=self.config_data.get("amule_password", ""),
+                              timeout=8.0)
+                ec.connect()
+                try:
+                    queue = [{"hash_hex": it.get("hash_hex"), "name": it.get("name")}
+                             for it in (ec.get_download_queue() or [])]
+                    for h in _dr.amule_hashes_to_cancel(entry, queue):
+                        ok, msg = ec.cancel_download(h)
+                        if not ok:
+                            _log.warning("Solicitudes: no se pudo cancelar %s en aMule: %s", h, msg)
+                            return False
+                finally:
+                    ec.close()
+        except Exception as e:
+            _log.debug("Solicitudes: aMule no disponible para cancelar (%s)", e)
+            return False
+        return True
+
+    def _download_requests_amule_state(self, needed: bool):
+        """(cola de aMule [{hash_hex, name}] o None si no se pudo leer,
+        nombres de archivo de la carpeta vigilada) -- para detectar
+        descargas de solicitudes que ya no están en aMule (ver
+        _dr.lost_in_amule). Sin aMule: (None, []) y no se toca nada."""
+        if not needed:
+            return None, []
+        queue = None
+        try:
+            with self._amule_ec_lock:
+                ec = EcClient(host=self.config_data.get("amule_host", "localhost"),
+                              port=self.config_data.get("amule_port", 4712),
+                              password=self.config_data.get("amule_password", ""),
+                              timeout=8.0)
+                ec.connect()
+                try:
+                    queue = [{"hash_hex": it.get("hash_hex"), "name": it.get("name")}
+                             for it in (ec.get_download_queue() or [])]
+                finally:
+                    ec.close()
+        except Exception as e:
+            _log.debug("Solicitudes: sin cola de aMule (%s)", e)
+            return None, []
+        names = []
+        folder = (self.config_data.get("watch_folder", "") or "").strip()
+        if folder:
+            try:
+                import os as _os
+                for _root, _dirs, files in _os.walk(folder):
+                    names.extend(files)
+                    if len(names) > 5000:
+                        break
+            except Exception:
+                pass
+        return queue, names
 
     def _download_requests_notify_web(self):
         """Avisa a la web de solicitudes de que hay algo completado (ya
@@ -15184,6 +15276,7 @@ class App(_AppBase):
             return _dr.release(data, req_id, user=user, error="sin objetivos"), False
         ok_any = False
         last_error = ""
+        hashes = []
         for target in targets:
             try:
                 if target[0] == "movie":
@@ -15199,9 +15292,11 @@ class App(_AppBase):
                     ok, motivo, _h = self._auto_amule_download_series(
                         query, is_movie=False, typical_size=typical)
             except Exception as ex:
-                ok, motivo = False, str(ex)[:200]
+                ok, motivo, _h = False, str(ex)[:200], ""
             if ok:
                 ok_any = True
+                if _h:
+                    hashes.append(_h)
             else:
                 last_error = motivo
                 _log.warning("Solicitudes: %s sin candidato (%s): %s",
@@ -15209,6 +15304,9 @@ class App(_AppBase):
         if ok_any:
             _log.info("Solicitudes: %s en descarga", _dr.describe(entry))
             nd = _dr.mark_status(data, req_id, "downloading", user=user)
+            if nd is not None and hashes:
+                # Para ver luego si sigue en aMule (ver _dr.lost_in_amule).
+                nd = _dr.set_amule_hashes(nd, req_id, hashes) or nd
             if nd is not None and _dr.is_replacement(entry):
                 self._download_request_record_replacement(entry, name, year)
                 nd = _dr.mark_replacement_launched(nd, req_id) or nd
@@ -24667,6 +24765,19 @@ class App(_AppBase):
         self._history_show_all_var = ctk.BooleanVar(value=False)
         ctk.CTkSwitch(header, text="Ver todo el servidor", variable=self._history_show_all_var,
                       command=self._on_history_show_all_toggled).pack(side="left", padx=(0, 12), pady=8)
+        # "Solicitudes web" -- la cola compartida con la web de solicitudes
+        # (quién pidió qué y en qué estado está). Es de todo el servidor por
+        # naturaleza, así que solo se puede encender con "Ver todo el
+        # servidor" activo (ver _on_history_show_all_toggled).
+        self._history_requests_var = ctk.BooleanVar(value=False)
+        self._history_requests_switch = ctk.CTkSwitch(
+            header, text="Solicitudes web", variable=self._history_requests_var,
+            command=self._on_history_requests_toggled, state="disabled")
+        self._history_requests_switch.pack(side="left", padx=(0, 12), pady=8)
+        attach_tooltip(self._history_requests_switch, lambda: (
+            "Ver las solicitudes hechas desde la web: quién las pidió, en qué estado están y "
+            "qué equipo las descarga." if self._history_show_all_var.get()
+            else 'Activa primero "Ver todo el servidor".'))
 
         # Buscador -- filtra self._history_all por archivo/destino/cliente
         # antes de paginar (ver _apply_history_search). Mismo patrón que el
@@ -24795,7 +24906,11 @@ class App(_AppBase):
         try:
             if skipped:
                 return
-            if self._history_show_all_var.get():
+            if self._history_show_all_var.get() and self._history_requests_var.get():
+                self._history_all = list(self._web_requests_rows)
+                self._history_title_lbl.configure(
+                    text=f"Solicitudes de la web  ({len(self._history_all)})")
+            elif self._history_show_all_var.get():
                 # Ya sincronizado en memoria (ver _sync_activity_history_from_ftp,
                 # llamado al entrar en esta pestaña) -- no hace falta releer
                 # nada de disco para esta rama.
@@ -24813,8 +24928,73 @@ class App(_AppBase):
                        " (sin cambios, omitido)" if skipped else "")
 
     def _on_history_show_all_toggled(self):
+        # "Solicitudes web" depende de este interruptor: sin él, se apaga y
+        # se desactiva.
+        if self._history_show_all_var.get():
+            self._history_requests_switch.configure(state="normal")
+        else:
+            self._history_requests_var.set(False)
+            self._history_requests_switch.configure(state="disabled")
         self._history_dirty = True
         self._refresh_history_view()
+
+    def _on_history_requests_toggled(self):
+        if self._history_requests_var.get():
+            self._last_web_requests_sync_ts = 0.0   # al encender, siempre fresco
+            self._sync_web_requests_history()
+        self._history_dirty = True
+        self._refresh_history_view()
+
+    _WEB_REQUESTS_SYNC_MIN_INTERVAL = 15   # segundos, ver _sync_web_requests_history
+
+    def _sync_web_requests_history(self):
+        """Lee en segundo plano la cola de solicitudes de la web (la misma
+        que usa _download_requests_cycle) y la pinta en Historial si
+        "Solicitudes web" sigue encendido. Con freno, como
+        _sync_activity_history_from_ftp."""
+        now = _time.time()
+        if now - self._last_web_requests_sync_ts < self._WEB_REQUESTS_SYNC_MIN_INTERVAL:
+            return
+        self._last_web_requests_sync_ts = now
+        remote_path = self._download_requests_remote_path()
+        if not remote_path:
+            self._apply_web_requests_history(
+                [], "Falta la carpeta de datos compartidos del servidor (Configuración).")
+            return
+
+        def worker():
+            from core import download_requests as _dr
+            from core.shared_data import read_shared_json
+            own_ftp = self._download_requests_ftp()
+            if own_ftp is None:
+                self.after(0, lambda: self._apply_web_requests_history(
+                    None, "No se pudo conectar con el servidor."))
+                return
+            try:
+                data, _is_new = read_shared_json(own_ftp, remote_path, "dict")
+            except Exception:
+                data = None
+            finally:
+                try:
+                    own_ftp.disconnect()
+                except Exception:
+                    pass
+            if data is None:
+                self.after(0, lambda: self._apply_web_requests_history(
+                    None, "No se pudo leer la cola de solicitudes."))
+                return
+            rows = _dr.history_rows(data)
+            self.after(0, lambda: self._apply_web_requests_history(rows, ""))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_web_requests_history(self, rows, error: str):
+        """rows None = fallo de red: se conserva lo último que se leyó."""
+        if rows is not None:
+            self._web_requests_rows = rows
+        self._web_requests_error = error
+        if self._history_visible and self._history_requests_var.get():
+            self._history_dirty = True
+            self._refresh_history_view()
 
     @staticmethod
     def _history_entry_matches(entry: dict, query: str) -> bool:
@@ -24825,7 +25005,10 @@ class App(_AppBase):
         en fecha/tamaño/estado -- no son lo que alguien escribiría para
         encontrar un registro concreto."""
         kind = entry.get("kind", "subida")
-        if kind == "borrado":
+        if kind == "solicitud":
+            haystack = (entry.get("name", ""), entry.get("detail", ""), entry.get("person", ""),
+                        entry.get("status_es", ""))
+        elif kind == "borrado":
             haystack = (entry.get("name", ""), entry.get("reason", ""), entry.get("person", ""))
         else:
             haystack = (entry.get("filename", ""), entry.get("remote", ""), entry.get("person", ""))
@@ -24916,8 +25099,12 @@ class App(_AppBase):
         self._history_table.scroll_to_top()
 
         if not page_items:
-            empty_text = ("Ningún registro coincide con la búsqueda." if self._history_search_entry.get().strip()
-                          else "Sin subidas registradas todavía.")
+            if self._history_search_entry.get().strip():
+                empty_text = "Ningún registro coincide con la búsqueda."
+            elif self._history_show_all_var.get() and self._history_requests_var.get():
+                empty_text = self._web_requests_error or "No hay solicitudes de la web."
+            else:
+                empty_text = "Sin subidas registradas todavía."
             self._history_empty_msg = ctk.CTkLabel(
                 self._history_table.body, text=empty_text, text_color=PENDING_COLOR)
             self._history_empty_msg.pack(pady=30)
@@ -24943,6 +25130,14 @@ class App(_AppBase):
             # (ver _push_activity_entry_to_ftp) -- las locales son siempre
             # subidas, así que a falta de esta clave se asume "subida".
             kind = entry.get("kind", "subida")
+            if kind == "solicitud":
+                # Solicitud de la web (ver _sync_web_requests_history): sin
+                # tamaño ni reintento; el estado es el de la cola.
+                rst = entry.get("status", "")
+                self._history_render_request_row(entry, ts, cw, font, {
+                    "done": SUCCESS_COLOR, "failed": ERROR_COLOR,
+                    "downloading": WARNING_COLOR, "claimed": WARNING_COLOR}.get(rst, PENDING_COLOR))
+                continue
             is_deletion = kind == "borrado"
             # Si falló, en esta columna es más útil el motivo que la ruta
             # remota -- en un borrado, "reason" (por qué se marcó como
@@ -25004,6 +25199,31 @@ class App(_AppBase):
             self._history_rows.append(row_labels)
 
         self._history_table.note_rows_rendered(len(page_items))
+
+    def _history_render_request_row(self, entry: dict, ts: str, cw: dict, font, status_color):
+        """Una fila de "Solicitudes web" en la tabla de Historial (mismas
+        columnas; sin tamaño ni botón de reintentar)."""
+        raw = {
+            "fecha": ts, "archivo": entry.get("name", ""), "tipo": "Solicitud",
+            "cliente": entry.get("person", ""), "destino": entry.get("detail", ""),
+            "tamano": "—", "estado": entry.get("status_es", ""),
+        }
+        extra_by_col = {
+            "destino": {"text_color": ERROR_COLOR} if entry.get("status") == "failed" else {},
+            "estado": {"text_color": status_color},
+        }
+        row_fr = ctk.CTkFrame(self._history_table.body)
+        row_fr.pack(fill="x", pady=1, padx=2)
+        row_labels = {"_raw": raw}
+        for key in self._history_col_order:
+            c = self._history_table.cell(row_fr, key, pady=2)
+            lbl = ctk.CTkLabel(c, text=_fit_text(raw[key], cw[key], font),
+                               anchor="w", font=font, **extra_by_col.get(key, {}))
+            lbl.pack(fill="both", expand=True)
+            row_labels[key] = lbl
+        if raw["destino"]:
+            attach_tooltip(row_labels["destino"], lambda t=raw["destino"]: t)
+        self._history_rows.append(row_labels)
 
     def _retry_history_upload(self, entry: dict):
         """Reintenta una subida fallida directamente desde Historial, sin
