@@ -98,3 +98,33 @@ def test_ciclo_respeta_tope_con_descargas_recientes(monkeypatch):
     launched, pushed = [], []
     App._download_requests_cycle(_cycle_app(data, launched, pushed))
     assert launched == [], "con 5 recientes el tope sigue mandando"
+
+
+def test_ciclo_avisa_a_la_web_al_completar(monkeypatch):
+    """Al marcar algo como done (y subir la cola) se avisa a la web para
+    que mande la notificación push; sin done, no se avisa."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {"r1": {"tmdb_id": 1, "media_type": "movie", "title": "P",
+                   "status": "downloading", "claimed_by": "Jose",
+                   "claimed_at": now - 60, "requested_at": now - 60, "attempts": 0}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    avisos = []
+    app._download_requests_notify_web = lambda: avisos.append(1)
+    app._download_request_check_done = lambda entry, idx=None: "done"
+    App._download_requests_cycle(app)
+    assert pushed and pushed[-1]["r1"]["status"] == "done"
+    assert avisos == [1]
+    avisos.clear()
+    app._download_request_check_done = lambda entry, idx=None: None
+    App._download_requests_cycle(app)
+    assert avisos == [], "sin nada completado no se molesta a la web"
+
+
+def test_url_web_es_configuracion_de_servidor():
+    from core.server_config import SHARED_CONFIG_KEYS
+    from config import DEFAULTS
+    assert "solicitudes_web_url" in SHARED_CONFIG_KEYS
+    assert DEFAULTS["solicitudes_web_url"] == "https://aibechos.fordema.es/"

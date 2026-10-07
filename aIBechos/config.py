@@ -189,6 +189,10 @@ DEFAULTS = {
     "download_requests_enabled": True,
     "download_requests_interval": 300,
     "download_requests_max_active": 5,
+    # Web de solicitudes (solicitudes-web): el worker la avisa al marcar
+    # algo como completado para que mande la notificación push. Igual
+    # para todos -> configuración de SERVIDOR (core/server_config.py).
+    "solicitudes_web_url": "https://aibechos.fordema.es/",
     # Anchos de columna de las tablas (Archivos/Episodios/Liberar espacio/
     # Historial), guardados al soltar un separador -- ver gui/table_view.py
     # y _save_table_col_widths en gui/app.py. {tabla: {columna: ancho_px}}.

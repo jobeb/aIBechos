@@ -9893,6 +9893,22 @@ class App(_AppBase):
                      font=self._cfg_font_desc, text_color=PENDING_COLOR, justify="center").grid(
             row=3, column=0, columnspan=2, pady=(4, 12))
 
+        # -- Web de solicitudes (móvil) --
+        web = ctk.CTkFrame(fr, fg_color="transparent")
+        web.grid(row=4, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12))
+        web.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(web, text="Web de solicitudes", font=self._cfg_font_subtitle).grid(
+            row=0, column=0, columnspan=2, pady=(0, 4))
+        ctk.CTkLabel(web, text="Dirección:").grid(row=1, column=0, sticky="e", padx=6, pady=4)
+        self._solicitudes_web_entry = ctk.CTkEntry(web, placeholder_text="https://aibechos.fordema.es/")
+        self._solicitudes_web_entry.insert(0, self.config_data.get("solicitudes_web_url", ""))
+        self._solicitudes_web_entry.grid(row=1, column=1, padx=6, pady=4, sticky="ew")
+        ctk.CTkLabel(web, text=("Al completar una solicitud, este equipo avisa a la web para que "
+                                "mande la notificación al móvil de quien la pidió. Vacío = sin "
+                                "aviso inmediato (la web lo comprueba sola al usarse)."),
+                     font=ctk.CTkFont(size=10), text_color=PENDING_COLOR,
+                     wraplength=520, justify="left").grid(row=2, column=0, columnspan=2, padx=6)
+
     def _validate_plex(self):
         host  = self._plex_host_entry.get().strip()
         token = self._plex_token_entry.get().strip()
@@ -14754,6 +14770,7 @@ class App(_AppBase):
             server_index = self._download_requests_server_index(wanted)
         except Exception:
             server_index = {}
+        done_now = 0
         for rid in my_ids:
             outcome = self._download_request_check_done(data.get(rid) or {}, server_index)
             if outcome == "done":
@@ -14761,6 +14778,7 @@ class App(_AppBase):
                 if nd is not None:
                     data = nd
                     changed = True
+                    done_now += 1
                     _log.info("Solicitudes: %s completada (%s)", rid, _dr.describe(data.get(rid) or {}))
             elif outcome == "relaunch":
                 nd = _dr.mark_status(data, rid, "claimed", user=user)
@@ -14816,9 +14834,34 @@ class App(_AppBase):
                 data = nd
                 changed = True
         if changed:
-            if not self._download_requests_push(data, remote_path):
+            if self._download_requests_push(data, remote_path):
+                if done_now:
+                    self._download_requests_notify_web()
+            else:
                 self._download_requests_carry = _dr.merge(
                     getattr(self, "_download_requests_carry", None) or {}, data)
+
+    def _download_requests_notify_web(self):
+        """Avisa a la web de solicitudes de que hay algo completado (ya
+        escrito en la cola compartida): la web relee la cola y manda la
+        notificación push a quien lo pidió (ver api/index.php
+        notify_check). En un hilo y sin reintentos: si falla, la web lo
+        detecta igual al usarse. Nunca lanza."""
+        base = (self.config_data.get("solicitudes_web_url", "") or "").strip()
+        if not base:
+            return
+
+        def _go():
+            import urllib.request
+            url = base.rstrip("/") + "/api/index.php?action=notify_check"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "aIBechos"})
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    _log.info("Solicitudes: aviso a la web (%s): %s", resp.status,
+                              resp.read(200).decode("utf-8", "replace"))
+            except Exception as e:
+                _log.warning("Solicitudes: no se pudo avisar a la web (%s): %s", url, e)
+        threading.Thread(target=_go, daemon=True).start()
 
     def _download_request_check_done(self, entry: dict, server_index: dict | None = None) -> str | None:
         """Revisa si lo pedido ya está en el servidor: "done" (ya no
@@ -19949,6 +19992,7 @@ class App(_AppBase):
             _set_entry(self._jellyfin_host_entry, self.config_data.get("jellyfin_host", ""))
             _set_entry(self._jellyfin_key_entry, self.config_data.get("jellyfin_api_key", ""))
             _set_entry(self._jellyfin_username_entry, self.config_data.get("jellyfin_username", ""))
+            _set_entry(self._solicitudes_web_entry, self.config_data.get("solicitudes_web_url", ""))
 
         if self._config_tab_built("templates"):
             for key, combo in (getattr(self, "_tpl_entries", None) or {}).items():
@@ -23444,6 +23488,7 @@ class App(_AppBase):
                 "jellyfin_host":     self._jellyfin_host_entry.get().strip(),
                 "jellyfin_api_key":  self._jellyfin_key_entry.get().strip(),
                 "jellyfin_username": self._jellyfin_username_entry.get().strip(),
+                "solicitudes_web_url": self._solicitudes_web_entry.get().strip(),
             })
         if self._config_tab_built("reservas"):
             try:

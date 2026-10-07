@@ -140,6 +140,10 @@ SHARED_CONFIG_KEYS = (
     "custom_links_show", "custom_links_season", "custom_links_episode",
     # Cuota de reservas (ver core/reservations.py).
     "reservation_quota_gb",
+    # Web de solicitudes del móvil: una sola dirección para todo el
+    # grupo (el worker la avisa al completar, ver gui/app.py::
+    # _download_requests_notify_web).
+    "solicitudes_web_url",
     # Listas de proveedores de P2P (ver core/download_quality) -- mismo
     # motivo que las plantillas: decisión de grupo, no de cada equipo.
     "p2p_trusted_groups", "p2p_blocked_groups",

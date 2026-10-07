@@ -95,6 +95,9 @@ def test_shared_config_keys_pins_the_exact_set():
         "jellyfin_enabled", "jellyfin_host", "jellyfin_api_key", "jellyfin_username",
         "custom_links_show", "custom_links_season", "custom_links_episode",
         "reservation_quota_gb",
+        # Dirección de la web de solicitudes: la misma para todo el grupo
+        # (decisión explícita del usuario: configuración de servidor).
+        "solicitudes_web_url",
         # Listas de proveedores P2P: decisión deliberada de grupo (mismo
         # capítulo en el mismo idioma lo pulse quien lo pulse) -- ver
         # core/server_config.py. amule_host/port/password siguen siendo de
