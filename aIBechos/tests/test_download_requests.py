@@ -266,3 +266,27 @@ def test_replacement_flags():
     assert nd["a"]["replace_since"] == 1234.0
     assert "replace_since" not in data["a"], "no muta el original"
     assert dr.mark_replacement_launched(data, "zz") is None
+
+
+def test_matches_upload_capitulo_sin_ano_en_el_nombre():
+    """Caso real: sustitución de Reacher 1x01 subida como "Reacher 1x01
+    Bienvenido a Margrave.mkv" (sin año, como casi todos los capítulos)
+    y nunca dada por hecha porque se exigía el año en el nombre."""
+    ep = {"title": "Reacher", "year": "2022", "media_type": "tv",
+          "season": 1, "episode": 1}
+    base = "/datos2/series/Reacher/Temporada 01//"
+    assert dr.matches_upload(ep, base + "Reacher 1x01 Bienvenido a Margrave.mkv")
+    assert dr.matches_upload(ep, base + "Reacher (2022) 1x01 Bienvenido.mkv")
+    assert not dr.matches_upload(ep, base + "Reacher (2019) 1x01 Otra.mkv")
+    assert not dr.matches_upload(ep, base + "Reacher 1x02 Primer paso.mkv")
+    assert not dr.matches_upload(ep, "/x/Jack Reacher 1x01 Algo.mkv")
+    assert not dr.matches_upload(ep, "/x/Lost 1x01 Pilot.mkv")
+
+
+def test_uploaded_request_since_sustitucion_de_capitulo():
+    ep = {"tmdb_id": 108978, "title": "Reacher", "year": "2022",
+          "media_type": "tv", "season": 1, "episode": 1, "replace": True}
+    remote = "/datos2/series/Reacher/Temporada 01//Reacher 1x01 Bienvenido a Margrave.mkv"
+    hist = [{"status": "ok", "remote": remote, "ts": 2000}]
+    assert dr.uploaded_request_since(hist, ep, 1500)
+    assert not dr.uploaded_request_since(hist, ep, 2500)

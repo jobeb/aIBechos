@@ -523,7 +523,14 @@ def matches_upload(entry: dict, remote: str) -> bool:
             if s_num is None or int(season) != s_num \
                     or int(episode) != e_num:
                 return False
-            return _title_ok(stem[:_episode_start(stem)])
+            # Los capítulos casi nunca llevan año en el nombre ("Reacher
+            # 1x01 Titulo.mkv"): exigirlo hacía que NINGUNO casara (caso
+            # real: sustitución de Reacher 1x01 subida y nunca dada por
+            # hecha). Con año, debe coincidir; sin él, título + S/E.
+            show = stem[:_episode_start(stem)].strip(" .-_")
+            if year and _year_in_name(show) is None:
+                return series_similarity(title, show, strict=True) >= 0.85
+            return _title_ok(show)
         # Temporada/serie completa no se confirma con UN archivo.
         return False
     except Exception:
