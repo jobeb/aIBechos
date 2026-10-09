@@ -32,6 +32,23 @@ def _no_console_kwargs() -> dict:
     return {"startupinfo": startupinfo, "creationflags": subprocess.CREATE_NO_WINDOW}
 
 
+def decode_console_output(raw: bytes) -> str:
+    """Texto de amulecmd (bytes) a str sin romper los acentos.
+
+    amulecmd escupe UTF-8 (los nombres vienen del protocolo EC, que es
+    UTF-8), pero lanzarlo con text=True usa la locale de Windows (cp1252)
+    y "acción" llegaba a la GUI como "acciÃ³n" (mojibake real en la
+    pestaña Descargas). Se prueba UTF-8 estricto primero y solo si falla
+    se cae a windows-1252: los bytes cp1252 con acentos nunca son UTF-8
+    válido, así que el orden no tiene ambigüedad en la práctica."""
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("windows-1252", "replace")
+
+
 def _find_amulecmd(custom_path: str) -> Optional[str]:
     candidates = []
     if custom_path:
@@ -107,6 +124,8 @@ class AmuleSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             **_no_console_kwargs(),
         )
         if self._proc.stdin is None or self._proc.stdout is None:
@@ -209,9 +228,10 @@ class AmuleClient:
         if args is None:
             return ""
         try:
-            result = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+            result = subprocess.run(args, capture_output=True, timeout=timeout,
                                     **_no_console_kwargs())
-            combined = (result.stdout or "") + (result.stderr or "")
+            combined = decode_console_output(result.stdout or b"") + decode_console_output(
+                result.stderr or b"")
             return combined.strip()
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             return ""

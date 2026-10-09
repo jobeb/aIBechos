@@ -114,7 +114,7 @@ class DownloadsCoreMixin:
                     in_queue = any((d.get("hash_hex", "") or "").lower() == h for d in q)
             if in_queue:
                 return False
-            from core.amule_client import _find_amulecmd, hash_in_shared_output
+            from core.amule_client import _find_amulecmd, decode_console_output, hash_in_shared_output
             from core.ec_client import _no_console_kwargs
             import subprocess
             exe = _find_amulecmd("")
@@ -124,8 +124,8 @@ class DownloadsCoreMixin:
                     "-h", self.config_data.get("amule_host", "localhost"),
                     "-p", str(self.config_data.get("amule_port", 4712) or 4712),
                     "-P", self.config_data.get("amule_password", "")]
-            r = subprocess.run(args, capture_output=True, text=True, timeout=6,
+            r = subprocess.run(args, capture_output=True, timeout=6,
                                **_no_console_kwargs())
-            return hash_in_shared_output(r.stdout or "", h)
+            return hash_in_shared_output(decode_console_output(r.stdout or b""), h)
         except Exception:
             return False

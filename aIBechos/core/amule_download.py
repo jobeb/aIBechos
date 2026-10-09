@@ -76,8 +76,9 @@ def _already_completed(ec, best) -> bool:
             exe = _find_amulecmd("")
             if exe:
                 args = [exe, "-c", "show shared", "-h", ec.host, "-p", str(ec.port), "-P", ec.password]
-                r = subprocess.run(args, capture_output=True, text=True, timeout=6, **_no_console_kwargs())
-                if h in (r.stdout or "").lower():
+                from core.amule_client import decode_console_output
+                r = subprocess.run(args, capture_output=True, timeout=6, **_no_console_kwargs())
+                if h in decode_console_output(r.stdout or b"").lower():
                     return True
     except Exception:
         pass

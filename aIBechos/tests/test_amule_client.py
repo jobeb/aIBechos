@@ -2,10 +2,11 @@
 
 Cubre hash_in_shared_output: detectar si un hash MD4 ya está en la salida
 de `amulecmd show shared` (ya descargado en completados) para avisar en
-vez de cantar éxito en silencio.
+vez de cantar éxito en silencio; y decode_console_output: los acentos de
+amulecmd (UTF-8) llegaban como "acciÃ³n" al decodificar con cp1252.
 """
 
-from core.amule_client import hash_in_shared_output
+from core.amule_client import decode_console_output, hash_in_shared_output
 
 HASH = "fdbcb8a4029728bbc29357d95d18adef"
 
@@ -42,3 +43,17 @@ def test_hash_invalido_no_afirma():
     assert hash_in_shared_output(" > abc algo.mkv\n", "corto") is False
     # 32 chars pero ausente: tampoco
     assert hash_in_shared_output(" > abc algo.mkv\n", "b" * 32) is False
+
+
+def test_consola_utf8_con_acentos():
+    # amulecmd escupe UTF-8: decodificar con la locale (cp1252) daba "acciÃ³n".
+    raw = " > 0123456789abcdef0123456789abcdef Acción y aventura 1x05.mkv\n".encode("utf-8")
+    assert decode_console_output(raw).splitlines()[0].endswith("Acción y aventura 1x05.mkv")
+    assert decode_console_output(b"ascii puro") == "ascii puro"
+    assert decode_console_output(b"") == ""
+
+
+def test_consola_cp1252_de_respaldo():
+    # Por si un amulecmd viejo hablara en locale: 0xE9 suelto no es UTF-8
+    # válido y cae a windows-1252 en vez de romper o dar �.
+    assert decode_console_output(b"acci\xf3n.mkv") == "acción.mkv"

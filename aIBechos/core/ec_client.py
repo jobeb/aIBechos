@@ -622,9 +622,11 @@ class EcClient:
                 return ""
 
             try:
-                result = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                from core.amule_client import decode_console_output
+                result = subprocess.run(args, capture_output=True, timeout=timeout,
                                         **_no_console_kwargs())
-                combined = (result.stdout or "") + (result.stderr or "")
+                combined = decode_console_output(result.stdout or b"") + decode_console_output(
+                    result.stderr or b"")
                 if not combined.strip():
                     return []
                 # Formato REAL de "show DL" (verificado contra amulecmd 3.0.1)
@@ -898,8 +900,10 @@ class EcClient:
             exe = _find_amulecmd("")
             if exe:
                 args = [exe, "-c", f"cancel {hash_hex}", "-h", self.host, "-p", str(self.port), "-P", self.password]
-                result = subprocess.run(args, capture_output=True, text=True, timeout=10, **_no_console_kwargs())
-                combined = (result.stdout or "") + (result.stderr or "")
+                from core.amule_client import decode_console_output
+                result = subprocess.run(args, capture_output=True, timeout=10, **_no_console_kwargs())
+                combined = decode_console_output(result.stdout or b"") + decode_console_output(
+                    result.stderr or b"")
                 low = combined.lower()
                 if "operation was successful" in low:
                     return True, ""
