@@ -366,6 +366,41 @@ def get_jellyfin_episodes_audio(host: str, api_key: str, series_id: str,
     return audio
 
 
+def find_jellyfin_episode_id(host: str, api_key: str, series_id: str,
+                              season: int, episode: int, timeout: int = 15) -> Optional[str]:
+    """Id de Jellyfin de un capítulo concreto (para abrirlo/reproducirlo
+    directo) -- usado por ▶ en Archivos cuando el archivo ya está subido:
+    la serie se localiza por tmdb_id (find_jellyfin_item_by_tmdb_id) y el
+    capítulo por (temporada, episodio) en /Shows/{id}/Episodes. None si
+    falla o no está (p.ej. Jellyfin aún no ha reindexado la subida)."""
+    if not host or not api_key or not series_id or season is None or episode is None:
+        return None
+    base = host.rstrip("/")
+    try:
+        resp = requests.get(
+            f"{base}/Shows/{series_id}/Episodes",
+            headers={"X-Emby-Token": api_key},
+            params={"Fields": "ParentIndexNumber"},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("Items", []) or []
+    except Exception as e:
+        _log.warning("Jellyfin: fallo al listar episodios de %s: %s", series_id, e)
+        return None
+    try:
+        want = (int(season), int(episode))
+    except (TypeError, ValueError):
+        return None
+    for ep in items:
+        try:
+            if (int(ep.get("ParentIndexNumber")), int(ep.get("IndexNumber"))) == want:
+                return ep.get("Id")
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def get_plex_series(host: str, token: str, timeout: int = 15) -> Optional[list]:
     """Lista todas las series de todas las secciones de tipo "show" de Plex.
     Devuelve [{"rating_key": str, "name": str, "tmdb_id": int|None}, ...] o

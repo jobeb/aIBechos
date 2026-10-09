@@ -2142,6 +2142,83 @@ class FilesCoreMixin:
         self._after_from_worker(lambda: self._set_status(msg, colors.get(tipo, ACCENT)))
 
     def _play_file(self, entry):
+        """▶: si el archivo ya está subido, se reproduce directo en
+        Jellyfin (stream en el navegador); si no, se abre el archivo local
+        con la aplicación predeterminada, como hasta ahora."""
+        if getattr(entry, "status", "") == "subido" and self._jellyfin_play_available(entry):
+            self._set_status("Buscando en Jellyfin para reproducir...", PENDING_COLOR)
+            threading.Thread(target=self._play_in_jellyfin_worker, args=(entry,),
+                             daemon=True).start()
+            return
+        self._play_local_file(entry)
+
+    def _jellyfin_play_available(self, entry) -> bool:
+        """Hay a dónde ir a reproducir: identificado como serie/película
+        (los libros no están en Jellyfin) y Jellyfin activado con host y
+        key. Sin esto se abre el local como hasta ahora."""
+        info = getattr(entry, "media_info", None)
+        if info is None or getattr(info, "media_type", "") not in ("tv", "movie"):
+            return False
+        try:
+            if not int(getattr(info, "tmdb_id", 0) or 0):
+                return False
+        except (TypeError, ValueError):
+            return False
+        try:
+            cfg = self.config_data
+            return bool(cfg.get("jellyfin_enabled") and (cfg.get("jellyfin_host", "") or "").strip()
+                        and (cfg.get("jellyfin_api_key", "") or "").strip())
+        except Exception:
+            return False
+
+    def _play_in_jellyfin_worker(self, entry):
+        """Localiza el item en Jellyfin (serie por tmdb_id + capítulo por
+        temporada/episodio; película directa) y abre su stream en el
+        navegador, que lo pone a reproducir. Si no está (aún no reindexó
+        la subida, o falló la red) se cae al archivo local si existe."""
+        info = entry.media_info
+        try:
+            cfg = self.config_data
+            host = (cfg.get("jellyfin_host", "") or "").rstrip("/")
+            key = cfg.get("jellyfin_api_key", "") or ""
+            if not (cfg.get("jellyfin_enabled") and host and key):
+                raise RuntimeError("Jellyfin no configurado")
+            from core.media_server_refresh import (find_jellyfin_episode_id,
+                                                   find_jellyfin_item_by_tmdb_id)
+            found = find_jellyfin_item_by_tmdb_id(host, key, int(info.tmdb_id), info.media_type)
+            item_id = None
+            if found:
+                if info.media_type == "tv" and info.season and info.episode:
+                    item_id = find_jellyfin_episode_id(host, key, found["id"],
+                                                       info.season, info.episode)
+                else:
+                    item_id = found["id"]
+            if not item_id:
+                raise LookupError("no está en Jellyfin todavía")
+            import webbrowser
+            webbrowser.open(f"{host}/Videos/{item_id}/stream?api_key={key}")
+            title = info.title or entry.name
+            self.after(0, lambda: self._set_status(f"Reproduciendo en Jellyfin: {title}",
+                                                   SUCCESS_COLOR))
+        except Exception as e:
+            _log.warning("Reproducir en Jellyfin falló para %r: %s", entry.name, e)
+            self.after(0, lambda: self._play_local_or_warn(entry))
+
+    def _play_local_or_warn(self, entry):
+        """Rescate cuando Jellyfin no lo tiene: local si existe, si no el
+        motivo (la subida aún no reindexó y el original ya no está)."""
+        try:
+            if Path(entry.path).is_file():
+                self._play_local_file(entry)
+                self._set_status("Jellyfin aún no lo tiene: abriendo el archivo local",
+                                 WARNING_COLOR)
+                return
+        except OSError:
+            pass
+        self._set_status("Aún no está en Jellyfin (¿reindexando?) y el local ya no existe",
+                         ERROR_COLOR)
+
+    def _play_local_file(self, entry):
         """Abre el archivo con la aplicación predeterminada del sistema."""
         try:
             if is_windows():

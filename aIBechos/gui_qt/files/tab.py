@@ -555,7 +555,8 @@ class FilesTab(QWidget):
             add("🔍 Template aMule por serie…",
                 lambda s=series: AmuleTemplateDialog(self.window(), host.config_data, s).exec())
         menu.addSeparator()
-        add("▶  Reproducir", lambda: host._play_file(entry))
+        add("▶  Reproducir en Jellyfin" if entry.status == "subido" else "▶  Reproducir",
+            lambda: host._play_file(entry))
         add("📂 Abrir carpeta contenedora", lambda: host._open_containing_folder(entry))
         add("📋 Copiar nombre original", lambda: self._copy(entry.name))
         if entry.new_name:
