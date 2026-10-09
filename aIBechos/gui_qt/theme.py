@@ -33,8 +33,15 @@ SELECTED_ROW = "#4a3d20"
 
 BG = "#1e1f22"
 BG_ALT = "#26272b"
-PANEL = "#2b2d31"
-BORDER = "#3a3c42"
+# Jerarquía de superficies (de atrás a adelante, cada nivel claramente más
+# claro que el anterior para que se distinga qué contiene a qué):
+# página/ventana (BG) < listas y tablas (LIST_BG, con filas alternas
+# ROW_ALT) < tarjetas y recuadros (PANEL, con borde) < campos de texto
+# (BG_ALT, más oscuros que la tarjeta: efecto hundido).
+LIST_BG = "#24262b"
+ROW_ALT = "#2c2f36"
+PANEL = "#303339"
+BORDER = "#41444d"
 TEXT = "#e6e6e6"
 
 TONE_COLORS = {"pending": PENDING_COLOR, "error": ERROR_COLOR,
@@ -56,8 +63,9 @@ QPushButton[accent="true"]:hover {{ background: {ACCENT_HOVER}; }}
 QPushButton[danger="true"] {{ background: #c0392b; border: none; }}
 QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {BG_ALT}; border: 1px solid {BORDER};
                border-radius: 6px; padding: 4px 6px; color: {TEXT}; }}
-QTreeView, QTableView {{ background: {BG}; alternate-background-color: {BG_ALT}; border: 1px solid {BORDER};
-               border-radius: 6px; selection-background-color: {SELECTED_ROW}; selection-color: {TEXT}; }}
+QTreeView, QTableView, QListView {{ background: {LIST_BG}; alternate-background-color: {ROW_ALT};
+                border: 1px solid {BORDER}; border-radius: 6px;
+                selection-background-color: {SELECTED_ROW}; selection-color: {TEXT}; }}
 QTreeView::item {{ padding: 2px 0; }}
 QHeaderView::section {{ background: {PANEL}; color: {TEXT}; border: none; border-right: 1px solid {BORDER};
                padding: 5px 6px; font-weight: bold; }}
@@ -68,7 +76,7 @@ QCheckBox::indicator {{ width: 14px; height: 14px; border: 1px solid #6b6f75; bo
 QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
 QStatusBar {{ background: {PANEL}; }}
-QFrame#card {{ background: {PANEL}; border-radius: 8px; }}
+QFrame#card {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px; }}
 QScrollArea {{ border: none; }}
 """
 
@@ -78,8 +86,8 @@ def apply_theme(app: QApplication) -> None:
     pal = QPalette()
     pal.setColor(QPalette.Window, QColor(BG))
     pal.setColor(QPalette.WindowText, QColor(TEXT))
-    pal.setColor(QPalette.Base, QColor(BG))
-    pal.setColor(QPalette.AlternateBase, QColor(BG_ALT))
+    pal.setColor(QPalette.Base, QColor(LIST_BG))
+    pal.setColor(QPalette.AlternateBase, QColor(ROW_ALT))
     pal.setColor(QPalette.ToolTipBase, QColor("#2b2b2b"))
     pal.setColor(QPalette.ToolTipText, QColor("#f0f0f0"))
     pal.setColor(QPalette.Text, QColor(TEXT))
