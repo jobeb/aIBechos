@@ -1,4 +1,4 @@
-from gui.app import _dedupe_missing_ep_rows
+from core.missing_ep_rows import dedupe_rows as _dedupe_missing_ep_rows
 
 
 def _row(tmdb_id, name="Dragon Ball Daima"):

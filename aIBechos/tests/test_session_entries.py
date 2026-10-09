@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from gui.app import _dedupe_entries, _entries_from_dicts, FileEntry
+from core.file_entry import _dedupe_entries, _entries_from_dicts, FileEntry
 
 WIN = sys.platform.startswith("win")
 

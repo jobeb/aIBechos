@@ -7,15 +7,14 @@ pero ANTES de llegar a _drop_entry_row(), así que "quitar de la lista"
 borraba el archivo del disco sin quitar la fila de la lista -- la fila se
 quedaba señalando a un archivo que ya no existía.
 
-App no se puede instanciar sin tkinter, así que la comprobación es estática:
+La comprobación es estática:
 cualquier argumento color de _set_status() que sea un identificador en
 mayúsculas debe existir como constante a nivel de módulo.
 """
 
 import ast
-from pathlib import Path
 
-APP_SOURCE = Path(__file__).resolve().parent.parent / "gui" / "app.py"
+from app_source import APP_FILES  # mixins de core/ + gui_qt/
 
 
 def _module_names(tree) -> set:
@@ -53,7 +52,9 @@ def _set_status_color_args(tree) -> list:
 
 
 def test_los_colores_de_set_status_existen():
-    tree = ast.parse(APP_SOURCE.read_text(encoding="utf-8"))
-    defined = _module_names(tree)
-    for name in sorted(set(_set_status_color_args(tree))):
-        assert name in defined, f"Color indefinido pasado a _set_status(): {name}"
+    # Módulo a módulo: cada uno debe definir/importar los colores que usa.
+    for path in APP_FILES:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        defined = _module_names(tree)
+        for name in sorted(set(_set_status_color_args(tree))):
+            assert name in defined, f"Color indefinido pasado a _set_status() en {path.name}: {name}"

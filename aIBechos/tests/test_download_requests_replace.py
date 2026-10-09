@@ -7,7 +7,7 @@ import time
 from types import SimpleNamespace
 
 import core.download_requests as dr
-from gui.app import App
+from core.app_download_requests import DownloadRequestsMixin as App
 
 
 def _fake_app():

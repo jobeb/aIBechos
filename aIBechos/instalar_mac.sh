@@ -18,8 +18,8 @@ echo "Instalando dependencias..."
 python3 -m pip install --upgrade pip
 # requirements.txt es la única fuente de verdad (la usan también los
 # instaladores de Windows) — instalar los paquetes sueltos a mano aquí
-# hacía que este script se desincronizara y dejara de instalar keyring y
-# tkinterdnd2, con lo que la app no llegaba ni a arrancar.
+# hacía que este script se desincronizara y dejara de instalar keyring,
+# con lo que la app no llegaba ni a arrancar.
 python3 -m pip install -r "$SCRIPT_DIR/requirements.txt"
 
 echo

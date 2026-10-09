@@ -38,7 +38,11 @@ def acquire() -> bool:
             # CreateMutexW: si ya existe, GetLastError() == ERROR_ALREADY_EXISTS (183)
             _mutex_handle = kernel32.CreateMutexW(None, 0, "aIBechosSingletonMutex")
             if _mutex_handle and ctypes.get_last_error() == 183:
-                # Otra instancia ya tiene el mutex
+                # Otra instancia ya tiene el mutex. Soltar NUESTRO handle:
+                # si no, mantendría vivo el mutex aunque la otra instancia
+                # cierre, y un reintento (main.py --switched) fallaría siempre.
+                kernel32.CloseHandle(_mutex_handle)
+                _mutex_handle = None
                 return False
         except Exception:
             pass

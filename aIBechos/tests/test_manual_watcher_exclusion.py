@@ -4,7 +4,7 @@ sin esto las dos subidas abrían el mismo archivo a la vez y una fallaba
 al desaparecer el archivo bajo sus pies ("No se pudo abrir", "Archivo
 local no encontrado"). Típico con adelgazados en Incoming (= vigilada).
 
-Solo se prueba App._auto_is_processing con dobles mínimos (sin
+Solo se prueba _auto_is_processing (core/app_files_core.py) con dobles mínimos (sin
 construir la GUI): la decisión de omitir vive ahí; _upload_entry_with
 la usa tal cual al empezar cada archivo.
 """
@@ -17,9 +17,9 @@ import pytest
 
 import core.auto_watcher as autowatcher_mod
 import core.slim_pending as slim_pending_mod
-import gui.app as appmod
 from core.path_key import canon_path
-from gui.app import App, _file_status_text
+from core.app_files_core import FilesCoreMixin as App
+from core.file_entry import _file_status_text
 
 
 def _stub(in_progress=None, running=True):
@@ -58,55 +58,6 @@ def test_ruta_vacia_no_bloquea():
     assert App._auto_is_processing(app, None) is False
 
 
-# ---- entrega crítica de callbacks (filas que si no quedan desincronizadas)
-
-
-def _clock(monkeypatch):
-    state = {"t": 1000.0}
-
-    def fake_monotonic():
-        return state["t"]
-
-    def fake_sleep(s):
-        state["t"] += s
-
-    import time as _time_mod
-    monkeypatch.setattr(_time_mod, "monotonic", fake_monotonic)
-    monkeypatch.setattr(_time_mod, "sleep", fake_sleep)
-    return state
-
-
-def test_critical_retries_until_main_thread_responds(monkeypatch):
-    _clock(monkeypatch)
-    calls = {"n": 0}
-    done = []
-
-    def fake_after(ms, func):
-        calls["n"] += 1
-        if calls["n"] < 4:
-            raise RuntimeError("main thread is not in main loop")
-        done.append(True)
-        func()
-
-    stub = SimpleNamespace(after=fake_after)
-    assert App._after_from_worker(stub, lambda: None, critical=True) is True
-    assert done == [True]
-    assert calls["n"] == 4
-
-
-def test_noncritical_gives_up_after_timeout(monkeypatch):
-    _clock(monkeypatch)
-    calls = {"n": 0}
-
-    def fake_after(ms, func):
-        calls["n"] += 1
-        raise RuntimeError("main thread is not in main loop")
-
-    stub = SimpleNamespace(after=fake_after)
-    assert App._after_from_worker(stub, lambda: None, timeout_s=0.2) is False
-    assert calls["n"] > 1  # reintentó antes de rendirse
-
-
 # ---- etiqueta Adelgazando (solo muestra; el estado interno no cambia)
 
 
@@ -134,7 +85,12 @@ def _plain(name):
     """La función pelada tras un @staticmethod de App (App.X da la
     función, pero asignarla como atributo de clase la volvería a enlazar
     y le pasaría el stub como primer argumento)."""
-    return App.__dict__[name].__func__
+    # Recorre la jerarquía: parte de la lógica de App vive ahora en mixins
+    # de core/ (ver core/app_files_core.py).
+    for klass in App.__mro__:
+        if name in klass.__dict__:
+            return klass.__dict__[name].__func__
+    raise KeyError(name)
 
 
 class _GuiStub:
@@ -231,9 +187,8 @@ def test_en_cola_manual_es_protegido_y_transitorio(tmp_path, monkeypatch):
 
 
 def test_restore_or_delete_entry_nunca_restaura_transitorio():
-    from gui.app import App as _App
     db = {"k": {"status": "en_cola_manual", "new_name": "", "ts": 0}}
-    _App._restore_or_delete_entry(db, "k")
+    App._restore_or_delete_entry(db, "k")
     assert db == {}
 
 

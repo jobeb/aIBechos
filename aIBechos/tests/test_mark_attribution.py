@@ -1,15 +1,14 @@
 """Guarda de regresión: los tooltips de ★/🔒/⚡ muestran quién/cuándo.
 
-App no se puede instanciar sin tkinter, así que la comprobación es
-estática sobre gui/app.py (mismo patrón que test_gui_status_colors.py y
+La comprobación es
+estática sobre el código de la app (mismo patrón que test_gui_status_colors.py y
 test_upload_skip_all.py): los toggles persisten la atribución y los
 tooltips la leen.
 """
 
 import ast
-from pathlib import Path
 
-APP_SOURCE = Path(__file__).resolve().parent.parent / "gui" / "app.py"
+from app_source import APP_SOURCE  # mixins de core/ + gui_qt/
 
 
 def _segment(tree: ast.Module, name: str) -> str:
@@ -18,18 +17,18 @@ def _segment(tree: ast.Module, name: str) -> str:
             seg = ast.get_source_segment(APP_SOURCE.read_text(encoding="utf-8"), node)
             assert seg is not None, f"No se pudo extraer el código de {name}"
             return seg
-    raise AssertionError(f"No existe {name} en gui/app.py")
+    raise AssertionError(f"No existe {name} en la app")
 
 
 def test_toggle_favorite_guarda_quien_y_cuando():
-    seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "_toggle_favorite")
-    assert "app_user_name" in seg, "_toggle_favorite no guarda quién (added_by)"
-    assert "_time.time()" in seg, "_toggle_favorite no guarda cuándo (added_at)"
+    seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "toggle_favorite")
+    assert "app_user_name" in seg, "toggle_favorite no guarda quién (added_by)"
+    assert "time.time()" in seg, "toggle_favorite no guarda cuándo (added_at)"
 
 
 def test_toggle_reservation_guarda_cuando():
-    seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "_toggle_reservation")
-    assert "_time.time()" in seg, "_toggle_reservation no guarda cuándo (reserved_at)"
+    seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "toggle_reservation")
+    assert "time.time()" in seg, "toggle_reservation no guarda cuándo (reserved_at)"
 
 
 def test_rayo_guarda_fecha_de_activacion():
@@ -41,20 +40,22 @@ def test_rayo_guarda_fecha_de_activacion():
 
 def test_tooltips_de_marcas_muestran_atribucion():
     src = APP_SOURCE.read_text(encoding="utf-8")
-    # def + Archivos + Episodios + Recomendados + Liberar espacio
-    assert src.count("_favorite_attribution(") >= 5, \
-        "Algún tooltip de ★ no muestra quién/cuándo"
-    assert src.count("_reservation_attribution(") >= 5, \
-        "Algún tooltip de 🔒 no muestra quién/cuándo"
-    seg = _segment(ast.parse(src), "_auto_btn_tooltip")
+    tree = ast.parse(src)
+    assert "added_by" in _segment(tree, "favorite_attribution"), "El tooltip de ★ no muestra quién/cuándo"
+    assert "reserved_at" in _segment(tree, "reservation_attribution"), "El tooltip de 🔒 no muestra cuándo"
+    # def + tooltip general (Archivos, Episodios, Recomendado) + Liberar espacio.
+    assert src.count("favorite_attribution(") >= 3, "Algún ★ no muestra quién/cuándo"
+    assert src.count("reservation_attribution(") >= 3, "Algún 🔒 no muestra quién/cuándo"
+    assert src.count("favorite_tooltip(") >= 4, "Algún ★ de Archivos/Episodios/Recomendado sin quién/cuándo"
+    assert src.count("reservation_tooltip(") >= 4, "Algún 🔒 de Archivos/Episodios/Recomendado sin quién/cuándo"
+    seg = _segment(tree, "_auto_btn_tooltip")
     assert "Activo desde" in seg, "El tooltip del rayo no muestra desde cuándo"
     assert "Reservado el:" in src, "La ficha de Protegidos no muestra la fecha"
 
 
 def test_solo_el_dueno_puede_soltar_reserva():
-    seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "_toggle_reservation")
-    assert "solo esa persona puede liberarlo" in seg, \
-        "_toggle_reservation ya no restringe liberar al dueño"
+    seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "toggle_reservation")
+    assert "solo esa persona puede liberarlo" in seg,         "toggle_reservation ya no restringe liberar al dueño"
 
 
 def test_rayo_compartido_tiene_sync_y_push():
@@ -64,14 +65,16 @@ def test_rayo_compartido_tiene_sync_y_push():
     for name in ("_sync_auto_series_from_ftp", "_push_auto_series_to_ftp",
                  "_auto_series_remote_path", "_transfer_auto_owners",
                  "_remove_all_auto_owners"):
-        assert name in names, f"Falta {name} en gui/app.py"
+        assert name in names, f"Falta {name} en la app"
 
 
 def test_rayo_avisa_si_otro_equipo_lo_tiene():
     seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")),
                    "_toggle_missing_ep_auto_complete")
     assert "other_owners" in seg, "El toggle del rayo no mira dueños de otros equipos"
-    assert "_ConfirmDialog" in seg, "El toggle del rayo no pide confirmación"
+    # La lógica vive en core/app_auto_complete.py y pide el diálogo a la
+    # interfaz con la fábrica _make_confirm_dialog (Tk: _ConfirmDialog).
+    assert "_make_confirm_dialog" in seg or "_ConfirmDialog" in seg,         "El toggle del rayo no pide confirmación"
     assert "_push_auto_series_to_ftp" in seg, "El toggle del rayo no publica el cambio"
 
 

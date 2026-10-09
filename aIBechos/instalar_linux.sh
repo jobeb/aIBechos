@@ -15,18 +15,6 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-# tkinter no se instala con pip -- en muchas distros (sobre todo
-# instalaciones mínimas de Debian/Ubuntu) no viene con python3 por
-# defecto, y sin él la app ni siquiera arranca.
-if ! python3 -c "import tkinter" &> /dev/null; then
-    echo "ERROR: falta el módulo tkinter de Python."
-    echo "No se instala con pip -- instálalo con el gestor de paquetes de tu distro:"
-    echo "  Debian/Ubuntu: sudo apt install python3-tk"
-    echo "  Fedora:        sudo dnf install python3-tkinter"
-    echo "  Arch:          sudo pacman -S tk"
-    exit 1
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Instalando dependencias..."
@@ -34,10 +22,20 @@ python3 -m pip install --upgrade pip
 # requirements.txt es la única fuente de verdad (la usan también los
 # instaladores de Windows y macOS) — instalar los paquetes sueltos a mano
 # aquí hacía que este script se desincronizara y dejara de instalar
-# keyring y tkinterdnd2, con lo que la app no llegaba ni a arrancar.
+# keyring, con lo que la app no llegaba ni a arrancar.
 python3 -m pip install -r "$SCRIPT_DIR/requirements.txt"
 
 echo
+# La interfaz (PySide6/Qt) trae sus propias librerías, pero en X11 su
+# plugin "xcb" necesita libxcb-cursor del sistema (Qt 6.5+); sin ella la
+# app sale con "could not load the Qt platform plugin xcb".
+if command -v ldconfig &> /dev/null && ! ldconfig -p 2>/dev/null | grep -q libxcb-cursor; then
+    echo "AVISO: parece que falta libxcb-cursor (la necesita la interfaz en X11):"
+    echo "  Debian/Ubuntu: sudo apt install libxcb-cursor0"
+    echo "  Fedora:        sudo dnf install xcb-util-cursor"
+    echo "  Arch:          sudo pacman -S xcb-util-cursor"
+fi
+
 echo "============================================"
 echo "  Instalación completada!"
 echo "  Ejecuta: python3 main.py"

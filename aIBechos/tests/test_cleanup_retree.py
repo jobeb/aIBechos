@@ -1,9 +1,9 @@
 """La expansión de una serie en Liberar espacio debe ver los capítulos
 tras pulsar ↻, venga el árbol con claves absolutas o relativas (LIST -R
 devuelve "./x" en algunos servidores y eso nunca casa por prefijo con
-ftp_path: ver gui/app.py::_store_cleanup_retree)."""
+ftp_path: ver core/app_cleanup_core.py::_store_cleanup_retree)."""
 
-from gui.app import _store_cleanup_retree
+from core.app_cleanup_core import _store_cleanup_retree
 
 
 def test_claves_absolutas_pueblan_arbol_y_cache():

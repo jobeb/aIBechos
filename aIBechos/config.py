@@ -73,7 +73,7 @@ DEFAULTS = {
     "color_theme": "blue",
     # Estado de la ventana principal al cerrar (se restaura al arrancar):
     # "window_geometry" es "WxH+X+Y" y "window_maximized" indica si estaba
-    # maximizada -- ver _save_window_state/_apply_window_state en gui/app.py.
+    # maximizada -- ver _save_window_state/_apply_window_state en gui_qt/main_window.py.
     "window_geometry": "",
     "window_maximized": False,
     "last_dir": "",

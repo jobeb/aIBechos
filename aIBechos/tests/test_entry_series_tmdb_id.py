@@ -1,18 +1,11 @@
 """¿En qué filas de Archivos aparece el rayo (⚡) de autocompletado?
 
 El autocompletado busca capítulos que falten, así que solo tiene sentido en
-series ya identificadas. Estas comprobaciones son de gui/app.py, que necesita
-customtkinter instalado -- se saltan solas donde no lo haya (el CI, a
-propósito, no instala las dependencias de interfaz; ver
-.github/workflows/tests.yml).
+series ya identificadas (core/app_files_core.py::_entry_series_tmdb_id).
 """
 
-import pytest
-
-pytest.importorskip("customtkinter")
-
 from core.api_client import MediaInfo
-from gui.app import App
+from core.app_files_core import FilesCoreMixin as App
 
 
 class _Entrada:

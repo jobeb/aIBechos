@@ -3,15 +3,13 @@
 Bug real: al subir a mano varios archivos que ya existen en el servidor,
 cada worker en paralelo abría SU diálogo de "Archivo ya existe" — el
 diálogo solo ofrecía "Sobrescribir todos" para el sí, pero para el no
-había que contestar "Omitir" un archivo tras otro. App no se puede
-instanciar sin tkinter, así que la comprobación es estática sobre
-gui/app.py (mismo patrón que test_gui_status_colors.py).
+había que contestar "Omitir" un archivo tras otro. La comprobación es
+estática sobre el código de la app (mismo patrón que test_gui_status_colors.py).
 """
 
 import ast
-from pathlib import Path
 
-APP_SOURCE = Path(__file__).resolve().parent.parent / "gui" / "app.py"
+from app_source import APP_SOURCE  # mixins de core/ + gui_qt/
 
 
 def _segment(tree: ast.Module, name: str) -> str:
@@ -20,11 +18,11 @@ def _segment(tree: ast.Module, name: str) -> str:
             seg = ast.get_source_segment(APP_SOURCE.read_text(encoding="utf-8"), node)
             assert seg is not None, f"No se pudo extraer el código de {name}"
             return seg
-    raise AssertionError(f"No existe {name} en gui/app.py")
+    raise AssertionError(f"No existe {name} en la app")
 
 
 def test_dialogo_ofrece_omitir_todos():
-    seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "_OverwriteDialog")
+    seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "OverwriteDialog")
     assert "Omitir todos" in seg, "El diálogo no ofrece el botón 'Omitir todos'"
     assert '"skip_all"' in seg or "'skip_all'" in seg, \
         "El diálogo no devuelve el resultado 'skip_all'"
@@ -46,4 +44,4 @@ def test_skip_all_omite_sin_preguntar():
 
 def test_sin_typo_sobreescribir():
     assert "Sobreescribir" not in APP_SOURCE.read_text(encoding="utf-8"), \
-        "Typo 'Sobreescribir' en gui/app.py (es 'Sobrescribir')"
+        "Typo 'Sobreescribir' en la app (es 'Sobrescribir')"

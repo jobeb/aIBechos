@@ -22,3 +22,20 @@ def make_client(protocol: str = "ftp") -> FTPClient:
 
 def default_port(protocol: str) -> int:
     return DEFAULT_PORTS.get(str(protocol or "").strip().lower(), 21)
+
+
+#: Ayuda de "Conexiones por archivo" (solo SFTP) en Ajustes.
+TOOLTIP_CONEXIONES_POR_ARCHIVO = (
+    "El servidor limita cada conexión por separado, así que un archivo solo no "
+    "llega al límite de velocidad por muy alto que esté. Repartirlo entre varias "
+    "lo acelera: medido contra el servidor, 1 conexión da 2 MB/s y 4 dan 6,5.\n"
+    "Es un total: si se suben varios archivos a la vez, se reparte entre ellos."
+)
+
+#: Cómo se llama cada protocolo en la pestaña de conexión. FTPS es FTP con
+#: TLS (mismo protocolo, cifrado); SFTP es SSH y no tiene nada que ver.
+PROTOCOL_LABELS = {
+    "ftp":  "FTP",
+    "ftps": "FTPS (FTP con TLS)",
+    "sftp": "SFTP (SSH)",
+}

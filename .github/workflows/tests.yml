@@ -4,10 +4,11 @@ name: Tests
 # suite asume ese entorno (rutas C:\, WinRAR/UnRAR, insensibilidad a
 # mayúsculas del FS) y porque es la plataforma principal de la app: en
 # ubuntu esos tests fallan por el entorno, no por el código. Instala
-# requirements-dev.txt (= requirements.txt + pytest + pyflakes) porque
-# parte de los tests importa gui/app.py y core/media_server_refresh
-# (customtkinter, plexapi): instalar solo requests/keyring rompía la
-# recolección con ModuleNotFoundError (visto en CI).
+# requirements-dev.txt (= requirements.txt + pytest + pyflakes + pytest-qt)
+# porque parte de los tests importa la interfaz (PySide6) y
+# core/media_server_refresh (plexapi): instalar solo requests/keyring rompía
+# la recolección con ModuleNotFoundError (visto en CI).
+# QT_QPA_PLATFORM=offscreen: los tests de Qt crean widgets sin pantalla.
 on:
   push:
     branches: [main]
@@ -33,6 +34,8 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Ejecutar tests
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m pytest tests/ -q --tb=short
 
       # pyflakes NO importa el módulo, solo lo parsea -- red de seguridad
@@ -49,7 +52,7 @@ jobs:
       # unused" que aquí son ruido): por eso el `exit 0` explícito final.
       - name: Nombres indefinidos (pyflakes)
         run: |
-          $files = Get-ChildItem -Path gui, core -Filter *.py -File | Select-Object -ExpandProperty FullName
+          $files = Get-ChildItem -Path gui_qt, core -Filter *.py -File -Recurse | Select-Object -ExpandProperty FullName
           $files += Get-ChildItem -Path . -Filter *.py -File | Select-Object -ExpandProperty FullName
           $out = & pyflakes $files 2>&1
           $hits = $out | Select-String -Pattern "undefined name"

@@ -272,3 +272,53 @@ def sort_movie_rows(rows: list, key: str, asc: bool) -> list:
 
 def _reset_cache_for_tests() -> None:
     pass
+
+
+def visible_movie_rows(rows: list, tipo: str = "all", year_sel: str = "1", genre_sel: str = "",
+                       text: str = "", hide_in_server: bool = False, watch_only: bool = False,
+                       hide_asian: bool = False, sort_key=None, sort_asc: bool = True,
+                       now_year: int | None = None) -> list:
+    """Filas de "Recomendado" tras los filtros activos y el orden elegido
+    (antes App._movies_visible_rows). *tipo*: "all"/"movies"/"series";
+    *year_sel*: "N años" o "Todos" (estrenadas en los últimos N años; sin año
+    conocido, pasan); el filtro de plataformas solo aplica a películas."""
+    import re
+    import time
+    if tipo == "movies":
+        rows = [r for r in rows if r.get("media_type") != "tv"]
+    elif tipo == "series":
+        rows = [r for r in rows if r.get("media_type") == "tv"]
+    year_sel = (year_sel or "").strip()
+    if year_sel and year_sel.lower() != "todos":
+        m_year = re.search(r"\d+", year_sel)
+        min_year = None
+        if m_year:
+            try:
+                min_year = (now_year or time.localtime().tm_year) - int(m_year.group())
+            except (TypeError, ValueError):
+                min_year = None
+        if min_year is not None:
+            def _row_year(r):
+                try:
+                    return int(r.get("year") or 0)
+                except (TypeError, ValueError):
+                    return 0
+            rows = [r for r in rows if not _row_year(r) or _row_year(r) >= min_year]
+    if genre_sel not in ("", "Todos", None):
+        rows = apply_genre_filter(rows, genre_sel)
+    rows = filter_by_text(rows, (text or "").strip().lower())
+    if hide_in_server:
+        rows = apply_in_server_filter(rows, True)
+    if watch_only:
+        movies = apply_watch_availability_filter([r for r in rows if r.get("media_type") != "tv"], True)
+        rows = movies + [r for r in rows if r.get("media_type") == "tv"]
+    if hide_asian:
+        rows = apply_origin_filter(rows, True)
+    return sort_movie_rows(rows, sort_key, sort_asc)
+
+
+def genre_options(rows: list) -> list:
+    """Opciones del selector "Género": "Todos", "Anime" si hay Animación, y
+    los géneros presentes en las filas."""
+    genres = sorted({g for r in (rows or []) for g in (r.get("genres") or []) if g})
+    return ["Todos"] + (["Anime"] if "Animación" in genres else []) + genres

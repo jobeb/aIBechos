@@ -112,10 +112,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependencias del sistema (Tk, para PyInstaller)
+      - name: Instalar dependencias del sistema (librerías que carga Qt al analizar PySide6)
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-tk
+          sudo apt-get install -y libegl1 libxkbcommon0 libxcb-cursor0
 
       - name: Instalar dependencias
         run: |

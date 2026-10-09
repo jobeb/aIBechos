@@ -11,8 +11,8 @@ from PyInstaller.utils.hooks import collect_all
 with open(os.path.join(SPECPATH, 'core', 'version.py'), encoding='utf-8') as _vf:
     _app_version = re.search(r'__version__\s*=\s*"([^"]+)"', _vf.read()).group(1)
 
-# Windows quiere .ico; macOS quiere .icns (y Tk en tiempo de ejecución usa
-# el PNG cuadrado en macOS/Linux vía iconphoto — ver gui/app.py:_apply_icon).
+# Windows quiere .ico; macOS quiere .icns (y la ventana Qt en tiempo de
+# ejecución usa el PNG cuadrado en macOS/Linux — ver gui_qt/main_window.py).
 # Se incluyen los tres como datos para que estén disponibles pese a con qué
 # plataforma se construya, y el .spec elige el que usa PyInstaller para el
 # icono del propio ejecutable/bundle según la plataforma de build.
@@ -29,30 +29,18 @@ binaries = []
 # una función no lo ve el analizador de PyInstaller, así que en el ejecutable
 # faltaría y SFTP fallaría solo en la versión instalada, no ejecutando el
 # código fuente.
-hiddenimports = ['PIL._tkinter_finder', 'paramiko']
+hiddenimports = ['paramiko']
 
-tmp_ret = collect_all('customtkinter')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-
-tmp_ret = collect_all('PIL')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-
-try:
-    tmp_ret = collect_all('tkinterdnd2')
-    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-except Exception:
-    pass
-
-try:
-    tmp_ret = collect_all('pystray')
-    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-except Exception:
-    pass
+# PySide6 no necesita nada aquí: el hook que trae PyInstaller (vía
+# pyinstaller-hooks-contrib) ya empaqueta los módulos Qt importados y sus
+# plugins (platforms, styles, imageformats). Si el .exe abre y se cierra sin
+# ventana, lo primero es comprobar que dist/aIBechos/_internal/PySide6/plugins/
+# platforms/ contiene qwindows.dll (Windows) / libqcocoa.dylib (macOS).
 
 # py7zr/rarfile son Python puro -- no empaquetan ningún binario externo
 # (rarfile solo shell-a "unrar"/"unar"/"bsdtar" en tiempo de ejecución SI ya
-# está instalado en el sistema; ver core/archive_extract.py). Mismo patrón
-# best-effort que tkinterdnd2/pystray arriba.
+# está instalado en el sistema; ver core/archive_extract.py). Best-effort:
+# si no están instalados, la extracción de ese formato falla con un mensaje.
 try:
     tmp_ret = collect_all('py7zr')
     datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
@@ -75,7 +63,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # La interfaz es Qt: nada de Tk (la versión anterior, ya eliminada).
+    excludes=['tkinter', '_tkinter', 'customtkinter', 'tkinterdnd2', 'pystray'],
     noarchive=False,
     optimize=0,
 )
@@ -85,8 +74,8 @@ _is_macos = sys.platform == 'darwin'
 _is_linux = sys.platform.startswith('linux')
 # PyInstaller solo usa este icono para el propio ejecutable/bundle en
 # Windows y macOS -- en Linux no hay convención de "icono de ejecutable"
-# (el icono en tiempo de ejecución ya lo pone Tk vía iconphoto, ver
-# gui/app.py:_apply_icon, y el que ve el usuario en el menú/launcher lo da
+# (el icono en tiempo de ejecución ya lo pone la ventana Qt, ver
+# gui_qt/main_window.py, y el que ve el usuario en el menú/launcher lo da
 # el .desktop, no el binario), así que aquí no tiene sentido pasarle uno.
 if _is_macos:
     _icon = 'iconoPrincipal.icns'
@@ -99,8 +88,7 @@ else:
 # la descompresión en cada carga de DLL, y los binarios empaquetados con UPX
 # disparan escaneo heurístico más agresivo de Windows Defender en cada
 # ejecutable "nuevo" (cada rebuild produce hashes distintos) -- eso es varios
-# segundos de arranque que no aparecen en la instrumentación "Arranque:" de
-# main.py/gui/app.py porque ocurren antes de que Python ejecute su primera
+# segundos de arranque que ocurren antes de que Python ejecute su primera
 # línea.
 
 exe = EXE(

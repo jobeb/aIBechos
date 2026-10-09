@@ -24,7 +24,7 @@ write(f"Ruta del script: {__file__}")
 write("")
 
 # Test imports
-for mod in ["customtkinter", "PIL", "PIL.Image", "requests", "tkinter"]:
+for mod in ["PySide6", "PySide6.QtWidgets", "requests", "keyring", "paramiko"]:
     try:
         __import__(mod)
         write(f"OK: {mod}")
@@ -36,10 +36,8 @@ write("Intentando lanzar la app...")
 
 try:
     sys.path.insert(0, str(Path(__file__).parent))
-    from gui.app import App
-    write("App importada OK")
-    app = App()
-    write("App creada OK — iniciando mainloop")
-    app.mainloop()
+    from gui_qt.app import run
+    write("Interfaz importada OK — arrancando")
+    run()   # no vuelve: al cerrar termina el proceso (ver gui_qt/app.py)
 except Exception as e:
     write(f"ERROR lanzando app:\n{traceback.format_exc()}")

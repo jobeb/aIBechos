@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**aIBechos** is a desktop GUI app for renaming and uploading media files (TV series, movies, anime, and books/comics). It queries TMDB for series/movie metadata, OpenLibrary (primary) with Google Books as automatic backup for ebooks, and ComicVine for comics/manga, generates clean filenames from configurable templates, and uploads via FTP/FTPS. Written in Python with customtkinter. Runs on Windows, macOS, and Linux (see "Platform notes" below).
+**aIBechos** is a desktop GUI app for renaming and uploading media files (TV series, movies, anime, and books/comics). It queries TMDB for series/movie metadata, OpenLibrary (primary) with Google Books as automatic backup for ebooks, and ComicVine for comics/manga, generates clean filenames from configurable templates, and uploads via FTP/FTPS. Written in Python with PySide6 (Qt). Runs on Windows, macOS, and Linux (see "Platform notes" below).
 
 ## Running the app
 
@@ -13,13 +13,14 @@ All commands are run from the `aIBechos/` subdirectory:
 ```bash
 cd aIBechos
 python main.py               # launch normally (Windows: `python`, macOS/Linux: usually `python3`)
+python main.py --minimized   # start hidden in the tray (what the autostart entry uses)
 python diagnostico.py        # launch with diagnostics written to diagnostico.log
 python crear_acceso_directo.py  # create a Desktop shortcut (Windows only)
 ```
 
-Install dependencies with `pip install -r requirements.txt` (all installer scripts — `instalar.bat`/`instalar.ps1` on Windows, `instalar_mac.sh` on macOS — install from this same file; don't hand-list packages in those scripts, it drifts and silently drops deps like `keyring`, which is a hard, unguarded import in `config.py` — missing it means the app won't even open).
+Install dependencies with `pip install -r requirements.txt` (all installer scripts — `instalar.bat`/`instalar.ps1` on Windows, `instalar_mac.sh` on macOS, `instalar_linux.sh` on Linux — install from this same file; don't hand-list packages in those scripts, it drifts and silently drops deps like `keyring`, which is a hard, unguarded import in `config.py` — missing it means the app won't even open).
 
-Unit tests cover the pure `core/` logic (no tkinter) in `aIBechos/tests/`:
+Tests in `aIBechos/tests/` cover the `core/` logic and the Qt models/pages (pytest-qt; set `QT_QPA_PLATFORM=offscreen` on a headless machine, as CI does):
 
 ```bash
 cd aIBechos
@@ -38,13 +39,13 @@ pyinstaller aIBechos.spec
 # macOS   → dist/aIBechos.app (BUNDLE block in the spec, only added when built on macOS)
 ```
 
-The spec bundles `customtkinter`, `PIL`, `tkinterdnd2`, `pystray`, `py7zr`, and `rarfile` assets, and picks the icon by platform (`LogoaIBechos.ico` on Windows, `iconoPrincipal.icns` on macOS — the icns must be present in `aIBechos/`; regenerate it from the PNG with `Image.open(...).save('iconoPrincipal.icns')` if the source art changes, no macOS-only tool needed). `py7zr`/`rarfile` are pure-Python (no binary bundled) — `.rar` extraction still needs `unrar`/`unar`/`bsdtar` installed on the end user's system; if absent, extraction fails with a clear message instead of crashing.
+PySide6 needs nothing in the spec: PyInstaller's bundled hook collects the imported Qt modules and their plugins (if the exe opens and closes with no window, check `dist/aIBechos/_internal/PySide6/plugins/platforms/` has `qwindows.dll`/`libqcocoa.dylib`). The spec excludes Tk explicitly, bundles `py7zr`/`rarfile`, and picks the icon by platform (`LogoaIBechos.ico` on Windows, `iconoPrincipal.icns` on macOS — the icns must be present in `aIBechos/`; regenerate it from the PNG with Pillow, `Image.open(...).save('iconoPrincipal.icns')`, if the source art changes — Pillow is a dev-time tool only, not a runtime dependency). On Linux the Qt `xcb` plugin needs the system's `libxcb-cursor0` (the installer warns; the CI build installs `libegl1 libxkbcommon0 libxcb-cursor0`). `py7zr`/`rarfile` are pure-Python (no binary bundled) — `.rar` extraction still needs `unrar`/`unar`/`bsdtar` installed on the end user's system; if absent, extraction fails with a clear message instead of crashing.
 
 ## Architecture
 
 ```
 aIBechos/
-├── main.py          # entry point — creates and starts App
+├── main.py          # entry point — single-instance lock, then gui_qt.app.run()
 ├── config.py        # Config class, persists to %APPDATA%\aIBechos\config.json
 ├── core/
 │   ├── api_client.py     # TMDBClient, MediaInfo dataclass, detect_episode()
@@ -61,9 +62,34 @@ aIBechos/
 │   ├── sftp_client.py    # SFTPClient — same public API over SSH (subclasses FTPClient)
 │   ├── transfer.py       # make_client() — the single place that picks FTP vs SFTP
 │   ├── auto_watcher.py   # AutoWatcher — recursive folder polling thread; identifies video AND books/comics, optionally auto-extracts archives (see "auto_extract_archives" setting)
-│   └── download_requests.py # download-request queue shared with the mobile web (solicitudes-web/): pure ops (new/claim/release/mark/merge/prune), never touches network; the desktop worker lives in App (_start_download_requests_worker)
-└── gui/
-    └── app.py          # entire UI in one App class (~2200 lines)
+│   ├── missing_ep_rows.py   # "Episodios que faltan": rows from cache, filters (ignored/AI/dub/complete), sort, texts — pure (no Qt)
+│   ├── missing_ep_scan.py   # MissingEpScanMixin — the Jellyfin/Plex × TMDB × FTP scan, single-series rescan and Spanish-dub source checks; inherited by QtAppCore and the Episodios tab's scan service
+│   ├── app_files_core.py    # FilesCoreMixin — ALL non-UI logic of the Archivos tab (add/extract, identify, rename, upload queue, history, auto_processed DB, AutoWatcher events, session) inherited by QtAppCore
+│   ├── app_shared_sync.py   # SharedSyncMixin — shared-folder paths and upload/category/slim/activity stats pushes
+│   ├── file_entry.py        # FileEntry + session (de)serialization + status labels
+│   ├── app_auto_complete.py # AutoCompleteMixin — ⚡ auto-complete of series (toggle with shared ownership, 30-min pass, retries/backoff, unstuck, force search)
+│   ├── app_download_requests.py # DownloadRequestsMixin — the web download-requests worker
+│   ├── app_downloads_core.py / amule_search_session.py # Descargas helpers (EC connection, ETA, alternatives) and the manual aMule search session (one EC connection shared by search + downloads)
+│   ├── app_movies_core.py   # MoviesCoreMixin — Recomendado scan, cache, FTP sharing, dismiss
+│   ├── app_history_core.py  # HistoryCoreMixin — upload/deletion history, stats and reservations syncs, category sizes
+│   ├── app_cleanup_core.py  # CleanupCoreMixin — Liberar espacio: scan, per-episode files, slim (lighter copy), delete workers, delete-series flow
+│   ├── app_watch_sync_core.py # WatchSyncCoreMixin — Plex↔Jellyfin watched-state sync: collect/apply, history, scheduled run
+│   ├── app_settings_core.py # SettingsCoreMixin — _commit_settings (save + apply live), server-config sync/publish/discard, client export/import, autostart per platform, one-time rename migrations, update check
+│   ├── fmt.py / status_colors.py # size/speed formatting and _set_status colors usable from core/
+│   ├── amule_download.py    # auto_download() (search aMule + best_result + launch) and typical_size_for_series(); EC_LOCK
+│   └── download_requests.py # download-request queue shared with the mobile web (solicitudes-web/): pure ops (new/claim/release/mark/merge/prune), never touches network; the desktop worker is core/app_download_requests.py
+└── gui_qt/             # the UI (PySide6) — see "UI (gui_qt/)"
+    ├── app.py / main_window.py   # QApplication bootstrap, tabs, status bar, tray
+    ├── bridge.py       # ui(fn): run fn on the GUI thread from any thread (Qt's after(0, ...))
+    ├── context.py      # AppContext: config, TMDB, favorites/reservations + FTP sync, links, shared-file I/O
+    ├── core_host.py    # QtAppCore(all core/app_* mixins): the "App without UI" — state, after(), UI hooks forwarded to the tabs
+    ├── actions.py      # Action + ActionsDelegate: painted per-row buttons shared by all Qt tables
+    ├── theme.py / dialogs.py
+    ├── files/          # tab.py, model.py (table + progress delegate), detail_panel.py, dialogs.py
+    ├── downloads/ movies/ # Descargas (aMule) and Recomendado tabs
+    ├── history/ cleanup/ protected/ stats/ watch_sync/ # one tab.py each
+    ├── settings/       # tab.py (Cliente/Servidor, lazy sub-tabs, save, unsaved-changes prompt), client_pages.py, server_pages.py, widgets.py (Page/Card form helpers), dialogs.py
+    └── missing_episodes/  # model.py (lazy tree model), tab.py, side_panel.py, scan_service.py
 ```
 
 ### Data flow
@@ -77,7 +103,7 @@ aIBechos/
 
 ### Multi-select and bulk assign (Archivos tab)
 
-The file table supports Ctrl+click / Shift+click multi-select (Explorer-style), independent of the single "anchor" entry that drives the search/detail panel (`self._selected_entry`; additional entries live in `self._multi_selected`), plus a "Seleccionar todos"/"Deseleccionar todos" toggle button that marks every file across all pages at once (pagination only limits what's rendered, not what can be selected). The "Asignar" button becomes "Asignar a la selección (N)" when more than one file is selected, applying the same chosen search result to every selected file while each keeps its own already-detected episode/issue number (`core/book_identify.py`'s per-entry `det` parameter already supported this; the bulk path just calls it once per selected file instead of once for the anchor). Mismatched types (e.g. a video mixed into a comic selection) are skipped with a warning, not force-applied.
+The file table supports Ctrl+click / Shift+click multi-select (Explorer-style), independent of the single "anchor" entry that drives the search/detail panel (`self._selected_entry`; additional entries live in `self._multi_selected`), plus a "Seleccionar todos"/"Deseleccionar todos" toggle button that marks every file at once. The "Asignar" button becomes "Asignar a la selección (N)" when more than one file is selected, applying the same chosen search result to every selected file while each keeps its own already-detected episode/issue number (`core/book_identify.py`'s per-entry `det` parameter already supported this; the bulk path just calls it once per selected file instead of once for the anchor). Mismatched types (e.g. a video mixed into a comic selection) are skipped with a warning, not force-applied.
 
 Adding a whole folder (`+ Carpeta`) with 2+ book/comic files prompts "¿misma serie o colección?" before searching anything — answering yes preselects all of them (same mechanism as "Seleccionar todos") and skips the automatic per-file search entirely, so a single manual search + "Asignar a la selección" identifies the whole batch instead of firing one API call per file (real issue: 266 individually-identified chapters exhausted ComicVine's quota mid-batch). Answering no (or closing the dialog) falls back to identifying every file individually, same as `+ Archivos`/drag-drop, which never show this prompt.
 
@@ -93,11 +119,22 @@ FTP path templates support: `{serie}`, `{temporada}`, `{temporada:02d}`, `{año}
 
 ### Threading rules
 
-tkinter is not thread-safe. All GUI mutations from worker threads must be scheduled via `self.after(0, lambda: ...)`. Worker threads are used for: TMDB searches (`ThreadPoolExecutor`, max 5), FTP uploads (`ThreadPoolExecutor`, max 5 parallel connections), AutoWatcher polling, poster image loading.
+Qt is not thread-safe. All GUI mutations from worker threads must go through `gui_qt.bridge.ui(lambda: ...)` (a queued signal); logic in the `core/` mixins uses `self.after(0, ...)`, which `QtAppCore` implements on top of the same bridge. Worker threads are used for: TMDB searches (`ThreadPoolExecutor`, max 5), FTP uploads (`ThreadPoolExecutor`, max 5 parallel connections), AutoWatcher polling, poster image loading.
+
+### UI (gui_qt/)
+
+The UI used to be customtkinter (`gui/app.py`, one ~28k-line `App` class). It hung and drew stray rectangles outside the window with long lists: every CTk widget is a native Windows HWND, and expanding an anime season with hundreds of episodes hit the ~10k USER-objects-per-process limit. It was migrated tab by tab to PySide6 model/view (`QTreeView`/`QTableView` paint only visible rows, one native window total) and then deleted. Comments in `core/` that say "ver gui/app.py::X" are historical pointers: that logic now lives in the `core/app_*.py` mixins (grep the method name).
+
+- **Never build rows out of widgets.** Lists go in a model (`QAbstractItemModel`/`QAbstractTableModel`); per-row buttons are painted by `gui_qt/actions.py::ActionsDelegate` (`ActionsRole` returns `[Action(...)]`, clicks arrive as `actionTriggered(index, id)`). Tree children are lazy (`canFetchMore`/`fetchMore`, see `missing_episodes/model.py`: One Piece, 1108 episodes, expands in ~0.2 s).
+- **Logic lives in `core/`, never in `gui_qt/`.** Non-UI flows are mixins (`core/app_*.py`, `core/missing_ep_scan.py`) inherited by `QtAppCore` (`gui_qt/core_host.py`). Inside them, UI calls are hooks (`_update_row`, `_refresh_table`, `_ftp_row_set`, `_render_*`...) that `QtAppCore` forwards to the registered tab view (`host.view`, `host.missing_view`, `host.settings_view`...; a `_NullView` until the tab exists, so background logic works without it), and dialogs are factories (`_make_overwrite_dialog(...)`, `_make_confirm_dialog(...)` ...) returning an object with `.result`.
+- `tests/test_mixin_host_contract.py` checks that every `self.x` the mixins read exists on `QtAppCore` — a missing state attribute would otherwise crash only at runtime. A new mixin module goes into its `MIXIN_FILES` and into `tests/app_source.py` (the combined source the static tests read: mixins + `gui_qt/`).
+- Settings pages (`gui_qt/settings/`): each `Page` binds config keys to widget getters; `collect()` returns exactly the keys in `tests/test_qt_settings_pages.py::SETTINGS_KEYS` (the same ones the Tk UI saved), and a freshly opened page must not be "dirty". Saving goes through `host._commit_settings(data)`, never `config.set` directly. Links are compared via `_normalized` in `settings/tab.py` (stored links may lack `"background"`). Watch-sync pairing and its schedule save immediately, outside "Guardar".
+- Startup (`MainWindow._startup`): session, stale-mark cleanup, FTP free space (3 s, then every 5 min), shared caches, AutoWatcher restore, ⚡ auto-complete worker, web download-requests worker, watch-sync scheduler, the one-time shared-data/autostart migrations, server-config sync (2.2 s), update check (3.5 s) and the hourly check for a background missing-episodes scan (every 12 h, run through the Episodios tab). Provider lists are applied in `QtAppCore.__init__`. Window size/position persist in `window_geometry` ("WxH+X+Y") / `window_maximized`.
+- Never run the app against the real app data in ad-hoc tests: it restores the AutoWatcher and session. Point `APPDATA` to a temp dir with a pre-made config.json that marks the migrations as done (`_keyring_service_migrated`), and replace `keyring.set_password`/`get_password` with a dict — `Config.set` on secret keys writes the real OS keyring.
 
 ### Config and persistence
 
-- Data dir via `core/appdirs.py:app_data_dir()` — the single source of truth for where app files live, used by `config.py`, `gui/app.py`, and `core/auto_watcher.py` alike (they used to each have their own copy of this logic, and only `config.py`'s distinguished macOS from Linux, so macOS installs ended up with files split across two different folders — don't reintroduce a local copy of this logic, import it):
+- Data dir via `core/appdirs.py:app_data_dir()` — the single source of truth for where app files live, used by `config.py`, the app mixins, and `core/auto_watcher.py` alike (they used to each have their own copy of this logic, and only `config.py`'s distinguished macOS from Linux, so macOS installs ended up with files split across two different folders — don't reintroduce a local copy of this logic, import it):
   - Windows → `%APPDATA%\aIBechos\`
   - macOS → `~/Library/Application Support/aIBechos/`
   - Linux → `~/.config/aIBechos/`
@@ -138,7 +175,7 @@ server answers "This service allows sftp connections only" to everything), which
 is why the output is validated as an actual df before being trusted.
 
 Nothing constructs a client directly — all ~50 call sites go through
-`App._new_ftp_client()` (which reads the setting) or `core/transfer.py::make_client()`.
+`_new_ftp_client()` (on `QtAppCore`/`AppContext`, reads the setting) or `core/transfer.py::make_client()`.
 `AutoWatcher` receives it as its `ftp_factory`. `paramiko` is imported *inside*
 `connect()` so FTP users don't pay for loading `cryptography` at startup, which
 also means it must stay listed in `hiddenimports` in `aIBechos.spec` — a
@@ -163,8 +200,8 @@ Launches minimized to tray when started with `--minimized` argument (used by the
 
 ## Platform notes
 
-- **Tray icon (`pystray`)**: on macOS, `Icon.run()` must be called from the main thread (AppKit constraint, not optional) — `gui/app.py:_minimize_to_tray` branches on `core.appdirs.is_macos()` and calls `Icon.run_detached()` directly instead of spawning a background thread like Windows/Linux do. `run_detached()` on the darwin backend doesn't block; it just marks the icon ready and relies on Tk's own already-running Cocoa event loop (same shared `NSApplication` instance) to actually deliver clicks. If you touch tray code, keep that branch — don't unify it back into a single threaded `.run()` call.
-- **Autostart**: `App._set_autostart` dispatches to `_set_autostart_windows` (Registry `HKCU\...\Run`), `_set_autostart_macos` (`~/Library/LaunchAgents/com.aibechos.app.plist`, loaded with `launchctl load -w`), or `_set_autostart_linux` (`~/.config/autostart/aibechos-autostart.desktop`, the XDG autostart convention). `_migrate_autostart_identity` moves an existing entry off the pre-rename identifiers (`com.arenombrar.app` / `arenombrar-autostart.desktop`) once, and only if the user had autostart on — leaving the old one behind would keep launching an executable that no longer exists.
-- **Desktop notifications**: `App._send_notification` tries pystray's tray notification first, then falls back to a platform-specific OS call — PowerShell balloon on Windows, `osascript -e 'display notification ...'` on macOS, `notify-send` on Linux.
-- **Window/dialog icon**: Tk's `iconbitmap()` only accepts `.ico` and only works on Windows (`aIBechos/LogoaIBechos.ico`); macOS/Linux use `iconphoto()` with a PNG (`aIBechos/IconoSinFondo.png`) instead. See `App.__init__` (loads `self._icon_path` or `self._icon_photo` depending on platform) and `App._apply_icon`.
+- **Tray icon**: `QSystemTrayIcon` (`MainWindow._setup_tray`), same code on all three platforms and on the GUI thread — the old pystray main-thread special case for macOS is gone. `setQuitOnLastWindowClosed(False)` keeps the app alive in the tray; quitting goes through `MainWindow.quit_app` (asks if an upload is running, saves window state, `host.shutdown()`), and `gui_qt/app.py::run` ends with `os._exit` so a hung upload socket can't keep the process (and the single-instance lock) alive.
+- **Autostart**: `_set_autostart` (`core/app_settings_core.py`) dispatches to `_set_autostart_windows` (Registry `HKCU\...\Run`), `_set_autostart_macos` (`~/Library/LaunchAgents/com.aibechos.app.plist`, loaded with `launchctl load -w`), or `_set_autostart_linux` (`~/.config/autostart/aibechos-autostart.desktop`, the XDG autostart convention). `_migrate_autostart_identity` moves an existing entry off the pre-rename identifiers (`com.arenombrar.app` / `arenombrar-autostart.desktop`) once, and only if the user had autostart on — leaving the old one behind would keep launching an executable that no longer exists.
+- **Desktop notifications**: `QtAppCore._send_notification` → `MainWindow.notify`: the tray balloon (`QSystemTrayIcon.showMessage`) when the tray supports messages, otherwise `osascript -e 'display notification ...'` on macOS or `notify-send` on Linux.
+- **Window icon**: `LogoaIBechos.ico` on Windows, `IconoSinFondo.png` elsewhere (`MainWindow`, via `resource_path`, which also resolves PyInstaller's `_MEIPASS`).
 - **"Archivo bloqueado" retry in AutoWatcher**: the substring match in `core/auto_watcher.py` (`_LOCKED_FILE_HINTS`) was originally Windows-only (`WinError 32` text). It now also matches common POSIX phrasing (`EBUSY`, "permission denied"), though this scenario is rare on macOS/Linux since POSIX generally allows renaming open files.
