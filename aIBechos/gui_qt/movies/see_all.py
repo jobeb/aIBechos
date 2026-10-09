@@ -8,7 +8,7 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QHBoxLayout, QLabel,
                                QListView, QPushButton, QVBoxLayout)
 
-from core.recommended_rows import apply_filters, filter_available, normalize_item
+from core.recommended_rows import apply_filters, build_params, filter_available, normalize_item
 from gui_qt import theme
 from gui_qt.bridge import run_in_thread, ui
 from gui_qt.movies.cards import CARD_H, CARD_W, CardDelegate
@@ -81,11 +81,13 @@ class SeeAllDialog(QDialog):
         token_page = self._page + 1
         client, kind, rowdef = self.host.tmdb, self.kind, self.rowdef
         filters = dict(self.filters)
+        query = build_params(rowdef, kind, filters.get("genre_ids") or set(),
+                             filters.get("year_min"))
 
         def worker():
             try:
                 fetched, pages = client.list_endpoint(rowdef["path"], kind, page=token_page,
-                                                      params=rowdef.get("params") or {})
+                                                      params=query)
                 batch = []
                 for r in fetched:
                     key = (r.get("media_type") or kind, r.get("id"))

@@ -24,7 +24,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFrame, 
                                QSplitter, QVBoxLayout, QWidget)
 
 from core.applog import get_logger
-from core.recommended_rows import apply_filters, fetch_row, filter_available, rows_for
+from core.recommended_rows import (apply_filters, build_params, fetch_row, filter_available,
+                                   rows_for)
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNING_COLOR
 from gui_qt import theme
 from gui_qt.bridge import run_in_thread, ui
@@ -97,7 +98,7 @@ class MoviesTab(QWidget):
         self._build_token = 0
         self._dl_state: dict = {}
         self._owned: set = set()
-        self._genre_names: dict = {}   # id -> nombre (movie+tv)
+        self._genre_names: dict = {"movie": {}, "tv": {}}   # por tipo: nombre -> ids
         self._shown_key = None
         self._server_ids_ready = False
         self.delegate = CardDelegate(self)
@@ -202,10 +203,11 @@ class MoviesTab(QWidget):
         self.rows_lay.setSpacing(10)
         self.rows_lay.addStretch(1)
         self.scroll.setWidget(inner)
-        self.empty_lbl = QLabel("Nada que mostrar con los filtros actuales.")
+        self.empty_lbl = QLabel("Nada que mostrar con los filtros actuales.", inner)
         self.empty_lbl.setAlignment(Qt.AlignCenter)
         self.empty_lbl.setStyleSheet(f"color: {theme.PENDING_COLOR}; font-size: 11pt;")
         self.empty_lbl.hide()
+        self.rows_lay.insertWidget(0, self.empty_lbl)
         self._scroll_timer = QTimer(self)
         self._scroll_timer.setSingleShot(True)
         self._scroll_timer.setInterval(200)
@@ -283,7 +285,7 @@ class MoviesTab(QWidget):
             mins = int((time.time() - last_ts) / 60)
             when = "hace un momento" if mins < 1 else f"hace {mins} min" if mins < 60 else f"hace {mins // 60} h"
         n_cards = sum(len([i for i in sec["model"].items if i]) for sec in self._sections)
-        n_visible = sum(1 for sec in self._sections if sec["box"].isVisible())
+        n_visible = sum(1 for sec in self._sections if not sec["box"].isHidden())
         n_total = len(self._sections)
         if n_cards:
             text = f"{n_cards} recomendada(s) en {n_visible} de {n_total} filas"
@@ -300,13 +302,13 @@ class MoviesTab(QWidget):
         por tipo, cacheada en el cliente), no del último escaneo."""
         def worker():
             names = {"Todos"}
-            mapping = {}
+            mapping = {"movie": {}, "tv": {}}
             try:
                 for kind in ("movie", "tv"):
                     for g in self.host.tmdb.get_genres(kind) or []:
                         if g.get("name"):
                             names.add(g["name"])
-                            mapping.setdefault(g["name"], set()).add(g["id"])
+                            mapping[kind].setdefault(g["name"], set()).add(g["id"])
             except Exception:
                 pass
             ui(lambda: self._apply_genres(sorted(names), mapping))
@@ -377,17 +379,17 @@ class MoviesTab(QWidget):
             return None
         return date.today().year - int(m.group(1))
 
-    def _genre_ids(self):
+    def _genre_ids(self, kind: str) -> set:
         name = self.genre.currentText()
         if not name or name == "Todos":
             return set()
-        return set(self._genre_names.get(name, set()))
+        return set(self._genre_names.get(kind, {}).get(name, set()))
 
-    def _static_filters(self):
+    def _static_filters(self, kind: str) -> dict:
         return {"owned_ids": set(self._owned),
                 "hide_owned": self.switches["missing_movies_hide_in_server"].isChecked(),
                 "hide_asian": self.switches["missing_movies_hide_asian"].isChecked(),
-                "genre_ids": self._genre_ids(), "year_min": self._year_min()}
+                "genre_ids": self._genre_ids(kind), "year_min": self._year_min()}
 
     # ── Secciones y carga perezosa ──
 
@@ -443,15 +445,17 @@ class MoviesTab(QWidget):
         nxt.clicked.connect(lambda: view.horizontalScrollBar().setValue(
             view.horizontalScrollBar().value() + int(view.viewport().width() * 0.9)))
         lay.addWidget(view)
-        self.rows_lay.insertWidget(len(self._sections), box)
+        self.rows_lay.insertWidget(len(self._sections) + 1, box)
         sec = {"kind": kind, "rowdef": rowdef, "box": box, "view": view, "model": model,
                "status_lbl": status, "state": "idle", "base": [], "token": self._build_token}
         all_btn.clicked.connect(lambda: self._open_see_all(sec))
         self._sections.append(sec)
 
     def _update_empty(self):
-        any_visible = any(sec["box"].isVisible() for sec in self._sections)
-        self.empty_lbl.setVisible(bool(self._sections) and not any_visible)
+        # isHidden (flag explícito), no isVisible: con la pestaña oculta
+        # isVisible es falso aunque haya filas, y no debe salir el aviso.
+        any_shown = any(not sec["box"].isHidden() for sec in self._sections)
+        self.empty_lbl.setVisible(bool(self._sections) and not any_shown)
 
     def _load_visible_rows(self):
         if not self._sections:
@@ -471,17 +475,18 @@ class MoviesTab(QWidget):
     def _load_section(self, sec):
         sec["state"] = "loading"
         token, kind, rowdef = self._build_token, sec["kind"], sec["rowdef"]
-        filters = self._static_filters()
+        filters = self._static_filters(kind)
         watch_only = self._watch_only()
         client = self.host.tmdb
-        # Los filtros baratos filtran CADA página mientras se rellena la
-        # fila (si no, con género+años solo sobrevivían 1-3 ítems por fila).
-        # El texto y la disponibilidad (cara) van después, como en la web.
+        # Género/años van en la consulta (build_params) ADEMÁS del
+        # prefilter: en /discover TMDB filtra en servidor y la fila se
+        # llena; en el resto solo filtra el cliente.
+        query = build_params(rowdef, kind, filters["genre_ids"], filters["year_min"])
         prefilter = lambda batch: apply_filters(batch, **filters)
 
         def worker():
             try:
-                items = fetch_row(client, kind, rowdef, prefilter=prefilter)
+                items = fetch_row(client, kind, rowdef, prefilter=prefilter, params=query)
             except Exception as e:
                 ui(lambda m=str(e): self._section_error(sec, token, m))
                 return
@@ -797,9 +802,10 @@ class MoviesTab(QWidget):
         run_in_thread(worker)
 
     def _genre_name(self, gid):
-        for name, ids in self._genre_names.items():
-            if gid in ids:
-                return name
+        for kind in ("movie", "tv"):
+            for name, ids in self._genre_names.get(kind, {}).items():
+                if gid in ids:
+                    return name
         return ""
 
     def _apply_detail(self, token, out):
@@ -825,7 +831,7 @@ class MoviesTab(QWidget):
 
     def _open_see_all(self, sec):
         from gui_qt.movies.see_all import SeeAllDialog
-        dlg = SeeAllDialog(self, self.host, sec["kind"], sec["rowdef"], self._static_filters(),
+        dlg = SeeAllDialog(self, self.host, sec["kind"], sec["rowdef"], self._static_filters(sec["kind"]),
                            self._watch_only(), self._card_state, self._on_card_action,
                            self._on_card_selected)
         dlg.exec()

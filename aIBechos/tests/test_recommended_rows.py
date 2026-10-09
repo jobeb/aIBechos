@@ -1,8 +1,9 @@
 """Filas de Recomendado (core/recommended_rows.py): mismas categorías que la
 web, normalizado, relleno multipágina y filtros. Puro, sin red ni Qt."""
 
-from core.recommended_rows import (apply_filters, fetch_row, movie_available, movie_providers_available,
-                                   normalize_item, row_limit, rows_for, tv_available)
+from core.recommended_rows import (apply_filters, build_params, fetch_row, movie_available,
+                                   movie_providers_available, normalize_item, row_limit, rows_for,
+                                   tv_available)
 
 
 class _Client:
@@ -99,6 +100,24 @@ def test_fetch_row_filtra_mientras_rellena():
 def test_ano_desconocido_pasa_el_filtro():
     items = [normalize_item(_item(1, release_date=""), "movie")]
     assert apply_filters(items, year_min=2025) == items
+
+
+def test_build_params_empuja_genero_y_anos():
+    disc = {"id": "x", "path": "/discover/tv", "params": {"with_genres": "9648", "sort_by": "x"}}
+    p = build_params(disc, "tv", {35}, 2023)
+    assert p["with_genres"] == "35,9648"  # AND: misterio + comedia
+    assert p["first_air_date.gte"] == "2023-01-01" and p["sort_by"] == "x"
+    pm = build_params({"id": "y", "path": "/discover/movie", "params": {}}, "movie", {28}, 2024)
+    assert pm["with_genres"] == "28" and pm["primary_release_date.gte"] == "2024-01-01"
+    # Top anual: año exacto ya puesto, no se añade ventana.
+    top = {"id": "top", "path": "/discover/movie",
+           "params": {"primary_release_year": 2026, "sort_by": "x"}}
+    assert build_params(top, "movie", {35}, 2023)["with_genres"] == "35"
+    assert "primary_release_date.gte" not in build_params(top, "movie", {35}, 2023)
+    # Trending no admite esos parámetros: se deja tal cual.
+    trend = {"id": "trend", "path": "/trending/tv/week", "params": {}}
+    assert build_params(trend, "tv", {35}, 2023) == {}
+    assert build_params(disc, "tv")["with_genres"] == "9648"
 
 
 def test_disponibilidad():
