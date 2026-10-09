@@ -70,7 +70,7 @@ def test_play_no_subido_abre_local(tmp_path, monkeypatch):
     assert [c[0] for c in h.calls] == ["local"]
 
 
-def test_worker_serie_abre_stream_del_capitulo(tmp_path, monkeypatch):
+def test_worker_serie_abre_ficha_del_capitulo(tmp_path, monkeypatch):
     import core.media_server_refresh as msr
     import webbrowser
     h = _host_jellyfin()
@@ -86,7 +86,7 @@ def test_worker_serie_abre_stream_del_capitulo(tmp_path, monkeypatch):
     monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
     h._play_in_jellyfin_worker(_entry(tmp_path))
     assert seen == {"sid": "SERIE1", "s": 1, "e": 2}
-    assert opened == ["http://nas:8096/Videos/EP9/stream?api_key=KEY"]
+    assert opened == ["http://nas:8096/web/#/details?id=EP9"]
     assert any(c[0] == "status" and "Jellyfin" in c[1] for c in h.calls)
 
 
@@ -103,7 +103,7 @@ def test_worker_pelicula_sin_episodio(tmp_path, monkeypatch):
     monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
     h._play_in_jellyfin_worker(_entry(tmp_path, media_type="movie", season=None, episode=None))
     assert calls == ["movie"]
-    assert opened == ["http://nas:8096/Videos/PELI1/stream?api_key=KEY"]
+    assert opened == ["http://nas:8096/web/#/details?id=PELI1"]
 
 
 def test_worker_sin_jellyfin_cae_al_local(tmp_path, monkeypatch):

@@ -200,7 +200,7 @@ class FilesModel(QAbstractTableModel):
                    "Subir SOLO este archivo al servidor, a la carpeta que indica la columna \"Destino\".",
                    enabled=entry.status != "en_cola"),
             Action("play", "▶", theme.ICON_NEUTRAL,
-                    "Reproducir directo en Jellyfin (ya está subido)."
+                    "Abrir en Jellyfin (ya está subido)."
                     if entry.status == "subido" else
                     "Abrir el archivo local con el reproductor predeterminado del sistema, para "
                     "comprobarlo antes de subirlo."),

@@ -2142,11 +2142,11 @@ class FilesCoreMixin:
         self._after_from_worker(lambda: self._set_status(msg, colors.get(tipo, ACCENT)))
 
     def _play_file(self, entry):
-        """▶: si el archivo ya está subido, se reproduce directo en
-        Jellyfin (stream en el navegador); si no, se abre el archivo local
-        con la aplicación predeterminada, como hasta ahora."""
+        """▶: si el archivo ya está subido, se abre en Jellyfin (su ficha,
+        para pulsar play allí); si no, se abre el archivo local con la
+        aplicación predeterminada, como hasta ahora."""
         if getattr(entry, "status", "") == "subido" and self._jellyfin_play_available(entry):
-            self._set_status("Buscando en Jellyfin para reproducir...", PENDING_COLOR)
+            self._set_status("Buscando en Jellyfin...", PENDING_COLOR)
             threading.Thread(target=self._play_in_jellyfin_worker, args=(entry,),
                              daemon=True).start()
             return
@@ -2173,9 +2173,12 @@ class FilesCoreMixin:
 
     def _play_in_jellyfin_worker(self, entry):
         """Localiza el item en Jellyfin (serie por tmdb_id + capítulo por
-        temporada/episodio; película directa) y abre su stream en el
-        navegador, que lo pone a reproducir. Si no está (aún no reindexó
-        la subida, o falló la red) se cae al archivo local si existe."""
+        temporada/episodio; película directa) y abre su ficha en el
+        navegador para pulsar play allí. A propósito NO se abre el stream
+        directo (/Videos/.../stream): según el formato el navegador lo
+        descarga (stream.avi) o lo pone en su reproductor propio en vez
+        de en Jellyfin. Si no está (aún no reindexó la subida, o falló la
+        red) se cae al archivo local si existe."""
         info = entry.media_info
         try:
             cfg = self.config_data
@@ -2196,12 +2199,14 @@ class FilesCoreMixin:
             if not item_id:
                 raise LookupError("no está en Jellyfin todavía")
             import webbrowser
-            webbrowser.open(f"{host}/Videos/{item_id}/stream?api_key={key}")
+            # Misma URL que "Abrir en Jellyfin": la ficha del item, no el
+            # stream directo (ver arriba).
+            webbrowser.open(f"{host}/web/#/details?id={item_id}")
             title = info.title or entry.name
-            self.after(0, lambda: self._set_status(f"Reproduciendo en Jellyfin: {title}",
+            self.after(0, lambda: self._set_status(f"Abierto en Jellyfin: {title}",
                                                    SUCCESS_COLOR))
         except Exception as e:
-            _log.warning("Reproducir en Jellyfin falló para %r: %s", entry.name, e)
+            _log.warning("Abrir en Jellyfin falló para %r: %s", entry.name, e)
             self.after(0, lambda: self._play_local_or_warn(entry))
 
     def _play_local_or_warn(self, entry):
