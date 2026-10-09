@@ -209,6 +209,7 @@ class DownloadsTab(QWidget):
         self._pending = None
         self._visible = False
         self._detail_token = None
+        self._restoring_selection = False
         self._build_ui()
         self._coalesce = QTimer(self)
         self._coalesce.setSingleShot(True)
@@ -261,8 +262,7 @@ class DownloadsTab(QWidget):
             rh.resizeSection(c, w)
         rh.setSectionsClickable(True)
         rh.sectionClicked.connect(self._on_results_header)
-        self.results_view.selectionModel().currentRowChanged.connect(
-            lambda cur, _prev: self._show_result(cur.row()))
+        self.results_view.selectionModel().currentRowChanged.connect(self._on_result_current)
         self.rdelegate.actionTriggered.connect(self._on_result_action)
 
         self.detail = self._build_detail()
@@ -499,7 +499,17 @@ class DownloadsTab(QWidget):
         if self._selected_key is not None:
             for i, r in enumerate(rows):
                 if _key(r) == self._selected_key:
-                    self.results_view.selectRow(i)
+                    # Reponer el resaltado tras el reset del modelo SIN
+                    # repintar la ficha: si no, cada lote de resultados en
+                    # vivo re-dispara _show_result (ficha a "Cargando…",
+                    # nueva búsqueda TMDB + descarga de póster que el
+                    # siguiente lote invalida) y la ficha no termina de
+                    # cargar hasta que acaba la búsqueda.
+                    self._restoring_selection = True
+                    try:
+                        self.results_view.selectRow(i)
+                    finally:
+                        self._restoring_selection = False
                     break
 
     def _on_results_header(self, col):
@@ -529,6 +539,11 @@ class DownloadsTab(QWidget):
             return res.name
 
     # ── Ficha del resultado ──
+
+    def _on_result_current(self, cur, _prev):
+        if self._restoring_selection:
+            return
+        self._show_result(cur.row())
 
     def _show_result(self, row: int):
         if row < 0 or row >= len(self.rmodel.rows):
