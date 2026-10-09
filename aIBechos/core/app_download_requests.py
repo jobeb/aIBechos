@@ -726,20 +726,32 @@ class DownloadRequestsMixin:
         ok_any = False
         last_error = ""
         hashes = []
+        # Sustituir: no vale el archivo que ya hay (sus hashes quedaron
+        # guardados al lanzarlo la primera vez) -- si no, se descargaría
+        # idéntico y la sustitución no cambiaría nada.
+        old_hashes = set()
+        if _dr.is_replacement(entry):
+            try:
+                old_hashes = {str(h).lower() for h in (entry.get("amule_hashes") or [])
+                              if str(h).strip()}
+            except Exception:
+                old_hashes = set()
         for target in targets:
             try:
                 if target[0] == "movie":
                     query = build_amule_query(name, None, None, year, templates, prefers)
                     ok, motivo, _h = self._auto_amule_download_series(
-                        query, is_movie=True, expected_year=int(year) if str(year).isdigit() else None)
+                        query, is_movie=True, expected_year=int(year) if str(year).isdigit() else None,
+                        exclude_hashes=old_hashes)
                 elif target[0] == "season_pack":
                     query = build_amule_season_query(name, target[1], templates, prefers)
-                    ok, motivo, _h = self._auto_amule_download_series(query, is_movie=False)
+                    ok, motivo, _h = self._auto_amule_download_series(query, is_movie=False,
+                                                                       exclude_hashes=old_hashes)
                 else:
                     _t, s, e = target
                     query = build_amule_query(name, s, e, year, templates, prefers)
                     ok, motivo, _h = self._auto_amule_download_series(
-                        query, is_movie=False, typical_size=typical)
+                        query, is_movie=False, typical_size=typical, exclude_hashes=old_hashes)
             except Exception as ex:
                 ok, motivo, _h = False, str(ex)[:200], ""
             if ok:

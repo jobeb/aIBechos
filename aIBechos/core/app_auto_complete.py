@@ -1070,16 +1070,17 @@ class AutoCompleteMixin:
                     return True
         # Fallback: si el propio series_name ya trae castellano (template con castellano), no duplicar
         return False
-
     def _auto_amule_download_series(self, query: str, search_type: str | None = None, typical_size: int | None = None,
                                         max_size: int | None = None, is_movie: bool = False,
-                                        expected_year: int | None = None):
+                                        expected_year: int | None = None, exclude_hashes=()):
         """Busca *query* en aMule y descarga el mejor candidato (mismo
-        criterio best_result que el botón manual). Devuelve (ok, motivo, hash_hex).
+        criterio best_result que el botón manual). Devuelve (ok, motivo,
+        hash_hex).
         hash_hex es el MD4 hex del partfile descargado (o "" si falla). No
         toca la sesión/pestaña Descargas (crea la suya y la cierra). *max_size*
         (uso de "Adelgazar"): techo en bytes -- se reenvía a best_result para
-        no descargar algo igual o más pesado que lo que ya hay."""
+        no descargar algo igual o más pesado que lo que ya hay. *exclude_hashes*:
+        hashes que no se pueden elegir (Sustituir: el archivo del servidor)."""
         try:
             self.after(0, lambda q=query: self._set_status(f"Buscando '{q[:60]}' en aMule…", PENDING_COLOR))
         except Exception:
@@ -1087,7 +1088,8 @@ class AutoCompleteMixin:
         from core.amule_download import auto_download
         ok, why, h, _name = auto_download(self.config_data, self._amule_ec_lock, query, search_type=search_type,
                                           typical_size=typical_size, max_size=max_size,
-                                          is_movie=is_movie, expected_year=expected_year)
+                                          is_movie=is_movie, expected_year=expected_year,
+                                          exclude_hashes=exclude_hashes)
         return ok, why, h
 
     def _typical_size_for_series(self, series_name: str, season: int | None = None) -> int | None:

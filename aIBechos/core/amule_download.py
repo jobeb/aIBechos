@@ -70,11 +70,12 @@ def pick_with_judge(ranked: list, judge_fn, max_tries: int = JUDGE_MAX_TRIES):
 
 
 def _judge_or_keep(config, query: str, best, results: list, is_movie: bool,
-                   expected_year, typical_size, max_size):
+                   expected_year, typical_size, max_size, excluded: set | None = None):
     """Pasa el mejor candidato por el juez IA (solo si está activado con
     key): devuelve (best|None, motivo_bloqueo). Sin IA, (best, "").
     "malo" prueba con los siguientes por score (máx. JUDGE_MAX_TRIES); si
-    todos son malos bloquea con el motivo. Nunca lanza."""
+    todos son malos bloquea con el motivo. Los hashes de *excluded* ni se
+    juzgan (ya se descartaron al elegir). Nunca lanza."""
     try:
         ai_key = (config.get("ai_api_key", "") or "") if config.get("ai_fallback_enabled") else ""
     except Exception:
@@ -101,7 +102,8 @@ def _judge_or_keep(config, query: str, best, results: list, is_movie: bool,
                      "sources": getattr(cand, "sources", "?")}, ai_key)
 
     try:
-        ranked = sorted((r for r in results if r is not None),
+        ranked = sorted((r for r in results if r is not None
+                         and _result_hash(r).lower() not in (excluded or set())),
                         key=lambda r: score_download(r, query, expected_year, is_movie,
                                                      typical_size, max_size),
                         reverse=True)
@@ -122,7 +124,27 @@ def _judge_or_keep(config, query: str, best, results: list, is_movie: bool,
     return chosen, ""
 
 
-def ec_client_from_config(config, timeout: float = 10.0) -> EcClient:
+def _excluded_hashes(exclude_hashes) -> set:
+    try:
+        return {str(h).lower() for h in (exclude_hashes or []) if str(h).strip()}
+    except Exception:
+        return set()
+
+
+def _best_not_excluded(results, query, expected_year, is_movie, typical_size, max_size,
+                       excluded: set):
+    """best_result ignorando los hashes de *excluded* (Sustituir: no volver
+    a elegir el archivo que ya está en el servidor). Sin hash conocido el
+    candidato no se puede comparar y se conserva (fail-open). None si no
+    queda nada elegible."""
+    from core.download_quality import best_result
+    pool = []
+    for r in results or []:
+        h = _result_hash(r).lower()
+        if h and h in excluded:
+            continue
+        pool.append(r)
+    return best_result(pool, query, expected_year, is_movie, typical_size, max_size) if pool else None
     return EcClient(
         host=config.get("amule_host", "localhost"),
         port=config.get("amule_port", 4712),
@@ -167,10 +189,14 @@ def _already_completed(ec, best) -> bool:
 
 def auto_download(config, ec_lock, query: str, search_type: str | None = None,
                   typical_size: int | None = None, max_size: int | None = None,
-                  is_movie: bool = False, expected_year: int | None = None):
+                  is_movie: bool = False, expected_year: int | None = None,
+                  exclude_hashes=()):
     """Busca *query* en aMule y descarga el mejor candidato
     (core.download_quality.best_result). Devuelve (ok, motivo, hash_hex,
-    nombre_elegido). *max_size*: techo en bytes ("Adelgazar")."""
+    nombre_elegido). *max_size*: techo en bytes ("Adelgazar").
+    *exclude_hashes*: hashes MD4 hex que no se pueden elegir (Sustituir:
+    el archivo que ya está en el servidor, para no descargarlo idéntico)
+    -- si solo hay esos, falla con motivo en vez de repetirlo."""
     ec = ec_client_from_config(config)
     try:
         with ec_lock:
@@ -179,14 +205,18 @@ def auto_download(config, ec_lock, query: str, search_type: str | None = None,
             except (EcConnectionError, EcAuthError, OSError):
                 return False, "aMule no disponible", "", ""
             st = search_type or config.get("amule_search_type", "Kad")
+            excluded = _excluded_hashes(exclude_hashes)
             best = None
             last_key = None
+            only_excluded = False
             try:
                 # Se lee en vivo (aMule va llenando la lista); si el mejor se
                 # repite dos sondeos seguidos se sale antes del límite.
                 for results in ec.iter_search(query, search_type=st, poll_interval=2.0, max_duration=20.0):
-                    candidate = best_result(results, query, expected_year, is_movie,
-                                            typical_size, max_size) if results else None
+                    candidate = _best_not_excluded(results, query, expected_year, is_movie,
+                                                   typical_size, max_size, excluded) if results else None
+                    if results and candidate is None and excluded:
+                        only_excluded = True
                     if candidate is not None:
                         cand_key = downloads_key(candidate)
                         if last_key is not None and cand_key == last_key:
@@ -195,9 +225,11 @@ def auto_download(config, ec_lock, query: str, search_type: str | None = None,
                         best = candidate
                         last_key = cand_key
                 if best is None:
+                    if only_excluded:
+                        return False, "solo está el mismo archivo que ya hay en el servidor", "", ""
                     return False, "sin candidato que cumpla el umbral", "", ""
                 best, block_reason = _judge_or_keep(config, query, best, results, is_movie,
-                                                    expected_year, typical_size, max_size)
+                                                    expected_year, typical_size, max_size, excluded)
                 if best is None:
                     return False, block_reason, "", ""
                 ok, _raw = ec.download(best)
