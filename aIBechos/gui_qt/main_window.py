@@ -38,16 +38,15 @@ TABS = [
     ("missing", "🔍 Episodios"),
     ("downloads", "📥 Descargas"),
     ("cleanup", "🗑 Liberar espacio"),
-    ("protected", "🔒 Protegidos"),
-    ("history", "📋 Historial"),
-    ("watch_sync", "🔄 Sincronizar visionado"),
-    ("stats", "📊 Estadísticas"),
+    ("info", "ℹ Info"),
     ("config", "⚙ Configuración"),
 ]
 # Clave de pestaña Qt -> clave de vista de la versión Tk (App._current_view_key),
-# que es la que consulta la lógica compartida.
+# que es la que consulta la lógica compartida. "info" informa la subpestaña
+# activa (InfoTab.current_key): la lógica que distinguía history/protected/
+# watch_sync/stats sigue viendo la misma clave que antes.
 VIEW_KEYS = {"missing": "missing_ep"}
-MIGRATED = {"files", "movies", "missing", "downloads", "cleanup", "protected", "history", "watch_sync", "stats", "config"}
+MIGRATED = {"files", "movies", "missing", "downloads", "cleanup", "info", "config"}
 UPLOAD_NOTIFICATION_DEBOUNCE_MS = 8000   # mismo valor que la versión Tk
 FTP_SPACE_PERIODIC_MS = 5 * 60 * 1000
 
@@ -86,24 +85,15 @@ class MainWindow(QMainWindow):
             elif key == "movies":
                 from gui_qt.movies.tab import MoviesTab
                 w = MoviesTab(self.host)
-            elif key == "history":
-                from gui_qt.history.tab import HistoryTab
-                w = HistoryTab(self.host)
-            elif key == "protected":
-                from gui_qt.protected.tab import ProtectedTab
-                w = ProtectedTab(self.host)
             elif key == "cleanup":
                 from gui_qt.cleanup.tab import CleanupTab
                 w = CleanupTab(self.host)
-            elif key == "watch_sync":
-                from gui_qt.watch_sync.tab import WatchSyncTab
-                w = WatchSyncTab(self.host)
+            elif key == "info":
+                from gui_qt.info.tab import InfoTab
+                w = InfoTab(self.host)
             elif key == "config":
                 from gui_qt.settings.tab import SettingsTab
                 w = SettingsTab(self.host)
-            elif key == "stats":
-                from gui_qt.stats.tab import StatsTab
-                w = StatsTab(self.host)
             elif key == "downloads":
                 from gui_qt.downloads.tab import DownloadsTab
                 w = DownloadsTab(self.host)
@@ -260,7 +250,9 @@ class MainWindow(QMainWindow):
     def on_settings_saved(self):
         """Tras "Guardar configuración": lo que otras pestañas leen al
         construirse (Plex/Jellyfin activos, espacio libre...)."""
-        ws = self._tab_widgets.get("watch_sync")
+        info = self._tab_widgets.get("info")
+        ws = (info.pages.get("watch_sync") if info is not None and hasattr(info, "pages")
+              else None)
         if ws is not None and hasattr(ws, "on_shown"):
             ws.on_shown()
         self.refresh_ftp_space()
@@ -343,6 +335,8 @@ class MainWindow(QMainWindow):
         w = self.tabs.currentWidget()
         for key, tab in self._tab_widgets.items():
             if tab is w:
+                if key == "info" and hasattr(tab, "current_key"):
+                    return tab.current_key()
                 return VIEW_KEYS.get(key, key)
         return "files"
 

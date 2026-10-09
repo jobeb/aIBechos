@@ -149,6 +149,7 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         self._web_requests_error = ""
         self._history_all = []
         self._history_visible = False
+        self._requests_visible = False
         self._cleanup_visible = False
         self._protected_visible = False
         self._cleanup_filtered_items = []
@@ -179,7 +180,9 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         self.view = _NullView()            # pestaña Archivos (FilesTab), ver set_view
         self.missing_view = _NullView()    # pestaña Episodios que faltan
         self.movies_view = _NullView()     # pestaña Recomendado
-        self.history_view = _NullView()    # pestaña Historial
+        self.history_view = _NullView()    # subpestaña Historial (en Info)
+        self.requests_view = _NullView()   # subpestaña Solicitudes web (en Info)
+        self.info_view = _NullView()       # pestaña Info (contenedor)
         self.cleanup_view = _NullView()    # pestaña Liberar espacio
         self.protected_view = _NullView()  # pestaña Protegidos
         self.watch_sync_view = _NullView()  # pestaña Sincronizar visionado
@@ -494,7 +497,7 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         if rows is not None:
             self._web_requests_rows = rows
         self._web_requests_error = error
-        self.history_view.on_web_requests()
+        self.requests_view.on_web_requests()
 
     def _apply_cleanup_filters(self, preserve_page: bool = False):
         self.cleanup_view.apply_filters()

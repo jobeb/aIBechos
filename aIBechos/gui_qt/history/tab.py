@@ -1,7 +1,8 @@
 """
-Pestaña "Historial" en Qt: subidas y borrados (de este equipo o, con "Ver todo
-el servidor", de todos), y las solicitudes de la web. Buscar, reintentar una
-subida fallida, exportar el historial o el log, limpiar.
+Pestaña "Historial" en Qt (dentro de Info): subidas y borrados (de este
+equipo o, con "Ver todo el servidor", de todos). Buscar, reintentar una
+subida fallida, exportar el historial o el log, limpiar. Las solicitudes
+de la web viven en su propia subpestaña (gui_qt/info/requests.py).
 
 Datos y sincronización: core/app_history_core.py y app_files_core.py (vía host).
 """
@@ -105,6 +106,12 @@ class HistoryModel(QAbstractTableModel):
             if col == H_DEST and (showing_error or (is_req and st == "failed")):
                 return QBrush(QColor(ERROR_COLOR))
         elif role == ActionsRole and col == H_ACT:
+            if is_req:
+                can_cancel = st in ("pending", "claimed", "downloading")
+                return [Action("cancel", "✕", theme.ICON_IGNORE,
+                               "Cancelar esta solicitud (libera la cola y quita su descarga de aMule)."
+                               if can_cancel else "Solo se puede cancelar una solicitud activa.",
+                               enabled=can_cancel)]
             can_retry = st == "error" and not is_del and not is_req
             return [Action("retry", "🔄", theme.ICON_DL_IDLE,
                            "Volver a intentar esta subida con el mismo archivo local." if can_retry else
@@ -133,11 +140,7 @@ class HistoryTab(QWidget):
         self.show_all = QCheckBox("Ver todo el servidor")
         self.show_all.setToolTip("Subidas y borrados de todos los equipos de este servidor")
         self.show_all.toggled.connect(self._on_show_all)
-        self.requests = QCheckBox("Solicitudes web")
-        self.requests.setEnabled(False)
-        self.requests.toggled.connect(self._on_requests)
         head.addWidget(self.show_all)
-        head.addWidget(self.requests)
         head.addStretch(1)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Buscar archivo, destino, cliente...")
@@ -184,10 +187,7 @@ class HistoryTab(QWidget):
 
     def refresh(self):
         host = self.host
-        if self.show_all.isChecked() and self.requests.isChecked():
-            self._all = list(host._web_requests_rows)
-            self.title.setText(f"Solicitudes de la web  ({len(self._all)})")
-        elif self.show_all.isChecked():
+        if self.show_all.isChecked():
             self._all = list(reversed(host._shared_activity_history))
             self.title.setText(f"Historial de subidas  ({len(self._all)} registros, todo el servidor)")
         else:
@@ -205,14 +205,8 @@ class HistoryTab(QWidget):
             self.empty.setText("")
         elif q:
             self.empty.setText("Ningún registro coincide con la búsqueda.")
-        elif self.show_all.isChecked() and self.requests.isChecked():
-            self.empty.setText(self.host._web_requests_error or "No hay solicitudes de la web.")
         else:
             self.empty.setText("Sin subidas registradas todavía.")
-
-    def on_web_requests(self):
-        if self.host._history_visible and self.requests.isChecked():
-            self.refresh()
 
     def on_activity_synced(self):
         if self.host._history_visible and self.show_all.isChecked():
@@ -221,23 +215,12 @@ class HistoryTab(QWidget):
     def on_shown(self):
         self.host._history_visible = True
         self.host._sync_activity_history_from_ftp()
-        if self.requests.isChecked():
-            self.host._sync_web_requests_history()
         self.refresh()
 
     def on_hidden(self):
         self.host._history_visible = False
 
     def _on_show_all(self, on: bool):
-        self.requests.setEnabled(on)
-        if not on and self.requests.isChecked():
-            self.requests.setChecked(False)
-        self.refresh()
-
-    def _on_requests(self, on: bool):
-        if on:
-            self.host._last_web_requests_sync_ts = 0.0   # al encender, siempre fresco
-            self.host._sync_web_requests_history()
         self.refresh()
 
     # ── Acciones ──

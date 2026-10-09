@@ -295,6 +295,56 @@ class DownloadRequestsMixin:
             return False
         return True
 
+    def _cancel_web_request(self, req_id: str) -> bool:
+        """Cancela una solicitud de la web desde este equipo (botón de la
+        subpestaña Solicitudes): la marca "cancelled" en la cola compartida
+        (pegajoso en merge, ver core/download_requests.py) y quita su
+        descarga de aMule si la tenía este PC. El worker en curso la ignora
+        desde entonces por estado final. True si quedó cancelada."""
+        from core import download_requests as _dr
+        user = self._download_requests_user()
+        remote_path = self._download_requests_remote_path()
+        if not req_id or not remote_path:
+            return False
+        entry = None
+        try:
+            from core.shared_data import read_shared_json
+            own_ftp = self._download_requests_ftp()
+            if own_ftp is None:
+                return False
+            try:
+                data, _is_new = read_shared_json(own_ftp, remote_path, "dict")
+            finally:
+                try:
+                    own_ftp.disconnect()
+                except Exception:
+                    pass
+            if not isinstance(data, dict):
+                return False
+            entry = data.get(req_id)
+            if not isinstance(entry, dict) or entry.get("status") not in (
+                    "pending", "claimed", "downloading"):
+                return False
+            nd = _dr.mark_status(data, req_id, "cancelled", user=user)
+            if nd is None:
+                return False   # reclamada por otro equipo: no tocar
+            cancelled = dict(nd.get(req_id) or {})
+            cancelled["cancelled_by"] = user
+            nd = dict(nd)
+            nd[req_id] = cancelled
+            if not self._download_requests_push(nd, remote_path):
+                return False
+        except Exception:
+            _log.exception("Solicitudes: no se pudo cancelar %s", req_id)
+            return False
+        try:
+            if isinstance(entry, dict):
+                self._download_request_cancel_amule(entry)
+        except Exception:
+            pass
+        _log.info("Solicitudes: %s cancelada por %s", _dr.describe(entry), user)
+        return True
+
     def _download_requests_amule_state(self, needed: bool):
         """(cola de aMule [{hash_hex, name}] o None si no se pudo leer,
         nombres de archivo de la carpeta vigilada) -- para detectar
