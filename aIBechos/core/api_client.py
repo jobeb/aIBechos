@@ -304,6 +304,43 @@ class TMDBClient:
     def get_on_the_air_tv(self, page: int = 1) -> list:
         return self._tv_list("/tv/on_the_air", page=page)
 
+    # Listados genéricos paginados para las filas de Recomendado (estilo
+    # web: tendencia, Top 10 por año, plataformas, géneros... ver
+    # core/recommended_rows.py). Devuelven (items, total_pages): las filas
+    # se rellenan pidiendo más páginas hasta el tope, igual que la web.
+    # *kind* es "movie"/"tv" y normaliza igual que _movie_list/_tv_list.
+    def _norm_results(self, data: dict, kind: str) -> tuple:
+        results = []
+        for r in data.get("results", []) or []:
+            item = dict(r)
+            if kind == "movie":
+                item["media_type"] = "movie"
+            else:
+                item["media_type"] = "tv"
+                item["title"] = r.get("name", r.get("original_name", ""))
+                item["original_title"] = r.get("original_name", "")
+                item["release_date"] = r.get("first_air_date", "")
+            results.append(item)
+        return results, int(data.get("total_pages") or 1)
+
+    def list_endpoint(self, path: str, kind: str, page: int = 1, params: dict | None = None) -> tuple:
+        """(items, total_pages) de cualquier endpoint de listado TMDB
+        (/trending/..., /discover/..., /movie/now_playing...). Los valores
+        de *params* van tal cual a la query (strings o ints)."""
+        data = self._get(path, page=page, **(params or {}))
+        return self._norm_results(data, kind)
+
+    def discover(self, kind: str, page: int = 1, **params) -> tuple:
+        """(items, total_pages) de /discover/{movie,tv} con los parámetros
+        dados (with_genres, with_watch_providers, primary_release_year...)."""
+        return self.list_endpoint(f"/discover/{kind}", kind, page=page, params=dict(params))
+
+    def get_top_rated_movies(self, page: int = 1) -> list:
+        return self._movie_list("/movie/top_rated", page=page)
+
+    def get_top_rated_tv(self, page: int = 1) -> list:
+        return self._tv_list("/tv/top_rated", page=page)
+
     def get_movie_watch_providers(self, movie_id: int, region: str = "ES") -> dict:
         """Disponibilidad de una película fuera del cine para la región
         pedida -- devuelve {"flatrate": ["Netflix", ...], "rent": [...],
@@ -332,6 +369,14 @@ class TMDBClient:
             if names:
                 out[key] = names
         return out
+
+    def movie_watch_providers_raw(self, movie_id: int) -> dict:
+        """Mapa crudo por país de /movie/{id}/watch/providers. A diferencia
+        de get_movie_watch_providers, LANZA en error de red: así las filas
+        de Recomendado distinguen "sin dato" (se deja, como la web) de "no
+        disponible" (se oculta con el filtro de plataformas). Ver
+        core/recommended_rows.py::movie_providers_available."""
+        return self._get(f"/movie/{movie_id}/watch/providers").get("results") or {}
 
     def get_genres(self, media_type: str) -> list:
         """Lista de géneros TMDB [{"id": int, "name": str}, ...] en el idioma configurado."""

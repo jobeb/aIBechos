@@ -1,12 +1,12 @@
-"""
-Pestaña "Recomendado" en Qt: películas y series de las listas de TMDB que aún
-no están en el servidor (o sí, si se apaga el filtro), con su disponibilidad
-en plataformas.
+"""Pestaña "Recomendado" en Qt: filas horizontales con cards estilo web
+(tendencia, Top 10, plataformas, géneros... -- las mismas categorías que
+solicitudes-web/app.js, ver core/recommended_rows.py), cada card con todos
+los botones actuales (⬇⚡🔍📋🚫★🔒) y ficha lateral al pulsarla.
 
-Lógica compartida con Tk: escaneo/caché/compartir en core/app_movies_core.py
-(vía host), filtros en core/missing_movies.visible_movie_rows. El estado
-(_movies_results) vive en el host, porque la lógica de subida también lo toca
-(marca "en servidor" lo recién subido).
+Las filas se cargan de TMDB en vivo y perezosamente (al hacerse visibles,
+como el IntersectionObserver de la web); el cruce con el servidor
+(Jellyfin/Plex) y la caché compartida siguen en core/app_movies_core.py, y
+los botones 🔍/Reescaneo conservan su función (refrescar ese cruce).
 """
 
 from __future__ import annotations
@@ -14,113 +14,73 @@ from __future__ import annotations
 import re
 import threading
 import time
+from datetime import date
 
 import requests
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QGuiApplication, QPixmap
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QPoint, QRect, QSize, Qt, QTimer
+from PySide6.QtGui import QGuiApplication, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFrame, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea,
-                               QSplitter, QTableView, QVBoxLayout, QWidget)
+                               QLabel, QLineEdit, QListView, QProgressBar, QPushButton, QScrollArea,
+                               QSplitter, QVBoxLayout, QWidget)
 
-from core.amule_download import auto_download
 from core.applog import get_logger
-from core.missing_movies import MOVIE_LIST_LABELS, format_watch_display, genre_options, visible_movie_rows
+from core.recommended_rows import apply_filters, fetch_row, filter_available, rows_for
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNING_COLOR
 from gui_qt import theme
-from gui_qt.actions import Action, ActionsDelegate, ActionsRole
 from gui_qt.bridge import run_in_thread, ui
+from gui_qt.movies.cards import CARD_H, CARD_W, CardDelegate, CardRole
 
 _log = get_logger("aIBechos.qt", "app.log")
 
-(C_FAV, C_LOCK, C_TITLE, C_YEAR, C_LIST, C_VOTE, C_WATCH, C_SERVER, C_ACT) = range(9)
-HEADERS = ["★", "🔒", "Título", "Año", "Lista", "Nota", "Disponible en", "En servidor", ""]
-# Columna -> clave de sort_movie_rows (ver App._movies_sort_key_for_column)
-SORT_KEYS = {C_TITLE: "title", C_YEAR: "year", C_LIST: "list", C_VOTE: "vote_average"}
 TIPOS = {"Todo": "all", "Películas": "movies", "Series": "series"}
 YEARS = ["1", "2", "3", "5", "8", "10", "Todos"]
+SKELETON_CARDS = 7
+SEE_ALL_MAX_PAGES = 25
 
 
 def _mtype(r) -> str:
     return r.get("media_type", "movie")
 
 
-class MoviesModel(QAbstractTableModel):
-    def __init__(self, tab, parent=None):
-        super().__init__(parent)
-        self.tab = tab
-        self.rows: list = []
-        self.dl_state: dict = {}
+def _key(item) -> tuple:
+    return (item.get("media_type", "movie"), item.get("tmdb_id", 0))
 
-    def set_rows(self, rows):
+
+class RowModel(QAbstractListModel):
+    """Ítems de una fila (dicts de card o None = esqueleto)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.items: list = []
+
+    def set_skeleton(self, n: int = SKELETON_CARDS):
         self.beginResetModel()
-        self.rows = list(rows)
+        self.items = [None] * n
         self.endResetModel()
 
+    def set_items(self, items: list):
+        self.beginResetModel()
+        self.items = list(items)
+        self.endResetModel()
+
+    def refresh_key(self, key: tuple):
+        for i, it in enumerate(self.items):
+            if it is not None and _key(it) == key:
+                self.dataChanged.emit(self.index(i), self.index(i))
+                return
+
     def refresh_all(self):
-        if self.rows:
-            self.dataChanged.emit(self.index(0, 0), self.index(len(self.rows) - 1, len(HEADERS) - 1))
+        if self.items:
+            self.dataChanged.emit(self.index(0), self.index(len(self.items) - 1))
 
     def rowCount(self, parent=QModelIndex()):
-        return 0 if parent.isValid() else len(self.rows)
-
-    def columnCount(self, parent=QModelIndex()):
-        return len(HEADERS)
-
-    def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return HEADERS[section]
-        return None
-
-    def flags(self, index):
-        return Qt.ItemIsEnabled | Qt.ItemIsSelectable if index.isValid() else Qt.NoItemFlags
+        return 0 if parent.isValid() else len(self.items)
 
     def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid() or index.row() >= len(self.rows):
+        if not index.isValid() or index.row() >= len(self.items):
             return None
-        r = self.rows[index.row()]
-        col = index.column()
-        ctx = self.tab.ctx
-        mt, tid = _mtype(r), r["tmdb_id"]
-        is_tv = mt == "tv"
-        if role == Qt.DisplayRole:
-            if col == C_FAV:
-                return "★" if ctx.is_favorite(mt, tid) else "☆"
-            if col == C_LOCK:
-                return "🔒" if ctx.is_reserved(mt, tid) else "🔓"
-            if col == C_TITLE:
-                return f"📺 {r['title']}" if is_tv else f"🎬 {r['title']}"
-            if col == C_YEAR:
-                return r.get("year", "") or "—"
-            if col == C_LIST:
-                return MOVIE_LIST_LABELS.get(r.get("list"), r.get("list", ""))
-            if col == C_VOTE:
-                return f"{(r.get('vote_average') or 0):.1f}"
-            if col == C_WATCH:
-                return "—" if is_tv else format_watch_display(r)
-            if col == C_SERVER:
-                return "✓ En servidor" if r.get("in_server") else "No"
-        elif role == Qt.ForegroundRole:
-            if col == C_FAV:
-                return QBrush(QColor(theme.ACCENT if ctx.is_favorite(mt, tid) else PENDING_COLOR))
-            if col == C_LOCK:
-                return QBrush(QColor(theme.ACCENT if ctx.is_reserved(mt, tid) else PENDING_COLOR))
-            if col == C_WATCH and not is_tv:
-                return QBrush(QColor(ERROR_COLOR if format_watch_display(r) == "Solo en cines" else SUCCESS_COLOR))
-            if col == C_SERVER:
-                return QBrush(QColor(SUCCESS_COLOR if r.get("in_server") else PENDING_COLOR))
-            if col in (C_YEAR, C_LIST, C_VOTE):
-                return QBrush(QColor(PENDING_COLOR))
-        elif role == Qt.TextAlignmentRole and col in (C_FAV, C_LOCK, C_VOTE):
-            return int(Qt.AlignCenter)
-        elif role == Qt.ToolTipRole:
-            if col == C_FAV:
-                return ctx.favorite_tooltip(mt, tid)
-            if col == C_LOCK:
-                return ctx.reservation_tooltip(mt, tid)
-            if col == C_TITLE:
-                return r.get("overview") or r["title"]
-        elif role == ActionsRole and col == C_ACT:
-            return self.tab.actions_for(r)
+        if role == CardRole:
+            return self.items[index.row()]
         return None
 
 
@@ -133,20 +93,27 @@ class MoviesTab(QWidget):
         self._scanning = False
         self._cancel_event = None
         self._poster_token = None
-        saved = (self.config.get("table_sort", {}) or {}).get("peliculas")
-        if isinstance(saved, dict) and "key" in saved:
-            self._sort_key, self._sort_asc = saved.get("key"), bool(saved.get("asc", True))
-        else:
-            self._sort_key, self._sort_asc = "title", True
+        self._sections: list = []
+        self._build_token = 0
+        self._dl_state: dict = {}
+        self._owned: set = set()
+        self._genre_names: dict = {}   # id -> nombre (movie+tv)
+        self._shown_key = None
+        self._server_ids_ready = False
+        self.delegate = CardDelegate(self)
+        self.delegate.get_state = self._card_state
+        self.delegate.cardAction.connect(self._on_card_action)
+        self.delegate.cardSelected.connect(self._on_card_selected)
         self._build_ui()
         host.movies_view = self
         if not host._movies_results:
             host._movies_results = host._rows_from_movies_cache()
+        self._snapshot_owned()
         self.refresh_genres()
         self.render()
         self.update_status()
-        self.ctx.favorites_changed.connect(self.model.refresh_all)
-        self.ctx.reservations_changed.connect(self.model.refresh_all)
+        self.ctx.favorites_changed.connect(self._refresh_states)
+        self.ctx.reservations_changed.connect(self._refresh_states)
 
     # ── Construcción ──
 
@@ -156,8 +123,8 @@ class MoviesTab(QWidget):
         head = QHBoxLayout()
         self.scan_btn = QPushButton("🔍 Recomendar")
         self.scan_btn.setProperty("accent", True)
-        self.scan_btn.setToolTip("Pedir a TMDB sus listas (tendencias, populares, estrenos...) y cruzarlas "
-                                 "con lo que ya hay en Jellyfin/Plex")
+        self.scan_btn.setToolTip("Cruzar las listas de TMDB con lo que ya hay en Jellyfin/Plex "
+                                 "(marca 'En el servidor' sin esperar a reindexar)")
         self.scan_btn.clicked.connect(lambda: self.start_scan(False))
         self.full_btn = QPushButton("Reescaneo completo")
         self.full_btn.clicked.connect(lambda: self.start_scan(True))
@@ -179,7 +146,7 @@ class MoviesTab(QWidget):
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
-        self._search_timer.timeout.connect(self.render)
+        self._search_timer.timeout.connect(self._apply_text)
         self.search.textChanged.connect(lambda _t: self._search_timer.start())
         head.addWidget(self.search)
         root.addLayout(head)
@@ -197,7 +164,7 @@ class MoviesTab(QWidget):
         self.years.addItems(YEARS)
         saved_year = self.config.get("missing_movies_year_filter", "1")
         self.years.setCurrentText(saved_year if (saved_year == "Todos" or re.match(r"^\d+\s*años?$", saved_year)
-                                                 or saved_year.isdigit()) else "1")
+                                                  or saved_year.isdigit()) else "1")
         self.years.currentTextChanged.connect(self._on_years)
         filters.addWidget(self.years)
         self.tipo = QComboBox()
@@ -226,34 +193,28 @@ class MoviesTab(QWidget):
         self.progress.hide()
         root.addWidget(self.progress)
 
-        self.model = MoviesModel(self, self)
-        self.view = QTableView()
-        self.view.setModel(self.model)
-        self.view.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.view.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.view.setAlternatingRowColors(True)
-        self.view.setShowGrid(False)
-        self.view.setWordWrap(False)
-        self.view.verticalHeader().hide()
-        self.view.verticalHeader().setDefaultSectionSize(26)
-        self.view.setMouseTracking(True)
-        self.delegate = ActionsDelegate(self.view)
-        self.delegate.actionTriggered.connect(self._on_action)
-        self.view.setItemDelegateForColumn(C_ACT, self.delegate)
-        hdr = self.view.horizontalHeader()
-        hdr.setSectionResizeMode(C_TITLE, QHeaderView.Stretch)
-        for c, w in ((C_FAV, 28), (C_LOCK, 28), (C_YEAR, 60), (C_LIST, 120), (C_VOTE, 55), (C_WATCH, 160),
-                     (C_SERVER, 100), (C_ACT, 172)):
-            hdr.resizeSection(c, w)
-        hdr.setSectionsClickable(True)
-        hdr.sectionClicked.connect(self._on_header)
-        self._update_sort_indicator()
-        self.view.clicked.connect(self._on_clicked)
-        self.view.selectionModel().currentRowChanged.connect(lambda cur, _p: self._show_detail(cur.row()))
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget()
+        self.rows_lay = QVBoxLayout(inner)
+        self.rows_lay.setContentsMargins(2, 2, 2, 2)
+        self.rows_lay.setSpacing(10)
+        self.rows_lay.addStretch(1)
+        self.scroll.setWidget(inner)
+        self.empty_lbl = QLabel("Nada que mostrar con los filtros actuales.")
+        self.empty_lbl.setAlignment(Qt.AlignCenter)
+        self.empty_lbl.setStyleSheet(f"color: {theme.PENDING_COLOR}; font-size: 11pt;")
+        self.empty_lbl.hide()
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setSingleShot(True)
+        self._scroll_timer.setInterval(200)
+        self._scroll_timer.timeout.connect(self._load_visible_rows)
+        self.scroll.verticalScrollBar().valueChanged.connect(lambda _v: self._scroll_timer.start())
 
         self.detail = self._build_detail()
         split = QSplitter(Qt.Horizontal)
-        split.addWidget(self.view)
+        split.addWidget(self.scroll)
         split.addWidget(self.detail)
         split.setStretchFactor(0, 1)
         split.setSizes([1000, 270])
@@ -270,11 +231,6 @@ class MoviesTab(QWidget):
         scroll.setWidget(body)
         lay.addWidget(scroll)
         b = QVBoxLayout(body)
-        self.poster = QLabel("Pulsa una obra\npara ver su ficha")
-        self.poster.setAlignment(Qt.AlignCenter)
-        self.poster.setFixedSize(170, 245)
-        self.poster.setStyleSheet(f"color: {PENDING_COLOR}; background: {theme.BG_ALT}; border-radius: 6px;")
-        b.addWidget(self.poster, 0, Qt.AlignHCenter)
 
         def lbl(bold=False, color=None):
             w = QLabel()
@@ -284,6 +240,11 @@ class MoviesTab(QWidget):
                             + (f" color: {color};" if color else ""))
             b.addWidget(w)
             return w
+        self.poster = QLabel("Pulsa una obra\npara ver su ficha")
+        self.poster.setAlignment(Qt.AlignCenter)
+        self.poster.setFixedSize(170, 245)
+        self.poster.setStyleSheet(f"color: {PENDING_COLOR}; background: {theme.BG_ALT}; border-radius: 6px;")
+        b.addWidget(self.poster, 0, Qt.AlignHCenter)
         self.d_title = lbl(bold=True)
         self.d_meta = lbl()
         self.d_cert = lbl(color=PENDING_COLOR)
@@ -294,23 +255,25 @@ class MoviesTab(QWidget):
 
     # ── Ganchos (los llama la lógica vía host) ──
 
-    def render(self, reset_page: bool = True):
-        rows = visible_movie_rows(
-            self.host._movies_results, tipo=TIPOS.get(self.tipo.currentText(), "all"),
-            year_sel=self.years.currentText(), genre_sel=self.genre.currentText(),
-            text=self.search.text(),
-            hide_in_server=self.switches["missing_movies_hide_in_server"].isChecked(),
-            watch_only=self.switches["missing_movies_watch_only"].isChecked(),
-            hide_asian=self.switches["missing_movies_hide_asian"].isChecked(),
-            sort_key=self._sort_key, sort_asc=self._sort_asc)
-        sel = self.host._movies_selected_tmdb_id
-        self.model.set_rows(rows)
-        if sel:
-            from core.missing_movies_cache import cache_key
-            for i, r in enumerate(rows):
-                if cache_key(_mtype(r), r["tmdb_id"]) == sel:
-                    self.view.selectRow(i)
-                    break
+    def render(self):
+        """Reconstruye las secciones según filtros (esqueletos) y carga las
+        visibles. Conserva la posición de scroll entre reconstrucciones."""
+        self._build_token += 1
+        pos = self.scroll.verticalScrollBar().value()
+        for sec in self._sections:
+            sec["box"].deleteLater()
+        self._sections = []
+        self._snapshot_owned()
+        kinds = self._visible_kinds()
+        for kind in kinds:
+            for rowdef in rows_for(kind):
+                if rowdef.get("hide_if_unavail") and self._watch_only():
+                    continue   # Próximamente nunca está en plataformas
+                self._add_section(kind, rowdef)
+        self.empty_lbl.hide()
+        self._update_empty()
+        self.scroll.verticalScrollBar().setValue(pos)
+        QTimer.singleShot(50, self._load_visible_rows)
 
     def update_status(self):
         from core.missing_movies_cache import load_cache
@@ -319,41 +282,52 @@ class MoviesTab(QWidget):
         if last_ts:
             mins = int((time.time() - last_ts) / 60)
             when = "hace un momento" if mins < 1 else f"hace {mins} min" if mins < 60 else f"hace {mins // 60} h"
-        results = self.host._movies_results
-        if not results:
-            text = "Sin comprobar todavía" if not when else f"Sin recomendaciones aún -- último escaneo {when}"
-        else:
-            n_movies = sum(1 for r in results if _mtype(r) != "tv")
-            n_series = len(results) - n_movies
-            parts = []
-            if n_movies:
-                parts.append(f"{n_movies} película{'s' if n_movies != 1 else ''}")
-            if n_series:
-                parts.append(f"{n_series} serie{'s' if n_series != 1 else ''}")
-            text = " · ".join(parts) + " recomendada(s)" + (f" -- último escaneo {when}" if when else "")
+        n_cards = sum(len([i for i in sec["model"].items if i]) for sec in self._sections)
+        n_rows = sum(1 for sec in self._sections if sec["box"].isVisible())
+        text = f"{n_rows} fila(s) · {n_cards} recomendada(s)" if n_cards else "Cargando filas…"
+        if when:
+            text += f" -- cruce con el servidor {when}"
         self.status_lbl.setText(text)
 
     def refresh_genres(self):
-        options = genre_options(self.host._movies_results)
+        """Opciones del combo de género desde las listas de TMDB (una llamada
+        por tipo, cacheada en el cliente), no del último escaneo."""
+        def worker():
+            names = {"Todos"}
+            mapping = {}
+            try:
+                for kind in ("movie", "tv"):
+                    for g in self.host.tmdb.get_genres(kind) or []:
+                        if g.get("name"):
+                            names.add(g["name"])
+                            mapping.setdefault(g["name"], set()).add(g["id"])
+            except Exception:
+                pass
+            ui(lambda: self._apply_genres(sorted(names), mapping))
+        run_in_thread(worker)
+
+    def _apply_genres(self, names, mapping):
+        self._genre_names = mapping
         saved = self.config.get("missing_movies_genre_filter", "") or "Todos"
-        current = saved if saved in options else "Todos"
+        current = saved if saved in names else "Todos"
         self.genre.blockSignals(True)
         self.genre.clear()
-        self.genre.addItems(options)
+        self.genre.addItems(names)
         self.genre.setCurrentText(current)
         self.genre.blockSignals(False)
-        if current != saved and saved != "Todos":
-            self.config.set("missing_movies_genre_filter", current)
-            self.config.save()
 
     def on_shown(self):
         self.host._movies_visible = True
         self.host._sync_missing_movies_from_ftp()
+        if not self._server_ids_ready:
+            self._refresh_server_ids()
+        else:
+            QTimer.singleShot(100, self._load_visible_rows)
 
     def on_hidden(self):
         self.host._movies_visible = False
 
-    # ── Filtros y orden ──
+    # ── Filtros ──
 
     def _save(self, key, value):
         self.config.set(key, value)
@@ -377,26 +351,257 @@ class MoviesTab(QWidget):
         self._save("missing_movies_genre_filter", text)
         self.render()
 
-    def _on_header(self, col):
-        key = SORT_KEYS.get(col)
-        if key is None:
-            self._update_sort_indicator()
-            return
-        if key == self._sort_key:
-            self._sort_asc = not self._sort_asc
-        else:
-            self._sort_key, self._sort_asc = key, True
-        all_saved = dict(self.config.get("table_sort", {}) or {})
-        all_saved["peliculas"] = {"key": self._sort_key, "asc": self._sort_asc}
-        self._save("table_sort", all_saved)
-        self._update_sort_indicator()
-        self.render()
+    def _visible_kinds(self):
+        tipo = TIPOS.get(self.tipo.currentText(), "all")
+        if tipo == "movies":
+            return ["movie"]
+        if tipo == "series":
+            return ["tv"]
+        return ["movie", "tv"]
 
-    def _update_sort_indicator(self):
-        col = next((c for c, k in SORT_KEYS.items() if k == self._sort_key), C_TITLE)
-        hdr = self.view.horizontalHeader()
-        hdr.setSortIndicatorShown(True)
-        hdr.setSortIndicator(col, Qt.AscendingOrder if self._sort_asc else Qt.DescendingOrder)
+    def _watch_only(self):
+        return self.switches["missing_movies_watch_only"].isChecked()
+
+    def _year_min(self):
+        text = self.years.currentText().strip()
+        if text == "Todos":
+            return None
+        m = re.match(r"^(\d+)", text)
+        if not m:
+            return None
+        return date.today().year - int(m.group(1))
+
+    def _genre_ids(self):
+        name = self.genre.currentText()
+        if not name or name == "Todos":
+            return set()
+        return set(self._genre_names.get(name, set()))
+
+    def _static_filters(self):
+        return {"owned_ids": set(self._owned),
+                "hide_owned": self.switches["missing_movies_hide_in_server"].isChecked(),
+                "hide_asian": self.switches["missing_movies_hide_asian"].isChecked(),
+                "genre_ids": self._genre_ids(), "year_min": self._year_min()}
+
+    # ── Secciones y carga perezosa ──
+
+    def _add_section(self, kind, rowdef):
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        head = QHBoxLayout()
+        title = QLabel(rowdef["title"])
+        title.setStyleSheet("font-size: 12pt; font-weight: bold;")
+        head.addWidget(title)
+        status = QLabel("Cargando…")
+        status.setStyleSheet(f"color: {theme.PENDING_COLOR}; font-size: 9pt;")
+        head.addWidget(status)
+        head.addStretch(1)
+        prev = QPushButton("‹")
+        prev.setFixedWidth(34)
+        prev.setToolTip("Anteriores")
+        nxt = QPushButton("›")
+        nxt.setFixedWidth(34)
+        nxt.setToolTip("Siguientes")
+        all_btn = QPushButton("Ver todo ›")
+        all_btn.setToolTip(f"Toda la lista '{rowdef['title']}'")
+        head.addWidget(prev)
+        head.addWidget(nxt)
+        head.addWidget(all_btn)
+        lay.addLayout(head)
+        model = RowModel(box)
+        model.set_skeleton()
+        view = QListView()
+        view.setModel(model)
+        view.setItemDelegate(self.delegate)
+        self.delegate.attach(view)
+        view.setViewMode(QListView.IconMode)
+        view.setFlow(QListView.LeftToRight)
+        view.setWrapping(False)
+        view.setResizeMode(QListView.Adjust)
+        view.setSpacing(8)
+        view.setUniformItemSizes(True)
+        view.setGridSize(QSize(CARD_W + 10, CARD_H + 10))
+        view.setSelectionMode(QAbstractItemView.SingleSelection)
+        view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        try:
+            from PySide6.QtWidgets import QStyle as _QS
+            sb_h = view.style().pixelMetric(_QS.PM_ScrollBarExtent, None, view) or 16
+        except Exception:
+            sb_h = 16
+        view.setFixedHeight(CARD_H + 10 + sb_h + 2)
+        prev.clicked.connect(lambda: view.horizontalScrollBar().setValue(
+            view.horizontalScrollBar().value() - int(view.viewport().width() * 0.9)))
+        nxt.clicked.connect(lambda: view.horizontalScrollBar().setValue(
+            view.horizontalScrollBar().value() + int(view.viewport().width() * 0.9)))
+        lay.addWidget(view)
+        self.rows_lay.insertWidget(len(self._sections), box)
+        sec = {"kind": kind, "rowdef": rowdef, "box": box, "view": view, "model": model,
+               "status_lbl": status, "state": "idle", "base": [], "token": self._build_token}
+        all_btn.clicked.connect(lambda: self._open_see_all(sec))
+        self._sections.append(sec)
+
+    def _update_empty(self):
+        any_visible = any(sec["box"].isVisible() for sec in self._sections)
+        self.empty_lbl.setVisible(bool(self._sections) and not any_visible)
+
+    def _load_visible_rows(self):
+        if not self._sections:
+            return
+        try:
+            origin = self.scroll.viewport().mapTo(self.scroll.widget(), QPoint(0, 0))
+            visible = QRect(origin, self.scroll.viewport().size())
+        except Exception:
+            visible = None
+        for sec in self._sections:
+            if sec["state"] != "idle" or sec["token"] != self._build_token:
+                continue
+            if visible is not None and not visible.intersects(sec["box"].geometry()):
+                continue
+            self._load_section(sec)
+
+    def _load_section(self, sec):
+        sec["state"] = "loading"
+        token, kind, rowdef = self._build_token, sec["kind"], sec["rowdef"]
+        filters = self._static_filters()
+        watch_only = self._watch_only()
+        client = self.host.tmdb
+
+        def worker():
+            try:
+                items = fetch_row(client, kind, rowdef)
+            except Exception as e:
+                ui(lambda m=str(e): self._section_error(sec, token, m))
+                return
+            items = apply_filters(items, **filters)
+            if watch_only and not rowdef.get("no_avail"):
+                items = filter_available(client, kind, items)
+            ui(lambda: self._section_ready(sec, token, items))
+        run_in_thread(worker)
+
+    def _section_error(self, sec, token, msg):
+        if token != self._build_token or sec["token"] != token:
+            return
+        sec["state"] = "error"
+        sec["status_lbl"].setText(f"No se pudo cargar ({msg[:80]}). Pulsa 'Ver todo' para reintentar.")
+        sec["model"].set_items([])
+        self.update_status()
+
+    def _section_ready(self, sec, token, items):
+        if token != self._build_token or sec["token"] != token:
+            return   # filtros cambiados mientras cargaba: respuesta obsoleta
+        sec["state"] = "ready"
+        sec["base"] = items
+        shown = self._with_text(items)
+        sec["model"].set_items(shown)
+        sec["box"].setVisible(bool(shown))
+        sec["status_lbl"].setText(f"{len(shown)} título(s)" if shown else "")
+        self._update_empty()
+        self.update_status()
+        sel = self.host._movies_selected_tmdb_id
+        if sel and self._shown_key is None:
+            from core.missing_movies_cache import cache_key
+            for it in shown:
+                if cache_key(_mtype(it), it["tmdb_id"]) == sel:
+                    self._show_item(it, sec["rowdef"]["title"])
+                    break
+
+    def _with_text(self, items):
+        needle = self.search.text().strip().lower()
+        if not needle:
+            return list(items)
+        return [i for i in items if needle in (i.get("title") or "").lower()]
+
+    def _apply_text(self):
+        for sec in self._sections:
+            if sec["state"] != "ready":
+                continue
+            shown = self._with_text(sec["base"])
+            sec["model"].set_items(shown)
+            sec["box"].setVisible(bool(shown))
+        self._update_empty()
+        self.update_status()
+
+    # ── IDs en servidor (tinte "En el servidor") ──
+
+    def _snapshot_owned(self):
+        owned = set(self._owned_ids) if hasattr(self, "_owned_ids") else set()
+        try:
+            for r in self.host._movies_results or []:
+                if r.get("in_server"):
+                    owned.add((r.get("media_type", "movie"), r.get("tmdb_id")))
+        except Exception:
+            pass
+        self._owned = owned
+
+    def _refresh_server_ids(self):
+        if not (self.config.get("jellyfin_enabled") or self.config.get("plex_enabled")):
+            self._owned_ids = set()
+            self._server_ids_ready = True
+            self._snapshot_owned()
+            self._refresh_states()
+            return
+
+        def worker():
+            movie_ids, series_ids = set(), set()
+            try:
+                from core.media_server_refresh import (get_jellyfin_movies, get_jellyfin_series,
+                                                       get_plex_movies, get_plex_series)
+                cfg = self.config
+                if cfg.get("jellyfin_enabled"):
+                    for m in (get_jellyfin_movies(cfg.get("jellyfin_host", ""),
+                                                  cfg.get("jellyfin_api_key", "")) or []):
+                        if m.get("tmdb_id"):
+                            movie_ids.add(m["tmdb_id"])
+                    for s in (get_jellyfin_series(cfg.get("jellyfin_host", ""),
+                                                  cfg.get("jellyfin_api_key", "")) or []):
+                        if s.get("tmdb_id"):
+                            series_ids.add(s["tmdb_id"])
+                if cfg.get("plex_enabled"):
+                    for m in (get_plex_movies(cfg.get("plex_host", ""), cfg.get("plex_token", "")) or []):
+                        if m.get("tmdb_id"):
+                            movie_ids.add(m["tmdb_id"])
+                    for s in (get_plex_series(cfg.get("plex_host", ""), cfg.get("plex_token", "")) or []):
+                        if s.get("tmdb_id"):
+                            series_ids.add(s["tmdb_id"])
+            except Exception:
+                _log.warning("Recomendado: no se pudo leer la biblioteca del servidor de medios",
+                             exc_info=True)
+            ui(lambda: self._apply_server_ids(movie_ids, series_ids))
+        run_in_thread(worker)
+
+    def _apply_server_ids(self, movie_ids, series_ids):
+        self._owned_ids = {("movie", i) for i in movie_ids} | {("tv", i) for i in series_ids}
+        self._server_ids_ready = True
+        self._snapshot_owned()
+        self._refresh_states()
+
+    def _refresh_states(self):
+        """Repinta insignias/botones (★🔒⚡⬇) sin recargar filas: el delegate
+        pregunta el estado en cada pintado, basta un dataChanged."""
+        self._snapshot_owned()
+        for sec in self._sections:
+            if sec["state"] == "ready":
+                sec["model"].refresh_all()
+
+    def _refresh_card(self, key: tuple):
+        for sec in self._sections:
+            if sec["state"] == "ready":
+                sec["model"].refresh_key(key)
+
+    def _card_state(self, item: dict) -> dict:
+        mt, tid = _mtype(item), item.get("tmdb_id", 0)
+        return {"in_server": (mt, tid) in self._owned,
+                "dl": self._dl_state.get((mt, tid)),
+                "auto_on": mt == "tv" and self.host._is_missing_ep_auto_enabled(tid),
+                "fav": self.ctx.is_favorite(mt, tid),
+                "locked": self.ctx.is_reserved(mt, tid),
+                # Tooltips con quién/cuándo (igual que la tabla: ver test_mark_attribution).
+                "fav_tip": self.ctx.favorite_tooltip(mt, tid),
+                "lock_tip": self.ctx.reservation_tooltip(mt, tid),
+                "requested": False}
 
     # ── Escaneo ──
 
@@ -417,8 +622,6 @@ class MoviesTab(QWidget):
         self._set_scanning(True)
         if force_full:
             host._movies_results = []
-            self.refresh_genres()
-            self.render()
 
         def worker():
             try:
@@ -451,82 +654,60 @@ class MoviesTab(QWidget):
         self.host._movies_results = results
         self.refresh_genres()
         self._set_scanning(False)
+        self._refresh_server_ids()
         self.update_status()
         self.render()
         self.host._push_missing_movies_to_ftp()
 
-    # ── Acciones de fila ──
+    # ── Acciones de card ──
 
-    def actions_for(self, r) -> list:
-        is_tv = _mtype(r) == "tv"
-        in_server = bool(r.get("in_server"))
-        acts = []
-        if is_tv:
-            on = self.host._is_missing_ep_auto_enabled(r["tmdb_id"])
-            acts.append(Action("auto", "⚡", theme.ACCENT if on else theme.ICON_NEUTRAL,
-                               self.host._auto_btn_tooltip(r["tmdb_id"])))
-        else:
-            acts.append(Action("noop", "", theme.BG, "", enabled=False))
-        acts += [
-            Action("search", "🔍", theme.ICON_AMULE, "Buscar en aMule (abre la pestaña Descargas)"),
-            Action("copy", "📋", theme.ICON_COPY, "Copiar nombre de la obra al portapapeles"),
-            Action("download", "⬇", self.model.dl_state.get((_mtype(r), r["tmdb_id"]), theme.ICON_DL_IDLE),
-                   ("Ya está en el servidor" if in_server else
-                    ("Descargar el PILOTO (1x01) de esta serie en aMule (en segundo plano). Para completar "
-                     "la serie entera usa ⚡." if is_tv else
-                     "Buscar en aMule y descargar el mejor candidato para esta película (en segundo plano).")),
-                   enabled=not in_server),
-            Action("dismiss", "🚫", theme.ICON_IGNORE, "Quitar recomendación"),
-        ]
-        return acts
+    def _on_card_selected(self, item: dict):
+        sec_title = next((s["rowdef"]["title"] for s in self._sections
+                          if any(i is not None and _key(i) == _key(item) for i in s["model"].items)),
+                         "")
+        self._show_item(item, sec_title)
 
-    def _row(self, index: QModelIndex):
-        return self.model.rows[index.row()] if 0 <= index.row() < len(self.model.rows) else None
-
-    def _on_clicked(self, index: QModelIndex):
-        r = self._row(index)
-        if r is None:
-            return
-        mt, tid = _mtype(r), r["tmdb_id"]
-        if index.column() == C_FAV:
-            self.ctx.toggle_favorite(mt, tid, r["title"])
-        elif index.column() == C_LOCK:
-            size = self.ctx.best_known_size_bytes(mt, tid, 0)
-            self.ctx.toggle_reservation(self.window(), mt, tid, r["title"], size)
-
-    def _on_action(self, index: QModelIndex, action_id: str):
-        r = self._row(index)
-        if r is None:
-            return
+    def _on_card_action(self, item: dict, action_id: str):
+        mt, tid = _mtype(item), item.get("tmdb_id", 0)
         try:
-            year = int(r.get("year") or 0) or None
+            year = int(item.get("year") or 0) or None
         except (TypeError, ValueError):
             year = None
-        is_tv = _mtype(r) == "tv"
+        is_tv = mt == "tv"
         if action_id == "auto":
-            self.host._toggle_missing_ep_auto_complete(r["tmdb_id"])
-            self.model.refresh_all()
+            self.host._toggle_missing_ep_auto_complete(tid)
+            self._refresh_card((mt, tid))
         elif action_id == "search":
             win = self.host.window
             if win is not None:
-                # Solo el título: aMule rechaza consultas con paréntesis; el
-                # año va aparte para exigirlo al elegir candidato.
-                win.amule_search(r["title"], expected_year=year, is_movie=not is_tv)
+                win.amule_search(item.get("title", ""), expected_year=year, is_movie=not is_tv)
         elif action_id == "copy":
-            QGuiApplication.clipboard().setText(f"{r['title']} ({r['year']})")
-            self.ctx.set_status(f"Copiado: {r['title']} ({r['year']})", SUCCESS_COLOR)
+            QGuiApplication.clipboard().setText(f"{item.get('title', '')} ({item.get('year', '')})")
+            self.ctx.set_status(f"Copiado: {item.get('title', '')} ({item.get('year', '')})", SUCCESS_COLOR)
         elif action_id == "download":
-            self._download(r, year, is_tv)
+            self._download(item, year, is_tv)
         elif action_id == "dismiss":
-            self.host._dismiss_missing_movie(r)
+            if self._shown_key == (mt, tid):
+                self._shown_key = None
+                self._clear_detail()
+            self.host._dismiss_missing_movie({"media_type": mt, "tmdb_id": tid,
+                                              "title": item.get("title", "")})
+        elif action_id == "fav":
+            self.ctx.toggle_favorite(mt, tid, item.get("title", ""))
+            self._refresh_card((mt, tid))
+        elif action_id == "lock":
+            size = self.ctx.best_known_size_bytes(mt, tid, 0)
+            self.ctx.toggle_reservation(self.window(), mt, tid, item.get("title", ""), size)
+            self._refresh_card((mt, tid))
 
     def _download(self, r, year, is_tv):
-        key = (_mtype(r), r["tmdb_id"])
-        if self.model.dl_state.get(key) == theme.ICON_DL_BUSY:
+        from core.amule_download import auto_download
+        key = (_mtype(r), r.get("tmdb_id", 0))
+        if self._dl_state.get(key) == "busy":
             return
-        self.model.dl_state[key] = theme.ICON_DL_BUSY
-        self.view.viewport().update()
-        query = f"{r['title']} 1x01" if is_tv else r["title"]
+        self._dl_state[key] = "busy"
+        self._refresh_card(key)
+        query = f"{r.get('title', '')} 1x01" if is_tv else r.get("title", "")
         host = self.host
 
         def worker():
@@ -540,71 +721,88 @@ class MoviesTab(QWidget):
 
             def apply():
                 if ok:
-                    self.model.dl_state[key] = theme.ICON_DL_OK
+                    self._dl_state[key] = "ok"
                     self.ctx.set_status(f"Descarga lanzada: {name[:60]}", SUCCESS_COLOR)
-                elif why.startswith("ya en completados"):
-                    self.model.dl_state[key] = theme.ICON_DL_ALREADY
+                elif (why or "").startswith("ya en completados"):
+                    self._dl_state[key] = "already"
                     self.ctx.set_status(f"Ya en completados de aMule (no se vuelve a bajar): {name[:60]}",
                                         WARNING_COLOR)
                 else:
-                    self.model.dl_state[key] = theme.ICON_DL_FAIL
+                    self._dl_state[key] = "fail"
                     self.ctx.set_status(f"{query}: {why}", WARNING_COLOR)
-                self.view.viewport().update()
+                self._refresh_card(key)
             ui(apply)
         run_in_thread(worker)
 
     # ── Ficha ──
 
-    def _show_detail(self, row: int):
-        if not (0 <= row < len(self.model.rows)):
-            return
-        r = self.model.rows[row]
+    def _clear_detail(self):
+        for w in (self.d_title, self.d_meta, self.d_cert, self.d_cast, self.d_overview):
+            w.setText("")
+        self.poster.setPixmap(QPixmap())
+        self.poster.setText("Pulsa una obra\npara ver su ficha")
+
+    def _show_item(self, item: dict, list_label: str = ""):
         from core.missing_movies_cache import cache_key
-        self.host._movies_selected_tmdb_id = cache_key(_mtype(r), r["tmdb_id"])
-        is_tv = _mtype(r) == "tv"
-        self.d_title.setText(r.get("title", ""))
-        meta = " · ".join(x for x in ["📺 Serie" if is_tv else "🎬 Película", r.get("year") or "",
-                                      MOVIE_LIST_LABELS.get(r.get("list"), r.get("list", "")),
-                                      f"⭐ {(r.get('vote_average') or 0):.1f}"] if x)
-        genres = [g for g in (r.get("genres") or []) if g]
+        self.host._movies_selected_tmdb_id = cache_key(_mtype(item), item.get("tmdb_id", 0))
+        self._shown_key = _key(item)
+        is_tv = _mtype(item) == "tv"
+        self.d_title.setText(item.get("title", ""))
+        meta = " · ".join(x for x in ["📺 Serie" if is_tv else "🎬 Película", item.get("year") or "",
+                                      list_label or "",
+                                      f"⭐ {(item.get('vote') or 0):.1f}"] if x)
+        genres = [self._genre_name(gid) for gid in (item.get("genre_ids") or [])]
+        genres = [g for g in genres if g]
         if genres:
             meta += " · " + ", ".join(genres)
         self.d_meta.setText(meta)
-        self.d_cert.setText("Serie" if is_tv else (r.get("certification") or "Clasificación: …"))
+        self.d_cert.setText("Serie" if is_tv else "Clasificación: …")
         self.d_cast.setText("Reparto: …")
-        self.d_overview.setText(r.get("overview") or "Sin sinopsis disponible")
+        self.d_overview.setText(item.get("overview") or "Sin sinopsis disponible")
         self.poster.setPixmap(QPixmap())
         self.poster.setText("…")
         token = object()
         self._poster_token = token
         tmdb = self.host.tmdb
+        poster_url = item.get("poster_url")
 
         def worker():
-            out = {}
-            if r.get("poster_url"):
+            out = {"poster_pm": self.delegate.posters.get(poster_url), "poster_raw": None,
+                   "cast": [], "cert": None}
+            if out["poster_pm"] is None and poster_url:
                 try:
-                    resp = requests.get(r["poster_url"], timeout=8)
-                    out["poster"] = resp.content if resp.ok else None
+                    resp = requests.get(poster_url, timeout=8)
+                    out["poster_raw"] = resp.content if resp.ok else None
                 except Exception:
-                    out["poster"] = None
+                    out["poster_raw"] = None
             try:
-                out["cast"] = tmdb.get_top_cast(_mtype(r), r["tmdb_id"], 6)
+                out["cast"] = tmdb.get_top_cast(_mtype(item), item.get("tmdb_id", 0), 6)
             except Exception:
                 out["cast"] = []
-            if not is_tv and not r.get("certification"):
+            if not is_tv:
                 try:
-                    out["cert"] = tmdb.get_movie_certification(r["tmdb_id"]) or ""
+                    out["cert"] = tmdb.get_movie_certification(item.get("tmdb_id", 0)) or ""
                 except Exception:
                     out["cert"] = ""
             ui(lambda: self._apply_detail(token, out))
         run_in_thread(worker)
 
+    def _genre_name(self, gid):
+        for name, ids in self._genre_names.items():
+            if gid in ids:
+                return name
+        return ""
+
     def _apply_detail(self, token, out):
         if token is not self._poster_token:
             return
-        raw = out.get("poster")
-        pm = QPixmap()
-        if raw and pm.loadFromData(raw):
+        pm = out.get("poster_pm")
+        raw = out.get("poster_raw")
+        if raw:
+            loaded = QPixmap()
+            if loaded.loadFromData(raw):
+                pm = loaded
+        if pm is not None and not pm.isNull():
             self.poster.setPixmap(pm.scaled(170, 245, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             self.poster.setText("")
         else:
@@ -613,3 +811,12 @@ class MoviesTab(QWidget):
         self.d_cast.setText(("Reparto: " + ", ".join(cast)) if cast else "Reparto: sin datos")
         if "cert" in out:
             self.d_cert.setText(f"Clasificación: {out['cert']}" if out["cert"] else "Clasificación: sin dato")
+
+    # ── Ver todo ──
+
+    def _open_see_all(self, sec):
+        from gui_qt.movies.see_all import SeeAllDialog
+        dlg = SeeAllDialog(self, self.host, sec["kind"], sec["rowdef"], self._static_filters(),
+                           self._watch_only(), self._card_state, self._on_card_action,
+                           self._on_card_selected)
+        dlg.exec()
