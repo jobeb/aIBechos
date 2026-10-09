@@ -12,12 +12,15 @@ en el ranking de subidores.
 
 _GB = 1024 ** 3
 
-# Ascendente -- (umbral en bytes, emoji, etiqueta).
+# Ascendente -- (umbral en bytes, emoji, etiqueta). Los emojis NO pueden ser
+# medallas 🥇🥈🥉: esas marcan el PUESTO en el ranking (1º/2º/3º) y esto
+# marca GB acumulados -- con los mismos glyphs "🥇 Jose 🥉" era ilegible
+# (¿primero con 10 GB, o...?). Estrellas/corona/diamante solo son hitos.
 _TIERS = (
-    (10 * _GB, "🥉", "10 GB"),
-    (50 * _GB, "🥈", "50 GB"),
-    (100 * _GB, "🥇", "100 GB"),
-    (500 * _GB, "🏆", "500 GB"),
+    (10 * _GB, "⭐", "10 GB"),
+    (50 * _GB, "🌟", "50 GB"),
+    (100 * _GB, "💫", "100 GB"),
+    (500 * _GB, "👑", "500 GB"),
     (1024 * _GB, "💎", "1 TB"),
 )
 

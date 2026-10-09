@@ -274,11 +274,13 @@ class StatsTab(QWidget):
                     name = f"{name} {extra}"
             rows.append((medals.get(i, f"{i + 1}."), name, e.get(value_key, 0) / mx, fmt(e.get(value_key, 0))))
         panel.body.addWidget(_Bars(rows, accent))
+        if suffix is not None:
+            panel.note("🥇🥈🥉 = puesto · estrella/corona/diamante = hito de GB (etiqueta junto al nombre)")
 
     @staticmethod
     def _badge(e):
         b = milestone_for(e.get("total_bytes", 0))
-        return b[0] if b else ""
+        return f"{b[0]} {b[1]}" if b else ""
 
     def _leaderboards(self):
         h = self.host

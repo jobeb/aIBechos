@@ -8,11 +8,11 @@ def test_milestone_for_none_below_first_tier():
 
 
 def test_milestone_for_exact_threshold_counts():
-    assert milestone_for(10 * _GB) == ("🥉", "10 GB")
+    assert milestone_for(10 * _GB) == ("⭐", "10 GB")
 
 
 def test_milestone_for_returns_highest_tier_reached():
-    assert milestone_for(120 * _GB) == ("🥇", "100 GB")
+    assert milestone_for(120 * _GB) == ("💫", "100 GB")
 
 
 def test_milestone_for_top_tier():
