@@ -167,3 +167,19 @@ def test_accion_descartar(qtbot):
     item = sec["model"].items[0]
     tab._on_card_action(dict(item), "dismiss")
     assert tab.host.dismissed and tab.host.dismissed[0]["tmdb_id"] == item["tmdb_id"]
+
+
+def test_aviso_vacio_incrustado_no_ventana(qtbot):
+    # Regresión: el aviso iba sin padre y salía como ventana flotante
+    # titulada "aIBechos" al quedarse todas las filas ocultas.
+    tab = _tab(qtbot)
+    assert tab.empty_lbl.parent() is not None
+    assert not tab.empty_lbl.isWindow()
+    for sec in tab._sections:
+        sec["box"].hide()
+    tab._update_empty()
+    assert tab.empty_lbl.isVisibleTo(tab)
+    assert not tab.empty_lbl.isWindow()
+    tab._sections[0]["box"].show()
+    tab._update_empty()
+    assert tab.empty_lbl.isHidden()
