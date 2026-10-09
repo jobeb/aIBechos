@@ -53,6 +53,11 @@ class GeneralPage(Page):
             txt = "Iniciar con el sistema (no disponible aquí)"
         sw = c.switch(txt, "start_with_windows", False)
         sw.setEnabled(is_windows() or is_macos() or is_linux())
+        c.switch("Minimizar a la bandeja del sistema al cerrar la ventana (✕)",
+                 "close_to_tray", False,
+                 tip="Si está activo, el aspa de cerrar esconde la ventana en la bandeja\n"
+                     "(al lado del reloj) y la app sigue funcionando en segundo plano.\n"
+                     "Para salir del todo, usa \"Salir\" en el menú de la bandeja.")
         c.switch("Notificaciones de escritorio al completar subidas", "desktop_notifications", True)
         c.switch("Renombrar archivos en origen (local)", "rename_local", True)
         c.note("Si lo desactivas, los archivos locales conservan su nombre original al añadirlos o "

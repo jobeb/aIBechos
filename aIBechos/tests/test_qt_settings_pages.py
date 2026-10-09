@@ -42,6 +42,7 @@ SETTINGS_KEYS = {
     "p2p_lang_it", "p2p_lang_pt", "p2p_lang_vos", "p2p_score_weights", "p2p_trusted_groups",
     "plex_enabled", "plex_host", "plex_token", "poll_interval", "rename_local", "rename_remote",
     "reservation_quota_gb", "shared_data_ftp_path", "solicitudes_web_url", "start_with_windows",
+    "close_to_tray",
     "streaming_availability_key", "tmdb_api_key", "tv_template", "unstuck_backoff_base_minutes",
     "unstuck_backoff_max_minutes", "unstuck_enabled", "unstuck_file_ttl_minutes",
     "unstuck_max_retries", "watch_folder",

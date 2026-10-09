@@ -453,6 +453,17 @@ class MainWindow(QMainWindow):
         QApplication.instance().quit()
 
     def closeEvent(self, event):
+        # "Minimizar a la bandeja al cerrar" (Configuración → Cliente →
+        # General → Modo Automático): el aspa esconde la ventana y la app
+        # sigue en segundo plano (las subidas/vigilancia continúan). Sin
+        # bandeja disponible se sale normalmente. "Salir" del menú de la
+        # bandeja llama a quit_app() directamente, sin pasar por aquí.
+        if (self.host.config_data.get("close_to_tray", False)
+                and not self._quitting and self.tray is not None):
+            event.ignore()
+            self.hide()
+            self.notify("aIBechos", "La app sigue ejecutándose en la bandeja del sistema.")
+            return
         self.quit_app()
         if self._quitting:
             event.accept()

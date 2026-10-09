@@ -1,14 +1,15 @@
 """
 Tema oscuro de la interfaz Qt: estilo Fusion + paleta oscura + una hoja QSS
 corta, con los colores de acento/estado de la app (ACCENT, ERROR_COLOR,
-ICON_* ...).
+ICON_* ...). El acento es el amarillo de la web de solicitudes (#f2c230).
 """
 
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-ACCENT = "#1DB954"
-ACCENT_HOVER = "#17a349"
+ACCENT = "#f2c230"
+ACCENT_HOVER = "#ffd659"
+ACCENT_INK = "#1d1600"
 ERROR_COLOR = "#e74c3c"
 WARNING_COLOR = "#f39c12"
 SUCCESS_COLOR = "#2ecc71"
@@ -28,7 +29,7 @@ ICON_DL_ALREADY = "#9c6e0e"
 ICON_DL_FAIL = "#8a1f16"
 ICON_NEUTRAL = "#3a3f44"
 
-SELECTED_ROW = "#204a34"
+SELECTED_ROW = "#4a3d20"
 
 BG = "#1e1f22"
 BG_ALT = "#26272b"
@@ -45,12 +46,12 @@ QToolTip {{ background: #2b2b2b; color: #f0f0f0; border: 1px solid {BORDER}; pad
 QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 6px; top: -1px; }}
 QTabBar::tab {{ background: {PANEL}; color: {TEXT}; padding: 7px 16px; border: 1px solid {BORDER};
                border-bottom: none; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 2px; }}
-QTabBar::tab:selected {{ background: {ACCENT}; color: #0b0b0b; font-weight: bold; }}
+QTabBar::tab:selected {{ background: {ACCENT}; color: {ACCENT_INK}; font-weight: bold; }}
 QTabBar::tab:hover:!selected {{ background: #35373c; }}
 QPushButton {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px; padding: 5px 12px; color: {TEXT}; }}
 QPushButton:hover {{ background: #35373c; }}
 QPushButton:disabled {{ color: #6b6f75; }}
-QPushButton[accent="true"] {{ background: {ACCENT}; color: #0b0b0b; border: none; font-weight: bold; }}
+QPushButton[accent="true"] {{ background: {ACCENT}; color: {ACCENT_INK}; border: none; font-weight: bold; }}
 QPushButton[accent="true"]:hover {{ background: {ACCENT_HOVER}; }}
 QPushButton[danger="true"] {{ background: #c0392b; border: none; }}
 QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ background: {BG_ALT}; border: 1px solid {BORDER};

@@ -8,7 +8,7 @@ lo compara con config para saber si hay cambios sin guardar.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QPlainTextEdit, QScrollArea, QSpinBox, QVBoxLayout,
                                QWidget)
 
@@ -96,9 +96,13 @@ class Card(QFrame):
         self.row(label, e, tip)
         return e
 
-    def spin(self, label, key, lo, hi, default, tip=None, width=90):
+    def spin(self, label, key, lo, hi, default, tip=None, width=100):
         sb = QSpinBox()
         sb.setRange(lo, hi)
+        # Símbolos "+"/"−" como texto en vez de las flechas del estilo: con la
+        # hoja QSS propia las flechas nativas quedaban vacías (dos cuadrados
+        # sin símbolo). El texto siempre se dibuja, sea cual sea el estilo.
+        sb.setButtonSymbols(QAbstractSpinBox.PlusMinus)
         try:
             sb.setValue(int(self.page.cfg.get(key, default)))
         except (TypeError, ValueError):
@@ -168,10 +172,11 @@ def int_or(value, default):
         return default
 
 
-def float_spin(lo, hi, value, decimals=1, width=100) -> QDoubleSpinBox:
+def float_spin(lo, hi, value, decimals=1, width=110) -> QDoubleSpinBox:
     sb = QDoubleSpinBox()
     sb.setRange(lo, hi)
     sb.setDecimals(decimals)
+    sb.setButtonSymbols(QAbstractSpinBox.PlusMinus)
     try:
         sb.setValue(float(value))
     except (TypeError, ValueError):

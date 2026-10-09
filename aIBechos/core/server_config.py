@@ -96,7 +96,7 @@ Excluido a propósito, y por qué (configuración de CLIENTE):
   preferencias de interfaz o estado de ESTE equipo, sin ningún efecto
   sobre el servidor.
 - watch_folder, poll_interval, auto_action, manual_action, auto_extract_archives,
-  min_confidence, desktop_notifications, start_with_windows, rename_local: comportamiento
+  min_confidence, desktop_notifications, start_with_windows, close_to_tray, rename_local: comportamiento
   del modo automático y de la subida manual de CADA equipo -- forzarlo
   igual para todos no tendría sentido (cada persona vigila su propia
   carpeta local, y puede querer un destino distinto tras subir a mano).

@@ -76,6 +76,11 @@ DEFAULTS = {
     # maximizada -- ver _save_window_state/_apply_window_state en gui_qt/main_window.py.
     "window_geometry": "",
     "window_maximized": False,
+    # Al pulsar el aspa de cerrar, minimizar a la bandeja del sistema en vez
+    # de salir (la app sigue vigilando/subiendo en segundo plano). Salir del
+    # todo sigue disponible desde el menú de la bandeja ("Salir").
+    # Ver MainWindow.closeEvent en gui_qt/main_window.py.
+    "close_to_tray": False,
     "last_dir": "",
     "watch_folder": "",
     "poll_interval": 10,
