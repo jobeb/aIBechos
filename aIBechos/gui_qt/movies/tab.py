@@ -283,8 +283,14 @@ class MoviesTab(QWidget):
             mins = int((time.time() - last_ts) / 60)
             when = "hace un momento" if mins < 1 else f"hace {mins} min" if mins < 60 else f"hace {mins // 60} h"
         n_cards = sum(len([i for i in sec["model"].items if i]) for sec in self._sections)
-        n_rows = sum(1 for sec in self._sections if sec["box"].isVisible())
-        text = f"{n_rows} fila(s) · {n_cards} recomendada(s)" if n_cards else "Cargando filas…"
+        n_visible = sum(1 for sec in self._sections if sec["box"].isVisible())
+        n_total = len(self._sections)
+        if n_cards:
+            text = f"{n_cards} recomendada(s) en {n_visible} de {n_total} filas"
+        elif n_visible < n_total:
+            text = f"Cargando filas… ({n_total - n_visible} ocultas por los filtros)"
+        else:
+            text = "Cargando filas…"
         if when:
             text += f" -- cruce con el servidor {when}"
         self.status_lbl.setText(text)
@@ -468,14 +474,17 @@ class MoviesTab(QWidget):
         filters = self._static_filters()
         watch_only = self._watch_only()
         client = self.host.tmdb
+        # Los filtros baratos filtran CADA página mientras se rellena la
+        # fila (si no, con género+años solo sobrevivían 1-3 ítems por fila).
+        # El texto y la disponibilidad (cara) van después, como en la web.
+        prefilter = lambda batch: apply_filters(batch, **filters)
 
         def worker():
             try:
-                items = fetch_row(client, kind, rowdef)
+                items = fetch_row(client, kind, rowdef, prefilter=prefilter)
             except Exception as e:
                 ui(lambda m=str(e): self._section_error(sec, token, m))
                 return
-            items = apply_filters(items, **filters)
             if watch_only and not rowdef.get("no_avail"):
                 items = filter_available(client, kind, items)
             ui(lambda: self._section_ready(sec, token, items))

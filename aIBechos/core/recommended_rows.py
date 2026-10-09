@@ -144,22 +144,25 @@ def normalize_item(r: dict, kind: str) -> dict:
 
 
 def fetch_row(client, kind: str, rowdef: dict, limit: int | None = None,
-              max_pages: int = 5) -> list:
+              max_pages: int = 5, prefilter=None) -> list:
     """Ítems normalizados de una fila, rellenando con más páginas hasta el
-    tope (máximo *max_pages*, sin repetir). La web las pide en paralelo;
-    aquí en serie para no castigar el límite de TMDB (el _get del cliente
-    cachea, así que revisitar una fila es gratis)."""
+    tope (máximo *max_pages*, sin repetir). *prefilter* (opcional) recorta
+    cada página ANTES de acumular -- así los filtros (servidor, género,
+    años...) no dejan la fila en migajas: se sigue pidiendo hasta llenar,
+    igual que la web. En serie para no castigar el límite de TMDB (el _get
+    del cliente cachea, así que revisitar una fila es gratis)."""
     want = limit if limit is not None else row_limit(rowdef)
     items, seen, pages, page = [], set(), 1, 1
     while len(items) < want and page <= min(pages, max_pages):
         fetched, pages = client.list_endpoint(rowdef["path"], kind, page=page,
                                               params=rowdef.get("params") or {})
-        for r in fetched:
-            key = (r.get("media_type") or kind, r.get("id"))
-            if r.get("id") is None or key in seen:
-                continue
-            seen.add(key)
-            items.append(normalize_item(r, kind))
+        batch = [normalize_item(r, kind) for r in fetched
+                 if r.get("id") is not None and (r.get("media_type") or kind, r.get("id")) not in seen]
+        if prefilter is not None:
+            batch = prefilter(batch)
+        for it in batch:
+            seen.add((it.get("media_type"), it.get("tmdb_id")))
+            items.append(it)
         page += 1
     items = items[:want]
     if rowdef.get("numbered"):
@@ -190,9 +193,10 @@ def apply_filters(items: list, owned_ids: set | None = None,
             continue
         if year_min is not None:
             try:
-                if int((it.get("year") or "")[:4]) < year_min:
-                    continue
+                y = int((it.get("year") or "")[:4])
             except (TypeError, ValueError):
+                y = 0
+            if y and y < year_min:
                 continue
         if needle and needle not in (it.get("title") or "").lower():
             continue

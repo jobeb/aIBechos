@@ -81,6 +81,26 @@ def test_apply_filters():
     assert len(apply_filters(items)) == 3
 
 
+def test_fetch_row_filtra_mientras_rellena():
+    # Página 1 entera descartada por el prefiltro: se sigue con la 2.
+    rowdef = {"id": "x", "title": "X", "path": "/d", "params": {}}
+    client = _Client([([_item(1, genre_ids=[27]), _item(2, genre_ids=[27])], 2),
+                      ([_item(3, genre_ids=[35])], 2)])
+    items = fetch_row(client, "movie", rowdef, limit=2,
+                      prefilter=lambda batch: [i for i in batch if 35 in i["genre_ids"]])
+    assert [i["tmdb_id"] for i in items] == [3]
+    assert len(client.calls) == 2
+    # Sin prefiltro habrían entrado 1 y 2 sin pedir más páginas.
+    client2 = _Client([([_item(1), _item(2)], 2), ([_item(3)], 2)])
+    assert [i["tmdb_id"] for i in fetch_row(client2, "movie", rowdef, limit=2)] == [1, 2]
+    assert len(client2.calls) == 1
+
+
+def test_ano_desconocido_pasa_el_filtro():
+    items = [normalize_item(_item(1, release_date=""), "movie")]
+    assert apply_filters(items, year_min=2025) == items
+
+
 def test_disponibilidad():
     assert tv_available({"results": {"ES": {"flatrate": [{"a": 1}]}}}) is True
     assert tv_available({"results": {"ES": {}}}) is False

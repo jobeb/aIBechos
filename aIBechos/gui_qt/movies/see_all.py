@@ -86,14 +86,14 @@ class SeeAllDialog(QDialog):
             try:
                 fetched, pages = client.list_endpoint(rowdef["path"], kind, page=token_page,
                                                       params=rowdef.get("params") or {})
-                items = []
+                batch = []
                 for r in fetched:
                     key = (r.get("media_type") or kind, r.get("id"))
                     if r.get("id") is None or key in self._seen:
                         continue
                     self._seen.add(key)
-                    items.append(normalize_item(r, kind))
-                items = apply_filters(items, **filters)
+                    batch.append(normalize_item(r, kind))
+                items = apply_filters(batch, **filters)
                 if self.watch_only:
                     items = filter_available(client, kind, items)
             except Exception as e:
