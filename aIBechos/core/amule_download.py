@@ -26,6 +26,7 @@ _log = get_logger("aIBechos.amule_download", "app.log")
 EC_LOCK = threading.Lock()
 
 ALREADY_COMPLETED_REASON = "ya en completados de aMule (no se vuelve a bajar)"
+JUDGE_MAX_TRIES = 3
 
 
 def downloads_key(r) -> str:
@@ -40,6 +41,85 @@ def downloads_key(r) -> str:
         return f"{getattr(r, 'name', '')}|{getattr(r, 'size_human', '')}"
     except Exception:
         return str(id(r))
+
+
+def pick_with_judge(ranked: list, judge_fn, max_tries: int = JUDGE_MAX_TRIES):
+    """Elige el primer candidato no vetado por la IA (ver
+    ai_title_fallback.judge_download_candidate). *ranked*: mejor primero.
+    *judge_fn(cand)* -> dict {"verdict","reason"} o None (IA caída).
+    Devuelve (elegido|None, notas:[str]): ok/dudoso/None descargan (lo
+    dudoso se anota); "malo" prueba con el siguiente, como mucho
+    *max_tries*. Si todos son malos, (None, motivos): bloquear con motivo.
+    Puro (sin EC) para poder probarlo."""
+    vetoes = []
+    for cand in list(ranked or [])[:max(1, max_tries)]:
+        try:
+            res = judge_fn(cand)
+        except Exception:
+            res = None
+        if res is None:
+            return cand, vetoes
+        verdict = str((res or {}).get("verdict") or "")
+        reason = str((res or {}).get("reason") or verdict)
+        if verdict in ("ok", "dudoso"):
+            if verdict == "dudoso":
+                vetoes.append(f"dudoso: {reason}")
+            return cand, vetoes
+        vetoes.append(reason)
+    return None, vetoes
+
+
+def _judge_or_keep(config, query: str, best, results: list, is_movie: bool,
+                   expected_year, typical_size, max_size):
+    """Pasa el mejor candidato por el juez IA (solo si está activado con
+    key): devuelve (best|None, motivo_bloqueo). Sin IA, (best, "").
+    "malo" prueba con los siguientes por score (máx. JUDGE_MAX_TRIES); si
+    todos son malos bloquea con el motivo. Nunca lanza."""
+    try:
+        ai_key = (config.get("ai_api_key", "") or "") if config.get("ai_fallback_enabled") else ""
+    except Exception:
+        ai_key = ""
+    if not best or not ai_key or not results:
+        return best, ""
+    try:
+        from core.ai_title_fallback import judge_download_candidate
+        from core.download_quality import score_download
+        from core.fmt import fmt_size
+    except Exception:
+        return best, ""
+    size_hint = typical_size or max_size
+    try:
+        size_human = fmt_size(size_hint) if size_hint else ""
+    except Exception:
+        size_human = ""
+    wanted = {"title": query, "year": expected_year or "", "is_movie": bool(is_movie),
+              "expected_size": size_human}
+
+    def judge_fn(cand):
+        return judge_download_candidate(
+            wanted, {"name": getattr(cand, "name", ""), "size_human": getattr(cand, "size_human", "?"),
+                     "sources": getattr(cand, "sources", "?")}, ai_key)
+
+    try:
+        ranked = sorted((r for r in results if r is not None),
+                        key=lambda r: score_download(r, query, expected_year, is_movie,
+                                                     typical_size, max_size),
+                        reverse=True)
+    except Exception:
+        return best, ""
+    if best not in ranked:
+        ranked = [best] + ranked
+    chosen, notes = pick_with_judge(ranked, judge_fn)
+    for n in notes:
+        _log.warning("Juez IA (%s): %s", query, n)
+    if chosen is None:
+        reason = "; ".join(notes)[:200] or "descartado por la IA"
+        _log.warning("Juez IA bloquea descarga de %r: %s", query, reason)
+        return None, f"IA: {reason}"
+    if chosen is not best:
+        _log.info("Juez IA: mejor (%s) vetado, se descarga %r", getattr(best, "name", "?"),
+                  getattr(chosen, "name", "?"))
+    return chosen, ""
 
 
 def ec_client_from_config(config, timeout: float = 10.0) -> EcClient:
@@ -116,6 +196,10 @@ def auto_download(config, ec_lock, query: str, search_type: str | None = None,
                         last_key = cand_key
                 if best is None:
                     return False, "sin candidato que cumpla el umbral", "", ""
+                best, block_reason = _judge_or_keep(config, query, best, results, is_movie,
+                                                    expected_year, typical_size, max_size)
+                if best is None:
+                    return False, block_reason, "", ""
                 ok, _raw = ec.download(best)
                 if ok and _already_completed(ec, best):
                     return False, ALREADY_COMPLETED_REASON, _result_hash(best), best.name

@@ -603,6 +603,16 @@ class DownloadsTab(QWidget):
                         out["poster"] = resp.content if resp.ok else None
                     except Exception:
                         out["poster"] = None
+            if not (details.get("overview") or r.get("overview") or "").strip():
+                try:
+                    from core.ai_synopsis import ai_key_if_enabled, es_overview
+                    ai_key = ai_key_if_enabled(self.host.config_data)
+                    tid = int(r.get("id", 0) or 0)
+                    if ai_key and tid and mt in ("tv", "movie"):
+                        out["ai_es"] = es_overview(mt, tid,
+                                                   self.host.config_data.get("tmdb_api_key", ""), ai_key)
+                except Exception:
+                    pass
             ui(lambda: self._apply_detail(token, title, out))
         run_in_thread(worker)
 
@@ -626,7 +636,8 @@ class DownloadsTab(QWidget):
                             (f"Clasificación: {out.get('cert')}" if out.get("cert") else "Clasificación: sin dato"))
         cast = out.get("cast") or []
         self.d_cast.setText(("Reparto: " + ", ".join(cast)) if cast else "")
-        self.d_overview.setText(details.get("overview") or r.get("overview") or "Sin sinopsis disponible")
+        overview = details.get("overview") or r.get("overview") or out.get("ai_es") or ""
+        self.d_overview.setText(overview or "Sin sinopsis disponible")
         raw = out.get("poster")
         pm = QPixmap()
         if raw and pm.loadFromData(raw):

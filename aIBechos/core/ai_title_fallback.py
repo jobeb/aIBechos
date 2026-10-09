@@ -155,6 +155,80 @@ def guess_original_comic_title_via_ai(local_title: str, api_key: str, model: str
     return original_title
 
 
+JUDGE_SYSTEM_PROMPT = (
+    "Eres el control de calidad de un descargador de series y películas. Te "
+    "digo QUÉ se quiere conseguir y el nombre/tamaño de UN candidato "
+    "encontrado en la red eDonkey. Decides si ese archivo es lo pedido.\n"
+    "Criterios (todos deben cumplirse para 'ok'):\n"
+    "1. Título: el MISMO título/serie y, si se pide capítulo, la MISMA "
+    "temporada y episodio (o la película del MISMO año). Un título parecido "
+    "de otra obra es 'malo'.\n"
+    "2. Idioma: CASTELLANO de España (doblado: espanol, castellano, spanish, "
+    "dual con castellano). LATINO solo, VOS (versión original subtitulada), "
+    "VOSTFR, italiano, alemán, portugués o francés solo son 'malo'.\n"
+    "3. Contenido: nada de porno/erótico aunque el nombre coincida, ni "
+    "samples, trailers, extras o fakes evidentes.\n"
+    "4. Tamaño: coherente con el esperado (un capítulo no pesa 15 GB ni una "
+    "película 100 MB); si no te doy tamaño esperado, solo descarta lo "
+    "absurdo.\n"
+    "Responde SOLO con un JSON de una línea: "
+    '{"verdict": "ok|dudoso|malo", "reason": "<motivo corto en español>"}. '
+    "'dudoso' si podría valer pero algo no cuadra del todo."
+)
+
+
+def judge_download_candidate(wanted: dict, candidate: dict, api_key: str,
+                             model: str = DEFAULT_MODEL, timeout: int = 20) -> Optional[dict]:
+    """Juez IA de un candidato de aMule antes de descargarlo (ver
+    JUDGE_SYSTEM_PROMPT): devuelve {"verdict": "ok|dudoso|malo", "reason"}
+    o None si falla cualquier cosa (sin key, red, formato...) -- None es
+    fail-open: quien llama sigue como si la IA no existiera. Solo un
+    "malo" explícito debe bloquear. Cada llamada queda en ai_fallback.log."""
+    if not api_key:
+        return None
+    title = str(wanted.get("title") or "")
+    year = str(wanted.get("year") or "")
+    kind = "película" if wanted.get("is_movie") else "capítulo de serie"
+    expected_size = str(wanted.get("expected_size") or "")
+    user_text = (f"Pedido: {kind} '{title}'" + (f" ({year})" if year else "") +
+                 (f", tamaño esperado {expected_size}" if expected_size else "") +
+                 f"\nCandidato: '{candidate.get('name', '')}' " +
+                 f"({candidate.get('size_human', '?')}, {candidate.get('sources', '?')} fuentes)")
+    _log.info("Juez Groq (modelo=%s): %s", model, user_text.replace("\n", " | "))
+    try:
+        resp = requests.post(
+            GROQ_URL,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_text},
+                ],
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        _log.warning("Juez Groq falló: %s", e)
+        return None
+    try:
+        parsed = json.loads(content)
+        verdict = str(parsed.get("verdict") or "").strip().lower()
+        reason = str(parsed.get("reason") or "").strip()
+    except (ValueError, AttributeError) as e:
+        _log.warning("Juez Groq no parseable: %s — %r", e, content)
+        return None
+    if verdict not in ("ok", "dudoso", "malo"):
+        _log.warning("Juez Groq veredicto desconocido %r — %r", verdict, content)
+        return None
+    _log.info("Juez Groq: %s (%s)", verdict, reason)
+    return {"verdict": verdict, "reason": reason or verdict}
+
+
 def validate_api_key(api_key: str, timeout: int = 10) -> bool:
     """Comprueba que la API key de Groq es válida, sin gastar una consulta
     de verdad (solo pide el listado de modelos). Igual que guess_title_via_ai,

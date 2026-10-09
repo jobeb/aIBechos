@@ -450,6 +450,16 @@ class FilesDetailPanel(QFrame):
                     out["ol_desc"] = host.openlibrary_client.get_work_description(info.tmdb_id) or ""
                 except Exception:
                     out["ol_desc"] = ""
+            if not (info.overview or "").strip() and not is_ol:
+                try:
+                    from core.ai_synopsis import ai_key_if_enabled, es_overview
+                    ai_key = ai_key_if_enabled(host.config_data)
+                    tid = int(info.tmdb_id) if str(getattr(info, "tmdb_id", "")).isdigit() else 0
+                    if ai_key and tid and info.media_type in ("tv", "movie"):
+                        out["ai_es"] = es_overview(info.media_type, tid,
+                                                   host.config_data.get("tmdb_api_key", ""), ai_key)
+                except Exception:
+                    pass
             ui(lambda: self._apply_extras(token, info, out))
         run_in_thread(worker)
 
@@ -500,6 +510,8 @@ class FilesDetailPanel(QFrame):
                 self.overview.setText(f"{p}\n\n{d}".strip() if p else d)
             elif not p:
                 self.overview.setText("Sin sinopsis disponible")
+        elif "ai_es" in out and out["ai_es"] and not (info.overview or "").strip():
+            self.overview.setText(out["ai_es"])
 
     def _apply_path(self, token, ruta: str):
         if token is not self._token:

@@ -798,6 +798,16 @@ class MoviesTab(QWidget):
                     out["cert"] = tmdb.get_movie_certification(item.get("tmdb_id", 0)) or ""
                 except Exception:
                     out["cert"] = ""
+            if not (item.get("overview") or "").strip():
+                try:
+                    from core.ai_synopsis import ai_key_if_enabled, es_overview
+                    ai_key = ai_key_if_enabled(self.host.config_data)
+                    tid = int(item.get("tmdb_id", 0) or 0)
+                    if ai_key and tid and _mtype(item) in ("tv", "movie"):
+                        out["ai_es"] = es_overview(_mtype(item), tid,
+                                                   self.host.config_data.get("tmdb_api_key", ""), ai_key)
+                except Exception:
+                    pass
             ui(lambda: self._apply_detail(token, out))
         run_in_thread(worker)
 
@@ -826,6 +836,8 @@ class MoviesTab(QWidget):
         self.d_cast.setText(("Reparto: " + ", ".join(cast)) if cast else "Reparto: sin datos")
         if "cert" in out:
             self.d_cert.setText(f"Clasificación: {out['cert']}" if out["cert"] else "Clasificación: sin dato")
+        if out.get("ai_es"):
+            self.d_overview.setText(out["ai_es"])
 
     # ── Ver todo ──
 
