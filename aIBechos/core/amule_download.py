@@ -145,6 +145,9 @@ def _best_not_excluded(results, query, expected_year, is_movie, typical_size, ma
             continue
         pool.append(r)
     return best_result(pool, query, expected_year, is_movie, typical_size, max_size) if pool else None
+
+
+def ec_client_from_config(config, timeout: float = 10.0) -> EcClient:
     return EcClient(
         host=config.get("amule_host", "localhost"),
         port=config.get("amule_port", 4712),
