@@ -166,10 +166,12 @@ jobs:
             ## aIBechos ${{ github.ref_name }}
 
             ### Novedades
-            - Nuevas fuentes de doblaje castellano: Crunchyroll (anime) y RTVE Play (producción española).
-            - El botón ↻ de cada serie también repasa su doblaje.
-            - "Ocultar sin doblaje ES" ahora oculta también lo sin verificar; con el interruptor apagado, lo no confirmado se resalta en color (rojo = sin doblaje, ámbar = sin verificar).
-            - Arreglo del 403 de la wiki de doblaje.
+            - Nueva interfaz Qt (PySide6): listas y tablas virtuales, sin los cuelgues de la anterior.
+            - Recomendado estilo web: filas por categoría (tendencia, Top 10, plataformas, géneros) con cards, botones en cada card y "Ver todo".
+            - Nueva pestaña Info: Historial, Solicitudes web (separadas, con botón Cancelar), Protegidos, Sincronizar visionado y Estadísticas.
+            - La IA ahora es útil: valida cada descarga de aMule antes de lanzarla (título, castellano, peso, no porno ni VOS) y traduce sinopsis al castellano.
+            - El ▶ de un archivo subido lo abre en Jellyfin; si está en local lo abre directamente.
+            - Acento amarillo como la web, jerarquía de fondos más legible y medallas de Estadísticas sin ambigüedad.
 
             ### Instalación
             - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).
