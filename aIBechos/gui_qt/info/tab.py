@@ -11,13 +11,23 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
-# (título, clave de vista, módulo, clase): mismo orden pedido.
+# Imports ESTÁTICOS a propósito (nada de importlib con strings): PyInstaller
+# solo empaqueta lo que ve en el análisis estático; con importación
+# dinámica la app funcionaba desde fuente pero el instalado moría con
+# "No module named 'gui_qt.history'" al abrir Info (real, v2.0.0).
+from gui_qt.history.tab import HistoryTab
+from gui_qt.info.requests import WebRequestsTab
+from gui_qt.protected.tab import ProtectedTab
+from gui_qt.stats.tab import StatsTab
+from gui_qt.watch_sync.tab import WatchSyncTab
+
+# (título, clave de vista, clase): mismo orden pedido.
 SPECS = (
-    ("📋 Historial", "history", "gui_qt.history.tab", "HistoryTab"),
-    ("🌐 Solicitudes web", "requests", "gui_qt.info.requests", "WebRequestsTab"),
-    ("🔒 Protegidos", "protected", "gui_qt.protected.tab", "ProtectedTab"),
-    ("🔄 Sincronizar visionado", "watch_sync", "gui_qt.watch_sync.tab", "WatchSyncTab"),
-    ("📊 Estadísticas", "stats", "gui_qt.stats.tab", "StatsTab"),
+    ("📋 Historial", "history", HistoryTab),
+    ("🌐 Solicitudes web", "requests", WebRequestsTab),
+    ("🔒 Protegidos", "protected", ProtectedTab),
+    ("🔄 Sincronizar visionado", "watch_sync", WatchSyncTab),
+    ("📊 Estadísticas", "stats", StatsTab),
 )
 
 
@@ -29,7 +39,7 @@ class InfoTab(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         self.tabs = QTabWidget()
-        for title, key, _mod, _cls in SPECS:
+        for title, key, _cls in SPECS:
             holder = QWidget()
             QVBoxLayout(holder).setContentsMargins(0, 0, 0, 0)
             holder.setProperty("page_key", key)
@@ -43,13 +53,11 @@ class InfoTab(QWidget):
         i = self.tabs.currentIndex()
         if i < 0:
             return
-        _title, key, mod_name, cls_name = SPECS[i]
+        _title, key, cls = SPECS[i]
         if key in self.pages:
             page = self.pages[key]
         else:
-            import importlib
-            mod = importlib.import_module(mod_name)
-            page = getattr(mod, cls_name)(self.host, self.tabs.widget(i))
+            page = cls(self.host, self.tabs.widget(i))
             self.tabs.widget(i).layout().addWidget(page)
             self.pages[key] = page
         if hasattr(page, "on_shown"):

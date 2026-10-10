@@ -119,8 +119,8 @@ def _info(qtbot):
 
 def test_subpestanas_y_claves(qtbot):
     info = _info(qtbot)
-    assert [t for t, _k, _m, _c in SPECS] == ["📋 Historial", "🌐 Solicitudes web", "🔒 Protegidos",
-                                              "🔄 Sincronizar visionado", "📊 Estadísticas"]
+    assert [t for t, _k, _c in SPECS] == ["📋 Historial", "🌐 Solicitudes web", "🔒 Protegidos",
+                                          "🔄 Sincronizar visionado", "📊 Estadísticas"]
     assert info.current_key() == "history"
     assert set(info.pages) == {"history"}  # perezoso: solo la visible
     for i, expected in enumerate(["history", "requests", "protected", "watch_sync", "stats"]):
