@@ -102,6 +102,11 @@ DEFAULTS = {
     "ftp_retries": 3,
     "desktop_notifications": True,
     "start_with_windows": False,
+    # El autocompletado descarga capítulos sin doblaje ES confirmado solo
+    # si esto está activo. El interruptor "Ocultar sin doblaje ES" de
+    # Episodios SOLO oculta/muestra filas, nunca decide descargas (antes
+    # mandaba en las dos cosas). Desactivado = solo doblaje confirmado.
+    "download_undubbed": False,
     "min_confidence": 70,
     "rename_local": True,
     "rename_remote": True,

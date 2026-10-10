@@ -59,6 +59,11 @@ class GeneralPage(Page):
                      "(al lado del reloj) y la app sigue funcionando en segundo plano.\n"
                      "Para salir del todo, usa \"Salir\" en el menú de la bandeja.")
         c.switch("Notificaciones de escritorio al completar subidas", "desktop_notifications", True)
+        c.switch("Descargar capítulos sin doblaje castellano confirmado", "download_undubbed", False,
+                 tip="Si está apagado (recomendado), el autocompletado solo descarga capítulos con\n"
+                     "doblaje confirmado. Si lo enciendes, también baja los aún sin doblar.\n"
+                     "El interruptor \"Ocultar sin doblaje ES\" de Episodios solo oculta filas,\n"
+                     "no decide descargas.")
         c.switch("Renombrar archivos en origen (local)", "rename_local", True)
         c.note("Si lo desactivas, los archivos locales conservan su nombre original al añadirlos o "
                "subirlos. El renombrado en el servidor se configura aparte, en Servidor → Plantillas.")

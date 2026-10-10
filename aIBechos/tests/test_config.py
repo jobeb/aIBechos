@@ -24,6 +24,8 @@ def test_missing_ep_switches_and_auto_watcher_off_by_default():
     assert DEFAULTS["missing_ep_hide_ai_dismissed"] is False
     assert DEFAULTS["missing_ep_hide_no_dub"] is False
     assert DEFAULTS["auto_watcher_running"] is False
+    # Descargar sin doblaje: apagado por defecto (solo doblaje confirmado).
+    assert DEFAULTS["download_undubbed"] is False
 
 
 def test_missing_ep_switches_and_auto_watcher_persist_across_reload(tmp_path, monkeypatch):

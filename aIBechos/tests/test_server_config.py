@@ -53,7 +53,8 @@ def test_shared_config_keys_excludes_ftp_connection_and_personal_state():
                     "amule_search_type",
                     "skipped_update_version", "watch_folder", "poll_interval",
                     "auto_action", "manual_action", "auto_extract_archives", "min_confidence",
-                    "desktop_notifications", "start_with_windows", "close_to_tray", "rename_local"}
+                    "desktop_notifications", "start_with_windows", "close_to_tray", "rename_local",
+                    "download_undubbed"}
     assert client_only.isdisjoint(SHARED_CONFIG_KEYS)
 
 

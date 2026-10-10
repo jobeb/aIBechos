@@ -5,7 +5,7 @@ periódica que busca en aMule y descarga los capítulos que faltan, reintentos
 con espera creciente, "desatasco" de descargas paradas y "Forzar búsqueda".
 
 Mixin sin interfaz que hereda QtAppCore (gui_qt/core_host.py). Además de lo de core/app_files_core.py, el anfitrión aporta:
-  _hide_no_dub_enabled()            interruptor "Ocultar sin doblaje ES"
+  _dub_cutoff_for_series()          corte de doblaje (IA/eldoblaje) por serie
   _warn_dialog(titulo, texto)       aviso modal (hilo de la interfaz)
   _make_confirm_dialog(...)         confirmación -> objeto con .result
   _forget_auto_countdown(tmdb_id)   quitar la cuenta atrás de la serie
@@ -770,20 +770,19 @@ class AutoCompleteMixin:
                 if action == auto_complete_state.ATTEMPT:
                     pending.append((season, ep))
 
-        # Con "Ocultar sin doblaje ES" activo, el autocompletado NO descarga
-        # capítulos sin doblaje CONFIRMADO (real: Dragon Ball Daima descargaba
-        # capítulos aún sin doblar aunque la tabla los ocultaba). A diferencia
-        # de la tabla -- visible por defecto mientras se comprueba -- aquí lo
-        # no comprobado bloquea: mejor faltante que V.O.S. descargada sola.
-        # Precedencia igual que el aviso manual: IA, si no corte de eldoblaje
-        # en caché, si no veredictos por episodio de TMDB (ver
+        # Descargas y doblaje: SOLO manda la opción de cliente
+        # "download_undubbed" (Configuración → Cliente → Modo Automático).
+        # El interruptor "Ocultar sin doblaje ES" de Episodios solo
+        # oculta/muestra filas, nunca decide descargas. Precedencia del
+        # veredicto: IA, si no corte de eldoblaje en caché, si no
+        # veredictos por episodio de TMDB (ver
         # core/missing_episodes.py::is_ep_dub_confirmed).
         to_download = list(pending)
         try:
-            _hide_no_dub = bool(self._hide_no_dub_enabled())
+            _allow_undubbed = bool(self.config_data.get("download_undubbed", False))
         except Exception:
-            _hide_no_dub = False
-        if _hide_no_dub and pending:
+            _allow_undubbed = False
+        if not _allow_undubbed and pending:
             try:
                 from core.missing_episodes import is_ep_dub_confirmed
                 _ai = ((row or {}).get("ai_verdict") or {}) if "row" in locals() else {}
@@ -793,7 +792,9 @@ class AutoCompleteMixin:
                 _blocked = [(s, e) for (s, e) in pending
                             if not is_ep_dub_confirmed(s, e, _dub_eps, _cutoff)]
                 if _blocked:
-                    _log.info("Autocompletado: '%s' %d capítulo(s) sin doblaje confirmado, no se descargan (%s)",
+                    _log.info("Autocompletado: '%s' %d capítulo(s) sin doblaje confirmado, no se descargan "
+                              "(%s) -- para permitirlos activa 'Descargar sin doblaje' en "
+                              "Configuración → Cliente",
                               series_name, len(_blocked),
                               ", ".join(f"{s}x{e:02d}" for s, e in _blocked[:8]))
                 to_download = [(s, e) for (s, e) in pending
@@ -802,10 +803,9 @@ class AutoCompleteMixin:
                 _log.exception("Autocompletado: filtro de doblaje falló para '%s', se sigue sin filtrar", series_name)
                 to_download = list(pending)
         elif pending:
-            # Filtro apagado: se descarga igual, pero que el log cuente qué
-            # va sin doblaje confirmado (real: Daima bajó 7 capítulos sin
-            # doblar y el log no decía nada porque el interruptor estaba
-            # apagado desde la pestaña Episodios).
+            # Permitidos por la opción de cliente: se descargan igual, pero
+            # que el log cuente cuáles van sin doblaje confirmado (el filtro
+            # de Episodios solo oculta filas, no decide esto).
             try:
                 from core.missing_episodes import is_ep_dub_confirmed as _is_conf
                 _ai2 = ((row or {}).get("ai_verdict") or {}) if "row" in locals() else {}
@@ -815,7 +815,7 @@ class AutoCompleteMixin:
                            if not _is_conf(s, e, _eps2, _cut2)]
                 if _unconf:
                     _log.warning("Autocompletado: '%s' %d capítulo(s) SIN doblaje confirmado "
-                                 "(filtro apagado, se descargan igual): %s",
+                                 "(permitidos por 'Descargar sin doblaje'): %s",
                                  series_name, len(_unconf),
                                  ", ".join(f"{s}x{e:02d}" for s, e in _unconf[:8]))
             except Exception:
