@@ -553,7 +553,8 @@ class FilesTab(QWidget):
                          host._refresh_missing_ep_auto_button(auto_tid)))
         if series.strip():
             add("🔍 Template aMule por serie…",
-                lambda s=series: AmuleTemplateDialog(self.window(), host.config_data, s).exec())
+                lambda _checked=False, s=series: AmuleTemplateDialog(self.window(), host.config_data,
+                                                                     s).exec())
         menu.addSeparator()
         add("▶  Reproducir en Jellyfin" if entry.status == "subido" else "▶  Reproducir",
             lambda: host._play_file(entry))
