@@ -79,7 +79,7 @@ def test_comic_no_results_tries_ai_translation_when_enabled(tmp_path, monkeypatc
 
     monkeypatch.setattr(
         "core.ai_title_fallback.guess_original_comic_title_via_ai",
-        lambda local_title, api_key: "The Promise")
+        lambda local_title, api_key, model=None: "The Promise")
 
     result = identify_book_or_comic(
         {"title": "La Promesa"}, is_comic=True,

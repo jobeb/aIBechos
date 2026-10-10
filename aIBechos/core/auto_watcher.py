@@ -529,9 +529,9 @@ class AutoWatcher:
         api_key = self.config.get("ai_api_key", "")
         if not api_key:
             return None
-        from core.ai_title_fallback import guess_title_via_ai
+        from core.ai_title_fallback import guess_title_via_ai, resolve_model
         stem = re.sub(r"\.[a-zA-Z0-9]{2,4}$", "", path.name)
-        ai_result = guess_title_via_ai(stem, api_key)
+        ai_result = guess_title_via_ai(stem, api_key, model=resolve_model(self.config))
         if not ai_result:
             return None
         retry_detected = detect_episode(path.name, extra_junk_terms=ai_result["junk_tokens"])
@@ -668,7 +668,8 @@ class AutoWatcher:
                     detected, is_comic, self.comicvine, self.book_client,
                     openlibrary_client=self.openlibrary_client,
                     ai_fallback_enabled=bool(self.config.get("ai_fallback_enabled")),
-                    ai_api_key=self.config.get("ai_api_key", ""))
+                    ai_api_key=self.config.get("ai_api_key", ""),
+                    ai_model=str(self.config.get("ai_model", "") or "").strip())
                 if result.error:
                     _log.warning("%s: %s (%r)", result.error, path.name, result.used_query)
                     self.on_event("skip", f"{result.error}: {path.name}")

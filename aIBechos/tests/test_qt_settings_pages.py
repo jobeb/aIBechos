@@ -29,7 +29,7 @@ class _Host:
 # Las claves que guardaba "Guardar configuración" en la versión Tk
 # (App._collect_settings); la de Qt debe guardar exactamente las mismas.
 SETTINGS_KEYS = {
-    "ai_api_key", "ai_fallback_enabled", "amule_host", "amule_password", "amule_port",
+    "ai_api_key", "ai_fallback_enabled", "ai_model", "amule_host", "amule_password", "amule_port",
     "anime_template", "app_user_name", "auto_action", "auto_extract_archives", "comic_template",
     "comicvine_api_key", "custom_links_episode", "custom_links_movie", "custom_links_season",
     "custom_links_show", "desktop_notifications", "download_requests_enabled",

@@ -110,6 +110,9 @@ DEFAULTS = {
     # nada a terceros hasta que el usuario lo active explícitamente.
     "ai_fallback_enabled": False,
     "ai_api_key": "",
+    # Modelo Groq a usar (vacío = el actual por defecto, ver DEFAULT_MODEL
+    # en core/ai_title_fallback.py). Compartido por el grupo como la key.
+    "ai_model": "",
     # Identificación de cómics/manga (core/comicvine_client.py) -- credencial
     # compartida por el grupo igual que tmdb_api_key (ver
     # core/server_config.py), NO por máquina como ai_api_key/plex_token/

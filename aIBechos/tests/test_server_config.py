@@ -86,7 +86,7 @@ def test_shared_config_keys_pins_the_exact_set():
     es de servidor -- el punto es que cualquier cambio a esta lista debe
     ser deliberado y pasar por este test, no colarse sin darse cuenta)."""
     assert set(SHARED_CONFIG_KEYS) == {
-        "tmdb_api_key", "language", "ai_api_key", "ai_fallback_enabled",
+        "tmdb_api_key", "language", "ai_api_key", "ai_fallback_enabled", "ai_model",
         "comicvine_api_key", "google_books_api_key",
         "tv_template", "movie_template", "anime_template", "libro_template", "comic_template",
         "ftp_categories",

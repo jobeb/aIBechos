@@ -17,7 +17,23 @@ from core.applog import get_logger
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+# Modelo por defecto. Hasta la 2.0.x era llama-3.3-70b-versatile, pero Groq
+# lo apagó el 16/08/2026 (con 404 en cada llamada: toda la IA quedó muda
+# sin que se notara, porque el contrato es fail-open). Recomendación
+# oficial de Groq para ese hueco + ya validado en vivo en este repo
+# (DUB_CHECK_MODEL en core/missing_episodes_ai.py: no inventa datos).
+# Se puede cambiar por equipo/grupo con "ai_model" en Ajustes.
+DEFAULT_MODEL = "openai/gpt-oss-120b"
+
+
+def resolve_model(config) -> str:
+    """Modelo Groq a usar: el configurado (ai_model) o el actual por
+    defecto. Vacío/espacios = defecto."""
+    try:
+        custom = (config.get("ai_model", "") or "").strip()
+    except Exception:
+        custom = ""
+    return custom or DEFAULT_MODEL
 
 SYSTEM_PROMPT = (
     "Eres un extractor de titulos de peliculas/series a partir de nombres de "

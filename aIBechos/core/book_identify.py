@@ -20,6 +20,7 @@ import difflib
 from dataclasses import dataclass
 from typing import Optional
 
+from core.ai_title_fallback import DEFAULT_MODEL
 from core.api_client import MediaInfo
 
 
@@ -38,7 +39,8 @@ class BookIdentifyResult:
 
 def identify_book_or_comic(det: dict, is_comic: bool,
                             comicvine_client, book_client, openlibrary_client=None,
-                            ai_fallback_enabled: bool = False, ai_api_key: str = "") -> BookIdentifyResult:
+                            ai_fallback_enabled: bool = False, ai_api_key: str = "",
+                            ai_model: str = "") -> BookIdentifyResult:
     """det: resultado de detect_episode(is_book=True, is_comic=...) -- usa
     det["title"] (y det["episode"] para el número de emisión de un cómic).
 
@@ -73,7 +75,8 @@ def identify_book_or_comic(det: dict, is_comic: bool,
             results = comicvine_client.search_volumes(used_query)
             if not results and not cached and ai_fallback_enabled and ai_api_key:
                 from core.ai_title_fallback import guess_original_comic_title_via_ai
-                translated = guess_original_comic_title_via_ai(query, ai_api_key)
+                translated = guess_original_comic_title_via_ai(
+                    query, ai_api_key, model=ai_model or DEFAULT_MODEL)
                 if translated:
                     retry_results = comicvine_client.search_volumes(translated)
                     if retry_results:

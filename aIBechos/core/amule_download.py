@@ -97,9 +97,11 @@ def _judge_or_keep(config, query: str, best, results: list, is_movie: bool,
               "expected_size": size_human}
 
     def judge_fn(cand):
+        from core.ai_title_fallback import resolve_model
         return judge_download_candidate(
             wanted, {"name": getattr(cand, "name", ""), "size_human": getattr(cand, "size_human", "?"),
-                     "sources": getattr(cand, "sources", "?")}, ai_key)
+                     "sources": getattr(cand, "sources", "?")}, ai_key,
+            model=resolve_model(config))
 
     try:
         ranked = sorted((r for r in results if r is not None

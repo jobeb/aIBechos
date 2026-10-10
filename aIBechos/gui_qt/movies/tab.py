@@ -801,11 +801,13 @@ class MoviesTab(QWidget):
             if not (item.get("overview") or "").strip():
                 try:
                     from core.ai_synopsis import ai_key_if_enabled, es_overview
+                    from core.ai_title_fallback import resolve_model
                     ai_key = ai_key_if_enabled(self.host.config_data)
                     tid = int(item.get("tmdb_id", 0) or 0)
                     if ai_key and tid and _mtype(item) in ("tv", "movie"):
                         out["ai_es"] = es_overview(_mtype(item), tid,
-                                                   self.host.config_data.get("tmdb_api_key", ""), ai_key)
+                                                   self.host.config_data.get("tmdb_api_key", ""), ai_key,
+                                                   model=resolve_model(self.host.config_data))
                 except Exception:
                     pass
             ui(lambda: self._apply_detail(token, out))

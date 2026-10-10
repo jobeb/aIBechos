@@ -118,7 +118,7 @@ Excluido a propósito, y por qué (configuración de CLIENTE):
 SHARED_CONFIG_KEYS = (
     # TMDB / fallback de IA -- credenciales y ajustes compartidos por el
     # grupo en vez de que cada persona registre las suyas.
-    "tmdb_api_key", "language", "ai_api_key", "ai_fallback_enabled",
+    "tmdb_api_key", "language", "ai_api_key", "ai_fallback_enabled", "ai_model",
     # ComicVine (identificación de cómics/manga, ver
     # core/comicvine_client.py) -- misma razón que tmdb_api_key: una única
     # cuenta del grupo en vez de que cada persona registre la suya.

@@ -1584,9 +1584,9 @@ class FilesCoreMixin:
         api_key = self.config_data.get("ai_api_key", "")
         if not api_key:
             return None
-        from core.ai_title_fallback import guess_title_via_ai
+        from core.ai_title_fallback import guess_title_via_ai, resolve_model
         stem = entry.name[:-len(entry.ext)] if entry.ext else entry.name
-        ai_result = guess_title_via_ai(stem, api_key)
+        ai_result = guess_title_via_ai(stem, api_key, model=resolve_model(self.config_data))
         if not ai_result:
             return None
         retry_det = detect_episode(entry.name, extra_junk_terms=ai_result["junk_tokens"])
@@ -1662,7 +1662,8 @@ class FilesCoreMixin:
             entry.detected, entry.is_comic, self.comicvine, self.book_client,
             openlibrary_client=self.openlibrary_client,
             ai_fallback_enabled=self.config_data.get("ai_fallback_enabled", False),
-            ai_api_key=self.config_data.get("ai_api_key", ""))
+            ai_api_key=self.config_data.get("ai_api_key", ""),
+            ai_model=(self.config_data.get("ai_model", "") or "").strip())
         if result.error:
             entry.status    = "error"
             entry.error_msg = result.error

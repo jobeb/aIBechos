@@ -51,6 +51,9 @@ class TmdbPage(Page):
         b.setToolTip("Comprobar que la clave de Groq es válida. Solo pide el listado de modelos: no consume "
                      "cuota de consultas.")
         b.clicked.connect(lambda: self._validate_groq(ai.text().strip(), st_ai))
+        c.text("Modelo (Groq):", "ai_model", placeholder="Vacío = openai/gpt-oss-120b",
+               tip="Modelo de Groq para títulos, juez de descargas y sinopsis. Vacío usa el actual por "
+                   "defecto (el anterior, llama-3.3-70b-versatile, lo apagó Groq en 08/2026).")
         learned = QPushButton("Términos aprendidos")
         learned.setToolTip("Ver y borrar la basura que la IA ha aprendido a quitar de los nombres de archivo "
                            "(grupos de subida, etiquetas de calidad...).")

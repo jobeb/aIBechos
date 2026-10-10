@@ -292,8 +292,9 @@ class FilesDetailPanel(QFrame):
         host = self.host
 
         def worker():
-            from core.ai_title_fallback import guess_original_comic_title_via_ai
-            translated = guess_original_comic_title_via_ai(local_title, api_key)
+            from core.ai_title_fallback import guess_original_comic_title_via_ai, resolve_model
+            translated = guess_original_comic_title_via_ai(local_title, api_key,
+                                                           model=resolve_model(cfg))
             if not translated:
                 self.ctx.set_status("La IA no pudo determinar el título original", ERROR_COLOR)
                 return
@@ -453,11 +454,13 @@ class FilesDetailPanel(QFrame):
             if not (info.overview or "").strip() and not is_ol:
                 try:
                     from core.ai_synopsis import ai_key_if_enabled, es_overview
+                    from core.ai_title_fallback import resolve_model
                     ai_key = ai_key_if_enabled(host.config_data)
                     tid = int(info.tmdb_id) if str(getattr(info, "tmdb_id", "")).isdigit() else 0
                     if ai_key and tid and info.media_type in ("tv", "movie"):
                         out["ai_es"] = es_overview(info.media_type, tid,
-                                                   host.config_data.get("tmdb_api_key", ""), ai_key)
+                                                   host.config_data.get("tmdb_api_key", ""), ai_key,
+                                                   model=resolve_model(host.config_data))
                 except Exception:
                     pass
             ui(lambda: self._apply_extras(token, info, out))

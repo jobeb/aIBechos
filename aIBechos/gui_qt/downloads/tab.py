@@ -606,11 +606,13 @@ class DownloadsTab(QWidget):
             if not (details.get("overview") or r.get("overview") or "").strip():
                 try:
                     from core.ai_synopsis import ai_key_if_enabled, es_overview
+                    from core.ai_title_fallback import resolve_model
                     ai_key = ai_key_if_enabled(self.host.config_data)
                     tid = int(r.get("id", 0) or 0)
                     if ai_key and tid and mt in ("tv", "movie"):
                         out["ai_es"] = es_overview(mt, tid,
-                                                   self.host.config_data.get("tmdb_api_key", ""), ai_key)
+                                                   self.host.config_data.get("tmdb_api_key", ""), ai_key,
+                                                   model=resolve_model(self.host.config_data))
                 except Exception:
                     pass
             ui(lambda: self._apply_detail(token, title, out))
