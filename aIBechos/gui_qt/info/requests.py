@@ -74,6 +74,7 @@ class WebRequestsTab(QWidget):
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setSectionResizeMode(H_FILE, QHeaderView.Stretch)
         hdr.setSectionResizeMode(H_DEST, QHeaderView.Stretch)
+        hdr.resizeSection(H_ACT, 116)
         root.addWidget(self.view, 1)
         self.empty = QLabel("")
         self.empty.setStyleSheet(f"color: {PENDING_COLOR};")
@@ -116,9 +117,58 @@ class WebRequestsTab(QWidget):
     # ── Acciones ──
 
     def _on_action(self, index: QModelIndex, action_id: str):
-        if action_id != "cancel" or not (0 <= index.row() < len(self.model.rows)):
+        if not (0 <= index.row() < len(self.model.rows)):
             return
         e = self.model.rows[index.row()]
+        if action_id == "search":
+            self._manual_search(e)
+        elif action_id == "download":
+            self._download_now(e)
+        elif action_id == "cancel":
+            self._cancel(e)
+
+    def _manual_search(self, e: dict):
+        """Abre Descargas buscando a mano lo pedido (misma query que usaría
+        el lanzamiento automático; TMDB canónico en un hilo)."""
+        if not e.get("name"):
+            return
+        self.ctx.set_status(f"Preparando búsqueda manual: {e.get('name', '')}...")
+        host = self.host
+
+        def worker():
+            try:
+                query, year, is_movie = host._web_request_search_query(dict(e))
+            except Exception:
+                query, year, is_movie = e.get("name", ""), None, e.get("media_type") == "movie"
+            if not query:
+                self.ctx.set_status("Sin título que buscar", PENDING_COLOR)
+                return
+
+            def apply():
+                win = host.window
+                if win is not None:
+                    win.amule_search(query, expected_year=year, is_movie=is_movie)
+            host.after(0, apply)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _download_now(self, e: dict):
+        """Ejecuta la descarga automática ya (reclama y lanza sin esperar
+        al ciclo del worker)."""
+        if e.get("status") not in ("pending", "failed"):
+            return
+        req_id = e.get("id", "")
+        self.ctx.set_status(f"Lanzando descarga: {e.get('name', '')}...")
+
+        def worker():
+            msg = self.host._download_now_request(req_id)
+            self.host.after(0, lambda: self._after_download_now(msg))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _after_download_now(self, msg: str):
+        self.ctx.set_status(msg)
+        self._refresh_now()
+
+    def _cancel(self, e: dict):
         if e.get("status") not in _ACTIVE:
             return
         if not confirm(self, "Cancelar solicitud", f"¿Cancelar '{e.get('name', '')}'?",

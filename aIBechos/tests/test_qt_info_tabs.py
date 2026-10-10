@@ -3,6 +3,7 @@ Solicitudes web, Protegidos, Sincronizar visionado y Estadísticas;
 Solicitudes separada del Historial, con Cancelar por fila activa."""
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,6 +42,7 @@ class _Cfg(dict):
 class _Host:
     def __init__(self):
         self.ctx = _Ctx()
+        self.window = None
         self.config_data = _Cfg({"app_user_name": "Jose"})
         self.tmdb = object()
         self._reservations = {}
@@ -143,19 +145,52 @@ def test_solicitudes_con_cancel(qtbot, monkeypatch):
     info = _info(qtbot)
     info.tabs.setCurrentIndex(1)
     req = info.pages["requests"]
-    req.host._web_requests_rows = [_req("a", "pending"), _req("b", "done")]
+    req.host._web_requests_rows = [_req("a", "pending"), _req("b", "done"), _req("c", "failed")]
     req.refresh()
-    assert len(req.model.rows) == 2
-    assert "2" in req.title.text()
+    assert len(req.model.rows) == 3
+    assert "3" in req.title.text()
     acts = req.model.data(req.model.index(0, 7), ActionsRole)
-    assert [a.id for a in acts] == ["cancel"] and acts[0].enabled
+    assert [(a.id, a.enabled) for a in acts] == [("search", True), ("download", True),
+                                                ("cancel", True)]
     acts_done = req.model.data(req.model.index(1, 7), ActionsRole)
-    assert not acts_done[0].enabled
+    assert [(a.id, a.enabled) for a in acts_done] == [("search", True), ("download", False),
+                                                      ("cancel", False)]
+    acts_failed = req.model.data(req.model.index(2, 7), ActionsRole)
+    assert [(a.id, a.enabled) for a in acts_failed] == [("search", True), ("download", True),
+                                                        ("cancel", False)]
     import gui_qt.info.requests as rq
     monkeypatch.setattr(rq, "confirm", lambda *a, **k: True)
     req._on_action(req.model.index(0, 7), "cancel")
     qtbot.wait(500)
     assert req.host.cancelled == ["a"]
+
+
+def test_solicitud_buscar_a_mano(qtbot):
+    info = _info(qtbot)
+    info.tabs.setCurrentIndex(1)
+    req = info.pages["requests"]
+    req.host._web_requests_rows = [_req("a", "pending")]
+    req.refresh()
+    searched = []
+    req.host.window = SimpleNamespace(amule_search=lambda *a, **k: searched.append((a, k)))
+    req.host._web_request_search_query = lambda entry: ("Peli a 1x01", None, False)
+    req._on_action(req.model.index(0, 7), "search")
+    qtbot.wait(500)
+    assert searched == [(("Peli a 1x01",), {"expected_year": None, "is_movie": False})], searched
+
+
+def test_solicitud_descarga_ahora(qtbot):
+    info = _info(qtbot)
+    info.tabs.setCurrentIndex(1)
+    req = info.pages["requests"]
+    req.host._web_requests_rows = [_req("a", "pending")]
+    req.refresh()
+    launched = []
+    req.host._download_now_request = lambda rid: launched.append(rid) or "Lanzada: Peli a"
+    req.host._last_web_requests_sync_ts = 1.0
+    req._on_action(req.model.index(0, 7), "download")
+    qtbot.wait(500)
+    assert launched == ["a"]
 
 
 def test_reenvios_shown_hidden(qtbot):

@@ -295,6 +295,93 @@ class DownloadRequestsMixin:
             return False
         return True
 
+    def _web_request_search_query(self, entry: dict) -> tuple:
+        """(query, expected_year, is_movie) para buscar A MANO en Descargas
+        lo pedido por una solicitud: la misma query del primer objetivo que
+        usaría el lanzamiento automático. Hace red (TMDB canónico): llamar
+        desde un worker, nunca desde la interfaz."""
+        from core.amule_search import build_amule_query, build_amule_season_query
+        name, year = self._download_request_canonical(entry)
+        if not name:
+            return "", None, entry.get("media_type") == "movie"
+        is_movie = entry.get("media_type") == "movie"
+        try:
+            templates = self.config_data.get("series_search_patterns", {}) or {}
+        except Exception:
+            templates = {}
+        try:
+            prefers = bool(self._series_prefers_castellano(name))
+        except Exception:
+            prefers = False
+        try:
+            targets = self._download_request_targets(entry, name)
+        except Exception:
+            targets = []
+        target = targets[0] if targets else ("movie",)
+        try:
+            year_int = int(year) if str(year).isdigit() else None
+        except (TypeError, ValueError):
+            year_int = None
+        if target[0] == "season_pack":
+            query = build_amule_season_query(name, target[1], templates, prefers)
+        elif target[0] == "episode":
+            _t, s, e = target
+            query = build_amule_query(name, s, e, year, templates, prefers)
+        else:
+            query = build_amule_query(name, None, None, year, templates, prefers)
+        return query, year_int if is_movie else None, is_movie
+
+    def _download_now_request(self, req_id: str) -> str:
+        """Descarga automática INMEDIATA de una solicitud (botón ⬇): reclama
+        (o resetea si estaba fallida) y lanza en ESTE hilo -- llamar desde un
+        worker, tarda minutos. No respeta el tope de simultáneas: es una
+        orden manual. Devuelve el mensaje para la barra de estado."""
+        from core import download_requests as _dr
+        user = self._download_requests_user()
+        remote_path = self._download_requests_remote_path()
+        if not req_id or not remote_path:
+            return "Sin carpeta compartida"
+        from core.shared_data import read_shared_json
+        own_ftp = self._download_requests_ftp()
+        if own_ftp is None:
+            return "No se pudo conectar con el servidor"
+        try:
+            data, _is_new = read_shared_json(own_ftp, remote_path, "dict")
+        except Exception:
+            data = None
+        finally:
+            try:
+                own_ftp.disconnect()
+            except Exception:
+                pass
+        if not isinstance(data, dict):
+            return "No se pudo leer la cola"
+        entry = data.get(req_id)
+        if not isinstance(entry, dict):
+            return "La solicitud ya no existe"
+        status = entry.get("status")
+        if status not in ("pending", "failed"):
+            return "Ya está en marcha o terminada"
+        if status == "failed":
+            entry = {**entry, "status": "pending", "claimed_by": "", "claimed_at": 0,
+                     "attempts": 0, "last_error": ""}
+            data = dict(data)
+            data[req_id] = entry
+        nd = _dr.claim(data, req_id, user)
+        if nd is None:
+            return "Ya la tiene otro equipo en marcha"
+        data = nd
+        if not self._download_requests_push(data, remote_path):
+            return "No se pudo publicar el claim"
+        nd2, launched = self._download_request_launch(data, req_id)
+        if nd2 is not None:
+            data = nd2
+            self._download_requests_push(data, remote_path)
+        if launched:
+            return f"Lanzada: {_dr.describe(data.get(req_id) or {})}"
+        err = str(((data.get(req_id) or {}).get("last_error")) or "sin candidato")
+        return f"No se pudo lanzar: {err}"
+
     def _cancel_web_request(self, req_id: str) -> bool:
         """Cancela una solicitud de la web desde este equipo (botón de la
         subpestaña Solicitudes): la marca "cancelled" en la cola compartida

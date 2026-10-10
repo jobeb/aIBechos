@@ -108,7 +108,14 @@ class HistoryModel(QAbstractTableModel):
         elif role == ActionsRole and col == H_ACT:
             if is_req:
                 can_cancel = st in ("pending", "claimed", "downloading")
-                return [Action("cancel", "✕", theme.ICON_IGNORE,
+                can_launch = st in ("pending", "failed")
+                return [Action("search", "🔍", theme.ICON_AMULE,
+                               "Buscar a mano en Descargas lo pedido por esta solicitud."),
+                        Action("download", "⬇", theme.ICON_DL_IDLE,
+                               "Descargar ahora mismo (reclama y lanza la descarga automática)."
+                               if can_launch else "Ya está en marcha o terminada.",
+                               enabled=can_launch),
+                        Action("cancel", "✕", theme.ICON_IGNORE,
                                "Cancelar esta solicitud (libera la cola y quita su descarga de aMule)."
                                if can_cancel else "Solo se puede cancelar una solicitud activa.",
                                enabled=can_cancel)]
