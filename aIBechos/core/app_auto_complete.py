@@ -801,6 +801,25 @@ class AutoCompleteMixin:
             except Exception:
                 _log.exception("Autocompletado: filtro de doblaje falló para '%s', se sigue sin filtrar", series_name)
                 to_download = list(pending)
+        elif pending:
+            # Filtro apagado: se descarga igual, pero que el log cuente qué
+            # va sin doblaje confirmado (real: Daima bajó 7 capítulos sin
+            # doblar y el log no decía nada porque el interruptor estaba
+            # apagado desde la pestaña Episodios).
+            try:
+                from core.missing_episodes import is_ep_dub_confirmed as _is_conf
+                _ai2 = ((row or {}).get("ai_verdict") or {}) if "row" in locals() else {}
+                _cut2 = self._dub_cutoff_for_series(tmdb_id, _ai2)
+                _eps2 = (self._spanish_dub_cache or {}).get(str(tmdb_id), {}).get("episodes") or {}
+                _unconf = [(s, e) for (s, e) in pending
+                           if not _is_conf(s, e, _eps2, _cut2)]
+                if _unconf:
+                    _log.warning("Autocompletado: '%s' %d capítulo(s) SIN doblaje confirmado "
+                                 "(filtro apagado, se descargan igual): %s",
+                                 series_name, len(_unconf),
+                                 ", ".join(f"{s}x{e:02d}" for s, e in _unconf[:8]))
+            except Exception:
+                pass
 
         if not to_download:
             try:
