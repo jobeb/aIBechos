@@ -630,11 +630,33 @@ class DownloadRequestsMixin:
     def _download_request_canonical(self, entry: dict) -> tuple[str, str]:
         """(título, año) canónicos vía TMDB para construir la query de
         aMule (respeta series_search_patterns); si TMDB falla, lo que
-        traiga la solicitud tal cual."""
+        traiga la solicitud tal cual.
+
+        Con tmdb_id numérico se pide LA ficha (get_movie/tv_details), no
+        una búsqueda por texto: search_multi ordena por popularidad y con
+        títulos cortos devuelve OTRA obra ("Piper" → "La partitura", más
+        popular), descargando la película equivocada (real, 10/10/2026)."""
         title = str(entry.get("title") or "").strip()
         year = str(entry.get("year") or "").strip()
         if not title:
             return title, year
+        try:
+            tid = int(entry.get("tmdb_id") or 0)
+        except (TypeError, ValueError):
+            tid = 0
+        if tid:
+            try:
+                if entry.get("media_type") == "movie":
+                    det = self.tmdb.get_movie_details(tid)
+                    return ((det.get("title") or det.get("original_title") or title).strip()
+                            or title,
+                            ((det.get("release_date") or "")[:4] or year))
+                det = self.tmdb.get_tv_details(tid)
+                return ((det.get("name") or det.get("original_name") or title).strip()
+                        or title,
+                        ((det.get("first_air_date") or "")[:4] or year))
+            except Exception:
+                pass
         try:
             prefer = "movie" if entry.get("media_type") == "movie" else "tv"
             results = self.tmdb.search_multi(title, prefer_type=prefer)
