@@ -19,6 +19,10 @@ from core.appdirs import APP_NAME, app_data_dir, is_windows
 # collection), el SO liberaría el bloqueo antes de tiempo.
 _lock_file = None
 _mutex_handle = None
+# Nombre global del mutex (lo usa también setup.iss, AppMutex). Constante
+# para que los tests usen uno propio: el real es de toda la máquina y,
+# con la app abierta, los tests no podrían tomarlo nunca.
+_MUTEX_NAME = "aIBechosSingletonMutex"
 
 
 def acquire() -> bool:
@@ -34,9 +38,12 @@ def acquire() -> bool:
         try:
             import ctypes
             from ctypes import wintypes
-            kernel32 = ctypes.windll.kernel32
+            # use_last_error=True: sin él ctypes.get_last_error() devuelve
+            # siempre 0 y este chequeo no detectaba nunca la otra instancia
+            # (solo protegía el bloqueo de fichero de abajo).
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             # CreateMutexW: si ya existe, GetLastError() == ERROR_ALREADY_EXISTS (183)
-            _mutex_handle = kernel32.CreateMutexW(None, 0, "aIBechosSingletonMutex")
+            _mutex_handle = kernel32.CreateMutexW(None, 0, _MUTEX_NAME)
             if _mutex_handle and ctypes.get_last_error() == 183:
                 # Otra instancia ya tiene el mutex. Soltar NUESTRO handle:
                 # si no, mantendría vivo el mutex aunque la otra instancia

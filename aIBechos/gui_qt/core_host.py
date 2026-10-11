@@ -113,6 +113,9 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         self._cleanup_raw_items = []
         self._genres_cache = {"tv": [], "movie": []}
         self._watcher = None
+        # (ruta, tipo) de eventos del automático sin fila ya avisados en el
+        # log (ver _on_auto_file_event).
+        self._orphan_events_logged = set()
 
         # Autocompletado (⚡) y solicitudes de la web
         from core.auto_series import load_local_cache as _load_auto_series

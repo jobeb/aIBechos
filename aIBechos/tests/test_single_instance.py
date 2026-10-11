@@ -6,9 +6,20 @@ import core.single_instance as si
 def _reload_isolated(monkeypatch, tmp_path):
     """Recarga el módulo con app_data_dir() apuntando a una carpeta
     temporal, para no tocar el bloqueo real de una instancia en marcha."""
+    import uuid
     monkeypatch.setattr(si, "app_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(si, "_MUTEX_NAME", f"aIBechosTest-{uuid.uuid4().hex}")
     si._lock_file = None
+    _release_mutex()
     return si
+
+
+def _release_mutex():
+    """Lo que hace el SO al morir el proceso: soltar el mutex."""
+    if si._mutex_handle:
+        import ctypes
+        ctypes.WinDLL("kernel32").CloseHandle(si._mutex_handle)
+    si._mutex_handle = None
 
 
 def test_acquire_succeeds_when_no_other_instance(tmp_path, monkeypatch):
@@ -40,6 +51,7 @@ def test_acquire_succeeds_again_after_lock_released(tmp_path, monkeypatch):
     assert mod.acquire() is True
     mod._lock_file.close()
     mod._lock_file = None
+    _release_mutex()
 
     # Tras liberar (equivalente a que el primer proceso termine, de la
     # forma que sea), una nueva instancia SI debe poder tomar el bloqueo.

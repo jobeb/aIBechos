@@ -15,6 +15,22 @@ from core.applog import get_logger
 _log = get_logger("aIBechos.ftp", "app.log")
 
 
+def _err_text(e: Exception) -> str:
+    """Texto del error, o su tipo si viene vacío: un timeout de socket no
+    trae mensaje y el log quedaba en "Error FTP: " sin más (real: Dragon
+    Ball Daima 1x13, sin forma de saber qué había pasado)."""
+    return str(e) or e.__class__.__name__
+
+
+def _tmp_name(remote_path: str) -> str:
+    """Temporal oculto y único en la MISMA carpeta que *remote_path* (el
+    rename final tiene que quedarse en el mismo disco para ser atómico)."""
+    import os
+    import uuid
+    folder, _, base = remote_path.rpartition("/")
+    return f"{folder}/.{base}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+
 class FTPClient:
     def __init__(self):
         self.ftp: Optional[ftplib.FTP] = None
@@ -62,7 +78,7 @@ class FTPClient:
             return True, f"Conectado a {host}"
         except ftplib.all_errors as e:
             self.ftp = None
-            return False, f"Error FTP: {e}"
+            return False, f"Error FTP: {_err_text(e)}"
         except OSError as e:
             self.ftp = None
             return False, f"Error de red: {e}"
@@ -125,7 +141,7 @@ class FTPClient:
                         return False, f"No se pudo crear {current}: {e}"
             return True, remote_path
         except ftplib.all_errors as e:
-            return False, f"Error FTP: {e}"
+            return False, f"Error FTP: {_err_text(e)}"
 
     def file_exists(self, remote_file: str) -> bool:
         """Devuelve True si el archivo ya existe en el servidor."""
@@ -216,6 +232,30 @@ class FTPClient:
             return _parse_unix_list_files(lines)
         except ftplib.all_errors:
             return []
+
+    def list_files_checked(self, path: str) -> Optional[list[str]]:
+        """Como list_files, pero None si NO se pudo listar (corte, timeout)
+        en vez de []. [] solo cuando la carpeta está vacía o no existe
+        (550). list_files confunde las dos cosas, y el chequeo de
+        duplicados del automático leía un listado fallido como "carpeta
+        vacía" y subía un episodio que ya estaba en el servidor."""
+        if not self.is_connected():
+            return None
+        try:
+            return [name for name, facts in self.ftp.mlsd(path)
+                    if name not in (".", "..") and facts.get("type") == "file"]
+        except ftplib.error_perm as e:
+            if str(e).startswith("550"):
+                return []
+            # 500/502: sin MLSD -> probar LIST
+        except ftplib.all_errors:
+            return None
+        try:
+            return _parse_unix_list_files(self._retrlines_lenient(f"LIST {path}"))
+        except ftplib.error_perm as e:
+            return [] if str(e).startswith("550") else None
+        except ftplib.all_errors:
+            return None
 
     def _retrlines_lenient(self, cmd: str) -> list[str]:
         """Igual que ftplib.FTP.retrlines(), pero decodificando cada línea
@@ -495,6 +535,48 @@ class FTPClient:
     def _remove_remote_dir(self, remote_dir: str):
         self.ftp.rmd(remote_dir)
 
+    #: Bytes que se comparan al final del parcial remoto antes de reanudar.
+    RESUME_CHECK_BYTES = 64 * 1024
+
+    def _is_prefix_of_local(self, remote_file: str, local: Path, remote_size: int) -> bool:
+        """¿Es el remoto (de *remote_size* bytes) el principio de *local*?
+        Se comparan sus últimos RESUME_CHECK_BYTES con los mismos bytes del
+        local: un parcial nuestro coincide, otra versión no. Si no se puede
+        leer el remoto, False (subir entero es lento, pero nunca corrompe)."""
+        n = min(self.RESUME_CHECK_BYTES, remote_size)
+        offset = remote_size - n
+        remote = self._read_remote_range(remote_file, offset, n)
+        if remote is None or len(remote) != n:
+            return False
+        try:
+            with open(local, "rb") as f:
+                f.seek(offset)
+                return f.read(n) == remote
+        except OSError:
+            return False
+
+    def _read_remote_range(self, remote_file: str, offset: int, n: int) -> Optional[bytes]:
+        """*n* bytes de *remote_file* desde *offset* (RETR con REST), o None."""
+        try:
+            self.ftp.voidcmd("TYPE I")
+            conn = self.ftp.transfercmd(f"RETR {remote_file}", rest=offset)
+            buf = b""
+            try:
+                while len(buf) < n:
+                    chunk = conn.recv(n - len(buf))
+                    if not chunk:
+                        break
+                    buf += chunk
+            finally:
+                conn.close()
+            try:
+                self.ftp.voidresp()   # 226, o 426 por cortarla a medias: ambos valen
+            except ftplib.all_errors:
+                pass
+            return buf
+        except (ftplib.all_errors, AttributeError):
+            return None
+
     def upload_file(
         self,
         local_path: str,
@@ -548,9 +630,17 @@ class FTPClient:
                         _log.info("Subida: %s ya completo en servidor (%s), se omite",
                                   remote_file, total)
                         return True, remote_file
-                    if remote_size > 0:
+                    if remote_size > 0 and self._is_prefix_of_local(remote_file, local, remote_size):
                         resume_offset = remote_size
                         sent[0] = resume_offset
+                    elif remote_size > 0:
+                        # Mismo nombre pero OTRO archivo (otra versión del
+                        # mismo episodio): reanudar pegaría la cola del
+                        # nuestro al principio del suyo, y el tamaño final
+                        # cuadraría igual -- "OK" con un archivo roto y el
+                        # local borrado. Se sube entero.
+                        _log.info("Subida: %s en el servidor no es un parcial de este "
+                                  "archivo, se sube entero", remote_file)
             except ftplib.all_errors:
                 resume_offset = 0  # no existe o no soporta SIZE — subir de cero
 
@@ -678,6 +768,19 @@ class FTPClient:
             # dar la subida por buena -- si el servidor no soporta SIZE, se
             # omite el chequeo en vez de fallar (igual que get_free_space).
             final_size = self.get_remote_size(remote_file)
+            if final_size is None:
+                # None es "el servidor no soporta SIZE"... o "el archivo no
+                # está". Darlo por bueno sin mirar dejaba subir "OK" un
+                # archivo que otro proceso había borrado a mitad de subida,
+                # y luego se borraba el local (real: La Odisea .mkv, 11/10).
+                # El listado de la carpeta sí lo distingue.
+                remote_dir, _, base = remote_file.rpartition("/")
+                listed = dict(self.list_files_with_sizes(remote_dir or "/"))
+                if base not in listed:
+                    return False, ("Subida no verificada: el archivo no aparece en el "
+                                   "servidor tras subirlo")
+                if listed[base] > 0:
+                    final_size = listed[base]
             if final_size is not None and final_size != total:
                 return False, (f"Subida incompleta: el servidor tiene {final_size} bytes, "
                                 f"se esperaban {total} (posible corte o corrupción)")
@@ -698,10 +801,10 @@ class FTPClient:
         except ftplib.error_perm as e:
             if "452" in str(e) or "quota" in str(e).lower() or "no space" in str(e).lower():
                 return False, "disco_lleno"
-            return False, f"Error FTP: {e}"
+            return False, f"Error FTP: {_err_text(e)}"
         except ftplib.all_errors as e:
             self.ftp = None  # Marcar como desconectado para forzar reconexión
-            return False, f"Error FTP: {e}"
+            return False, f"Error FTP: {_err_text(e)}"
         except OSError as e:
             return False, f"Error de archivo: {e}"
 
@@ -717,11 +820,41 @@ class FTPClient:
         ok, msg = self.ensure_remote_dir(remote_dir)
         if not ok:
             return False, msg
+        # Se escribe a un temporal y se renombra encima: un STOR directo
+        # trunca el destino y lo rellena poco a poco, así que quien lo lea
+        # a la vez (otro cliente, la web) ve un JSON a medias, y un corte a
+        # mitad lo deja corrupto para siempre (read_shared_json se niega a
+        # pisarlo). Real: "episodios_que_faltan.json corrupto", 8 veces.
+        tmp = _tmp_name(remote_path)
         try:
-            self.ftp.storbinary(f"STOR {remote_path}", io.BytesIO(data))
+            self.ftp.storbinary(f"STOR {tmp}", io.BytesIO(data))
+        except ftplib.all_errors as e:
+            self._try_delete_quiet(tmp)
+            return False, f"Error FTP: {_err_text(e)}"
+        try:
+            self.ftp.rename(tmp, remote_path)
+            return True, remote_path
+        except ftplib.all_errors:
+            pass
+        # Servidores que no renombran encima de un archivo existente
+        # (IIS, algunos NAS): borrar y renombrar. Deja un instante sin
+        # archivo, pero nunca uno a medias.
+        try:
+            try:
+                self.ftp.delete(remote_path)
+            except ftplib.all_errors:
+                pass
+            self.ftp.rename(tmp, remote_path)
             return True, remote_path
         except ftplib.all_errors as e:
-            return False, f"Error FTP: {e}"
+            self._try_delete_quiet(tmp)
+            return False, f"Error FTP: {_err_text(e)}"
+
+    def _try_delete_quiet(self, remote_file: str) -> None:
+        try:
+            self.ftp.delete(remote_file)
+        except Exception:
+            pass
 
     def download_bytes(self, remote_path: str) -> Optional[bytes]:
         """Descarga un blob pequeño a memoria -- None si no existe o falla
@@ -753,7 +886,7 @@ class FTPClient:
             self.ftp.rename(remote_from, remote_to)
             return True, remote_to
         except ftplib.all_errors as e:
-            return False, f"Error FTP: {e}"
+            return False, f"Error FTP: {_err_text(e)}"
 
     def download_file(self, remote_file: str, local_path: str,
                        progress_cb: Optional[Callable[[int], None]] = None) -> tuple[bool, str]:
@@ -780,7 +913,7 @@ class FTPClient:
             self.ftp.retrbinary(f"RETR {remote_file}", _write)
             return True, local_path
         except ftplib.all_errors as e:
-            return False, f"Error FTP: {e}"
+            return False, f"Error FTP: {_err_text(e)}"
         except OSError as e:
             return False, f"Error de archivo: {e}"
 

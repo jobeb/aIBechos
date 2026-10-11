@@ -653,3 +653,17 @@ def test_detect_comic_chapter_keyword_no_useful_title_falls_back_to_folder_hint(
     r = detect_episode("Capítulo 10.cbz", is_book=True, is_comic=True, folder_hint="Dungeon Reset")
     assert r["episode"] == 10
     assert r["title"] == "Dungeon Reset"
+
+
+def test_episode_number_before_the_series_title():
+    """Con el NxN delante el título salía vacío y el watcher descartaba el
+    archivo sin buscar (real: "3x03 The Mandalorian El converso ESPAÑOL -
+    (J).mp4", "Sin patrón reconocible")."""
+    d = detect_episode("3x03 The Mandalorian.mp4")
+    assert (d["title"], d["season"], d["episode"]) == ("The Mandalorian", 3, 3)
+    d = detect_episode("3x03 - The Mandalorian - El converso.mp4")
+    assert d["title"] == "The Mandalorian"
+    d = detect_episode("3x03 The Mandalorian El converso ESPAÑOL - (J).mp4")
+    assert d["title"].startswith("The Mandalorian")
+    # Sin nada más que el número sigue sin título (no se inventa uno).
+    assert detect_episode("3x03.mkv")["title"] == ""

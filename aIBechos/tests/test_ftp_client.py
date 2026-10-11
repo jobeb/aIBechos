@@ -30,6 +30,15 @@ class _FakeFtp:
         data = fp.read()
         if data:
             callback(data)
+        self.stored = getattr(self, "stored", {})
+        self.stored[cmd[len("STOR "):]] = len(data)
+
+    def mlsd(self, path):
+        # Sin SIZE (ver size() arriba), la verificación final lista la carpeta.
+        prefix = path.rstrip("/") + "/"
+        for full, n in getattr(self, "stored", {}).items():
+            if full.startswith(prefix) and "/" not in full[len(prefix):]:
+                yield full[len(prefix):], {"type": "file", "size": str(n)}
 
 
 def _client_with_fake_ftp():
@@ -850,3 +859,89 @@ def test_widened_timeout_is_a_no_op_without_a_connection():
     client = FTPClient()   # client.ftp es None -- nunca se conectó
     with client.widened_timeout(300):
         pass   # no debe lanzar
+
+
+def test_upload_file_fails_if_file_vanished_and_server_has_no_size(tmp_path):
+    """Sin SIZE, get_remote_size() da None también cuando el archivo NO está:
+    antes eso era "OK" y se borraba el local. Real: La Odisea .mkv, borrado
+    en el servidor por otra subida mientras se subía, dio OK sin existir."""
+    local = tmp_path / "Peli.mkv"
+    local.write_bytes(b"contenido")
+    client = _client_with_fake_ftp()
+    stor = client.ftp.storbinary
+
+    def stor_then_vanish(cmd, *a, **k):
+        stor(cmd, *a, **k)
+        client.ftp.stored.clear()   # otro proceso lo borra a mitad de subida
+    client.ftp.storbinary = stor_then_vanish
+
+    ok, msg = client.upload_file(str(local), "/peliculas")
+
+    assert ok is False
+    assert "no aparece" in msg
+
+
+def test_upload_file_without_size_checks_the_listed_size(tmp_path):
+    local = tmp_path / "Peli.mkv"
+    local.write_bytes(b"contenido")
+    client = _client_with_fake_ftp()
+    stor = client.ftp.storbinary
+
+    def stor_truncated(cmd, *a, **k):
+        stor(cmd, *a, **k)
+        client.ftp.stored[cmd[len("STOR "):]] = 3   # se quedó a medias
+    client.ftp.storbinary = stor_truncated
+
+    ok, msg = client.upload_file(str(local), "/peliculas")
+
+    assert ok is False
+    assert "incompleta" in msg
+
+
+class _FakeFtpListing:
+    def __init__(self, mlsd_error=None, list_error=None, lines=()):
+        self.mlsd_error, self.list_error, self.lines = mlsd_error, list_error, lines
+        self.sock = None
+
+    def voidcmd(self, cmd):
+        return "200 OK"
+
+    def mlsd(self, path):
+        raise self.mlsd_error
+
+    def retrlines(self, cmd, callback):
+        if self.list_error:
+            raise self.list_error
+        for line in self.lines:
+            callback(line)
+
+
+def _listing_client(**kw):
+    c = FTPClient()
+    c.ftp = _FakeFtpListing(**kw)
+    c.is_connected = lambda: True
+
+    def _lenient(cmd):
+        lines = []
+        c.ftp.retrlines(cmd, lines.append)
+        return lines
+    c._retrlines_lenient = _lenient
+    return c
+
+
+def test_list_files_checked_tells_failure_from_empty():
+    timeout = _listing_client(mlsd_error=ftplib.error_temp("421 timeout"))
+    assert timeout.list_files_checked("/x") is None
+    missing = _listing_client(mlsd_error=ftplib.error_perm("550 no existe"))
+    assert missing.list_files_checked("/x") == []
+    no_mlsd_list_fails = _listing_client(mlsd_error=ftplib.error_perm("500 MLSD?"),
+                                         list_error=OSError("conexión cortada"))
+    assert no_mlsd_list_fails.list_files_checked("/x") is None
+
+
+def test_error_text_never_comes_out_empty():
+    """Un timeout de socket no trae mensaje: "Error FTP: " a secas no decía nada."""
+    import socket
+    from core.ftp_client import _err_text
+    assert _err_text(socket.timeout()) == "TimeoutError"
+    assert _err_text(ftplib.error_perm("550 no existe")) == "550 no existe"

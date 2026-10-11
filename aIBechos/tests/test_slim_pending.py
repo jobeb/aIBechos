@@ -126,7 +126,7 @@ def _make_watcher(tmp_ok_delete=True):
     ftp.connect.return_value = (True, "ok")
     ftp.build_remote_path.return_value = "/destino/"
     ftp.get_free_space.return_value = None
-    ftp.list_files.return_value = []
+    ftp.list_files.return_value = ftp.list_files_checked.return_value = []
 
     def _size(p):
         if p == HEAVY:
@@ -261,7 +261,7 @@ def test_watcher_no_omite_ligera_como_duplicada_del_gordo(tmp_path):
     record(_tv_entry())
     original = _ligera(tmp_path)
     watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher()
-    ftp.list_files.return_value = ["Mi Serie 1x06 Gordo.mkv"]
+    ftp.list_files.return_value = ftp.list_files_checked.return_value = ["Mi Serie 1x06 Gordo.mkv"]
 
     watcher._process(original)
 
@@ -340,7 +340,7 @@ def test_watcher_sustitucion_sube_y_borra_viejo_despues(tmp_path):
     record(_req_entry())
     original = _ligera(tmp_path)
     watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher()
-    ftp.list_files.return_value = ["Mi Serie 1x06 Viejo.mkv"]
+    ftp.list_files.return_value = ftp.list_files_checked.return_value = ["Mi Serie 1x06 Viejo.mkv"]
     seen = {}
 
     def _delete(p):
@@ -377,7 +377,7 @@ def test_watcher_sustitucion_fallida_conserva_pendiente_y_viejo(tmp_path):
     record(_req_entry())
     original = _ligera(tmp_path)
     watcher, ftp, upload_calls, delete_calls, events, file_events = _make_watcher()
-    ftp.list_files.return_value = ["Mi Serie 1x06 Viejo.mkv"]
+    ftp.list_files.return_value = ftp.list_files_checked.return_value = ["Mi Serie 1x06 Viejo.mkv"]
     ftp.upload_file.side_effect = lambda *a, **k: (upload_calls.append(k), (False, "boom"))[1]
 
     watcher._process(original)

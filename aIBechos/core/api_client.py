@@ -738,6 +738,16 @@ is_book: el llamador (gui/app.py, vía core.renamer.is_book_file) ya
 
             title_raw = stem[:m.start()]
             title = _clean_title(title_raw, extra_junk_terms)
+            if not title:
+                # El episodio va DELANTE ("3x03 The Mandalorian El converso
+                # ESPAÑOL - (J).mp4"): antes el título quedaba vacío y el
+                # watcher lo descartaba sin buscar ("Sin patrón
+                # reconocible"). Se usa lo de detrás hasta el primer " - ",
+                # que suele separar la serie de lo demás; si aún sobra el
+                # título del episodio, TMDB/el fallback de IA tienen al
+                # menos algo con lo que buscar.
+                after = re.split(r"\s+[-–—]\s+", stem[m.end():].strip(" .-_–—"), maxsplit=1)[0]
+                title = _clean_title(after, extra_junk_terms)
 
             return {
                 "title": title,

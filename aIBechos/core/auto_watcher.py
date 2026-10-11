@@ -165,6 +165,17 @@ def _upload_tick_due(last_pct, last_ts, pct, now,
         return True
 
 
+class _AnyEvent:
+    """Vista de solo lectura "alguno de estos Event está activo" -- para
+    UploadSlotManager.acquire, que solo acepta un cancel_event."""
+
+    def __init__(self, *events):
+        self._events = events
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self._events)
+
+
 class AutoWatcher:
     def __init__(self, folder: str, config, tmdb_client, ftp_client, on_event, on_file_event=None,
                  upload_slots=None, ftp_lock=None, ftp_factory=None,
@@ -247,8 +258,20 @@ class AutoWatcher:
         # socket, así que hay que serializar cualquier uso de self.ftp entre
         # TODOS esos hilos con el mismo candado, no solo entre los propios.
         self._ftp_lock = ftp_lock or threading.Lock()
-
-    # ── Ciclo de vida ──────────────────────────────────────────────────────────
+        # {clave canónica: Event} de cada archivo que está subiendo o
+        # esperando turno, para cancelarlo SOLO a él desde la GUI (ver
+        # cancel_file). Antes la única cancelación era self._stop (parar el
+        # automático entero): "Quitar y borrar" sobre una subida automática
+        # no la paraba y seguía subiendo 23 min sin fila (real: La Odisea).
+        self._skip_events = {}
+        self._skip_lock   = threading.Lock()
+        # Sustituciones web ya cogidas por una subida en curso ({clave del
+        # pendiente: skip_event de esa subida}) y rutas remotas que se están
+        # subiendo ahora mismo. Sin esto una misma petición se aplicó a DOS
+        # archivos a la vez y el segundo borró en el servidor, como "viejo",
+        # el que el primero aún estaba subiendo (real: La Odisea .mkv/.avi).
+        self._claimed_requests = {}
+        self._uploading_remote = set()
 
     def start(self):
         self._stop.clear()
@@ -257,6 +280,22 @@ class AutoWatcher:
 
     def stop(self):
         self._stop.set()
+
+    def cancel_file(self, path) -> bool:
+        """Cancela la subida automática de *path* (en curso o esperando
+        turno) sin parar el resto del modo automático. True si había una
+        subida de ese archivo que cancelar."""
+        try:
+            key = canon_path(str(path))
+        except Exception:
+            return False
+        with self._skip_lock:
+            ev = self._skip_events.get(key)
+        if ev is None:
+            return False
+        ev.set()
+        _log.info("Subida cancelada a mano: %s", Path(str(path)).name)
+        return True
 
     @property
     def running(self) -> bool:
@@ -882,6 +921,43 @@ class AutoWatcher:
 
     def _upload_to_ftp(self, key, new_name, media_info, season, new_path, _mark_both, _discard_both, ticket=None,
                        original_name=None):
+        """Registra el evento de cancelación individual (ver cancel_file)
+        con la clave original y la del nombre nuevo -- la fila de la GUI
+        puede tener cualquiera de las dos -- y sube."""
+        skip_event = threading.Event()
+        keys = {canon_path(key), canon_path(new_path)}
+        with self._skip_lock:
+            for k in keys:
+                self._skip_events[k] = skip_event
+        try:
+            return self._upload_to_ftp_impl(key, new_name, media_info, season, new_path,
+                                            _mark_both, _discard_both, ticket,
+                                            original_name=original_name, skip_event=skip_event)
+        finally:
+            with self._skip_lock:
+                for k in keys:
+                    if self._skip_events.get(k) is skip_event:
+                        del self._skip_events[k]
+                for k in [k for k, ev in self._claimed_requests.items() if ev is skip_event]:
+                    del self._claimed_requests[k]
+
+    def _claim_request(self, pending: dict, skip_event) -> bool:
+        """Reserva la sustitución *pending* para esta subida. False si otra
+        subida en curso ya la tiene: esta se trata como una llegada normal
+        (el chequeo de duplicados decide), nunca como sustitución."""
+        from core.slim_pending import _entry_key
+        key = _entry_key(pending)
+        with self._skip_lock:
+            owner = self._claimed_requests.get(key)
+            if owner is not None and owner is not skip_event:
+                return False
+            self._claimed_requests[key] = skip_event
+            return True
+
+    def _upload_to_ftp_impl(self, key, new_name, media_info, season, new_path, _mark_both, _discard_both,
+                            ticket=None, original_name=None, skip_event=None):
+        if skip_event is None:
+            skip_event = threading.Event()
         # original_name: nombre real del archivo al detectarlo (con su
         # caja), para los casos que lo necesitan tal cual (subir con
         # nombre original si rename_remote=False, marcas de contenido).
@@ -1022,6 +1098,10 @@ class AutoWatcher:
                     # encuentre más abajo y se borra tras subir, igual
                     # que en el adelgazamiento.
                     _reqpend, _slimpend = _slimpend, None
+                    if not self._claim_request(_reqpend, skip_event):
+                        _log.info("Sustitución ya en curso con otro archivo, %s se trata "
+                                  "como llegada normal", new_name)
+                        _reqpend = None
             except Exception:
                 _slimpend = _reqpend = None
             if _reqpend is not None:
@@ -1083,7 +1163,14 @@ class AutoWatcher:
                 # Mismo nombre: el STOR lo sobrescribe (sin reanudar, ver
                 # upload_file try_resume=False), no hay viejo que borrar.
                 _log.info("Sustitución: %s se sobrescribe en el servidor", remote_filename)
-            elif remote_size is not None and remote_size >= local_size:
+            elif remote_size is not None and (
+                    remote_size >= local_size
+                    or not self.ftp._is_prefix_of_local(remote_file_full, Path(new_path), remote_size)):
+                # Más pequeño solo cuenta como parcial si ES el principio de
+                # este archivo. Si no, es otra versión ya completa con el
+                # mismo nombre, y antes se machacaba en silencio (real:
+                # "Dragon Ball Daima 1x07 Collar.mkv", 277 MB sustituido por
+                # otro de 1,4 GB el 5/10 sin ningún aviso).
                 _log.info("Ya existe en el servidor, se omite: %s (ya existe %s)", new_name, remote_filename)
                 self.on_event("skip", f"Ya existe en el servidor ({remote_filename}): {new_name}")
                 self.on_file_event(new_path, "skip", new_name=new_name,
@@ -1099,7 +1186,20 @@ class AutoWatcher:
             # directamente en vez de preguntar -- más seguro que subir
             # (o sobrescribir) sin supervisión.
             from core.duplicate_detect import find_duplicate
-            existing_files = self.ftp.list_files(remote_path)
+            existing_files = self.ftp.list_files_checked(remote_path)
+            if existing_files is None:
+                # Listado fallido (timeout, conexión caída): antes era []
+                # y pasaba como "sin duplicados", subiendo encima de lo que
+                # ya hubiera. Sin saber qué hay, no se sube; error_ftp se
+                # reintenta en el siguiente ciclo (ver _MAX_RETRY_ATTEMPTS).
+                _log.warning("No se pudo listar %s para buscar duplicados, se reintentará: %s",
+                             remote_path, new_name)
+                self.on_file_event(new_path, "error", new_name=new_name,
+                                   reason="No se pudo listar la carpeta del servidor para "
+                                          "comprobar duplicados")
+                _mark_both("error_ftp", new_name=new_name)
+                self.upload_slots.release_ticket_unused(ticket)
+                return
             dup = find_duplicate(existing_files, media_info, remote_filename)
             if dup and _slimpend is not None and not _slim_heavy_gone:
                 # El "duplicado" puede ser el propio gordo a reemplazar,
@@ -1193,8 +1293,11 @@ class AutoWatcher:
             self.on_file_event(new_path, "uploading", new_name=new_name, progress=pct, speed=speed,
                                is_slim=(_slimpend is not None))
 
-        if not self.upload_slots.acquire(cancel_event=self._stop, ticket=ticket):
+        if not self.upload_slots.acquire(cancel_event=_AnyEvent(self._stop, skip_event), ticket=ticket):
             _log.info("Subida cancelada esperando turno: %s", new_name)
+            if skip_event.is_set() and not self._stop.is_set():
+                self._on_upload_skipped(new_path, new_name, _mark_both)
+                return
             self.on_event("info", "Subida cancelada por parada del modo automático")
             self.on_file_event(new_path, "skip", new_name=new_name,
                                 reason="Subida cancelada al detener el modo automático")
@@ -1227,15 +1330,21 @@ class AutoWatcher:
                 _log.error("FTP conexion fallida (subida): %s", msg_conn)
                 ok3, msg3 = False, msg_conn
             else:
+                _remote_full_up = f"{remote_path.rstrip('/')}/{remote_filename}"
+                with self._skip_lock:
+                    self._uploading_remote.add(_remote_full_up)
                 try:
                     ok3, msg3 = own_ftp.upload_file(
                         new_path, remote_path,
                         progress_cb=_progress_cb,
                         cancel_event=self._stop,
+                        skip_event=skip_event,
                         speed_limit_kbs=self._get_speed_limit_kbs,
                         remote_filename=remote_filename,
                     )
                 finally:
+                    with self._skip_lock:
+                        self._uploading_remote.discard(_remote_full_up)
                     own_ftp.disconnect()
         finally:
             self.upload_slots.release()
@@ -1332,11 +1441,32 @@ class AutoWatcher:
             self.on_file_event(new_path, "skip", new_name=new_name,
                                 reason="Subida cancelada al detener el modo automático")
             _discard_both()
+        elif msg3 == "saltado":
+            # Cancelada a mano (ver cancel_file): el parcial no debe
+            # quedarse en el servidor, donde el servidor multimedia lo
+            # indexaría como si fuera el archivo completo.
+            remote_full = f"{remote_path.rstrip('/')}/{remote_filename}"
+            try:
+                with self._ftp_lock:
+                    self.ftp.delete_file(remote_full)
+            except Exception:
+                _log.warning("No se pudo borrar el parcial %s", remote_full, exc_info=True)
+            self._on_upload_skipped(new_path, new_name, _mark_both)
         else:
             _log.error("FTP upload fallido: %s | %s", new_name, msg3)
             self.on_event("error", f"Error FTP al subir {new_name}: {msg3}")
             self.on_file_event(new_path, "error", new_name=new_name, reason=f"Error FTP al subir: {msg3}")
             _mark_both("error_ftp", new_name=new_name)
+
+    def _on_upload_skipped(self, new_path, new_name, _mark_both):
+        """Subida cancelada a mano: "descartado" es estado protegido, así
+        que el siguiente escaneo no vuelve a cogerlo (lo mismo que escribe
+        la GUI al quitarlo de la lista, ver mark_discarded)."""
+        _log.info("Subida cancelada a mano: %s", new_name)
+        self.on_event("info", f"Subida cancelada: {new_name}")
+        self.on_file_event(new_path, "skip", new_name=new_name,
+                           reason="Subida cancelada a mano")
+        _mark_both("descartado", new_name=new_name)
 
     def _finish_request_replacement(self, pending: dict, remote_path: str,
                                     remote_filename: str, old_name: str, new_name: str):
@@ -1350,6 +1480,20 @@ class AutoWatcher:
         if old_name and old_name != remote_filename:
             old_full = f"{remote_path.rstrip('/')}/{old_name}"
             ok_del, msg_del = False, ""
+            with self._skip_lock:
+                in_flight = old_full in self._uploading_remote
+            if in_flight:
+                # El "viejo" es otra subida de este mismo watcher aún en
+                # marcha: borrarlo ahora la deja sin archivo en el servidor
+                # aunque luego diga OK. Se deja estar y se avisa.
+                _log.warning("Sustitución: %s se está subiendo ahora mismo, no se borra "
+                             "(quedan los dos, borra uno a mano)", old_full)
+                self.on_event("error", f"Sustitución: {old_name} se está subiendo, no se borra")
+                try:
+                    _consume_pending(pending)
+                except Exception:
+                    pass
+                return
             try:
                 with self._ftp_lock:
                     ok_del, msg_del = self.ftp.delete_file(old_full)

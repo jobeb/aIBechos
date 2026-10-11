@@ -56,7 +56,7 @@ def test_two_uploads_transfer_concurrently_with_dedicated_connections(tmp_path):
     shared_ftp.build_remote_path.return_value = "/peliculas/X/"
     shared_ftp.get_free_space.return_value = None
     shared_ftp.get_remote_size.return_value = None
-    shared_ftp.list_files.return_value = []
+    shared_ftp.list_files.return_value = shared_ftp.list_files_checked.return_value = []
 
     # Cada llamada a la fábrica crea una conexión DEDICADA nueva -- si de
     # verdad hay dos transferencias en paralelo, ambas deben poder entrar

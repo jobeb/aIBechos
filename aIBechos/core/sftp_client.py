@@ -21,6 +21,7 @@ pesada (arrastra `cryptography`, con binarios) y quien siga usando FTP no
 tiene por qué pagar su carga al arrancar la aplicación.
 """
 
+import errno
 import io
 import os
 import stat as stat_mod
@@ -31,7 +32,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 from core.applog import get_logger
-from core.ftp_client import FTPClient
+from core.ftp_client import FTPClient, _tmp_name
 
 _log = get_logger("aIBechos.sftp", "app.log")
 
@@ -162,6 +163,30 @@ class SFTPClient(FTPClient):
             return []
         return [a.filename for a in self._attrs(path)
                 if a.st_mode is not None and stat_mod.S_ISDIR(a.st_mode)]
+
+    def _read_remote_range(self, remote_file: str, offset: int, n: int) -> Optional[bytes]:
+        try:
+            with self.sftp.open(remote_file, "rb") as remoto:
+                remoto.seek(offset)
+                return remoto.read(n)
+        except Exception:
+            return None
+
+    def list_files_checked(self, path: str) -> Optional[list[str]]:
+        """Ver FTPClient.list_files_checked: None si no se pudo listar, []
+        solo si la carpeta está vacía o no existe."""
+        if not self.is_connected():
+            return None
+        try:
+            attrs = self.sftp.listdir_attr(path or "/")
+        except FileNotFoundError:
+            return []
+        except Exception as e:
+            if getattr(e, "errno", None) == errno.ENOENT:
+                return []
+            return None
+        return [a.filename for a in attrs
+                if a.st_mode is not None and stat_mod.S_ISREG(a.st_mode)]
 
     def list_files(self, path: str) -> list[str]:
         if not self.is_connected():
@@ -527,12 +552,37 @@ class SFTPClient(FTPClient):
         ok, msg = self.ensure_remote_dir(remote_path.rsplit("/", 1)[0] or "/")
         if not ok:
             return False, msg
+        # Temporal + rename, mismo motivo que en FTPClient.upload_bytes.
+        # posix_rename (extensión de OpenSSH) pisa el destino de forma
+        # atómica; el rename estándar de SFTP falla si el destino existe.
+        tmp = _tmp_name(remote_path)
         try:
-            with self.sftp.open(remote_path, "wb") as remoto:
+            with self.sftp.open(tmp, "wb") as remoto:
                 remoto.write(data)
+        except Exception as e:
+            self._remove_quiet(tmp)
+            return False, f"Error SFTP: {self._explain(e)}"
+        try:
+            self.sftp.posix_rename(tmp, remote_path)
+            return True, remote_path
+        except Exception:
+            pass
+        try:
+            try:
+                self.sftp.remove(remote_path)
+            except Exception:
+                pass
+            self.sftp.rename(tmp, remote_path)
             return True, remote_path
         except Exception as e:
+            self._remove_quiet(tmp)
             return False, f"Error SFTP: {self._explain(e)}"
+
+    def _remove_quiet(self, remote_file: str) -> None:
+        try:
+            self.sftp.remove(remote_file)
+        except Exception:
+            pass
 
     def download_bytes(self, remote_path: str) -> Optional[bytes]:
         if not self.is_connected():

@@ -176,8 +176,14 @@ class FilesCoreMixin:
                 # GUI (real: Fargo T4 "sube pero no cambia de Renombrado").
                 # Se registra para diagnóstico, y un "uploaded" huérfano
                 # guarda igualmente su entrada en el Historial.
-                _log.warning("Evento auto '%s' sin fila para %s (nombre %s)",
-                             tipo, path, new_name)
+                # Una vez por archivo y tipo: "uploading" llega en cada
+                # tramo de progreso, y una sola subida dejaba cientos de
+                # líneas iguales (264 con un Dragon Ball Daima).
+                _orphan_key = (path, tipo)
+                if _orphan_key not in self._orphan_events_logged:
+                    self._orphan_events_logged.add(_orphan_key)
+                    _log.warning("Evento auto '%s' sin fila para %s (nombre %s)",
+                                 tipo, path, new_name)
                 if tipo == "uploaded":
                     try:
                         self._save_history_entry(Path(path).name, remote_full or path,
@@ -894,9 +900,14 @@ class FilesCoreMixin:
         # de la tanda aunque no tuvieran nada que confirmar.)
         dup = None
         if not already_exists and not getattr(entry, "_duplicate_checked", False):
-            entry._duplicate_checked = True
             from core.duplicate_detect import find_duplicate
-            existing_files = ftp_conn.list_files(remote_dir)
+            existing_files = ftp_conn.list_files_checked(remote_dir)
+            if existing_files is None:
+                # Listado fallido: [] habría pasado por "sin duplicados" y
+                # marcado la entrada como comprobada para siempre. Se falla
+                # esta subida (reintentable) sin marcarla.
+                return False, "No se pudo listar la carpeta del servidor para comprobar duplicados"
+            entry._duplicate_checked = True
             dup = find_duplicate(existing_files, info, remote_filename)
 
         # Los diálogos de confirmación se serializan con
@@ -2893,6 +2904,16 @@ class FilesCoreMixin:
                 self._set_status(f"Cancelando subida y borrando: {entry.new_name or entry.name}", PENDING_COLOR)
                 def _bg_local():
                     self._queue_skip_entry(entry)
+                    # La subida puede ser del modo automático y no de la
+                    # cola manual: _queue_skip_entry no la ve, y seguía
+                    # subiendo sin fila hasta el final (real: La Odisea).
+                    watcher = getattr(self, "_watcher", None)
+                    if watcher is not None and local_path:
+                        try:
+                            watcher.cancel_file(local_path)
+                        except Exception:
+                            _log.warning("No se pudo cancelar la subida automática de %s",
+                                         local_path, exc_info=True)
                     try:
                         self._upload_queue.remove(entry)
                     except ValueError:

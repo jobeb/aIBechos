@@ -267,6 +267,19 @@ def test_reanuda_una_subida_a_medias_en_vez_de_repetirla(cliente, tmp_path):
     assert cliente.sftp.ficheros["/datos/series/Bleach/corte.mkv"] == b"0123456789"
 
 
+def test_no_reanuda_sobre_otra_version_con_el_mismo_nombre(cliente, tmp_path):
+    """Un archivo remoto más pequeño con el mismo nombre no tiene por qué ser
+    un parcial nuestro: puede ser otra versión del mismo episodio. Reanudar
+    pegaba la cola del nuestro detrás del suyo, el tamaño final cuadraba y se
+    daba por bueno un archivo roto (y se borraba el local)."""
+    local = tmp_path / "otra.mkv"
+    local.write_bytes(b"NUEVA-VERSION-COMPLETA")
+    cliente.sftp.ficheros["/datos/series/Bleach/otra.mkv"] = b"vieja-v"   # 7 bytes, otro contenido
+    ok, _ = cliente.upload_file(str(local), "/datos/series/Bleach", try_resume=True)
+    assert ok
+    assert cliente.sftp.ficheros["/datos/series/Bleach/otra.mkv"] == b"NUEVA-VERSION-COMPLETA"
+
+
 def test_no_resube_lo_que_ya_esta_completo(cliente, tmp_path):
     local = tmp_path / "ya.mkv"
     local.write_bytes(b"0123456789")
@@ -501,8 +514,13 @@ def test_un_archivo_pequeno_no_abre_conexiones_de_mas(cliente, tmp_path, monkeyp
 def test_un_archivo_grande_se_reparte(cliente, tmp_path, monkeypatch):
     local = _grande(tmp_path, cliente)
     repartos = []
-    monkeypatch.setattr(cliente, "_store_stream_multi",
-                        lambda *a, **k: repartos.append(a[-1]))
+
+    def _multi(*a, **k):
+        repartos.append(a[-1])
+        # Deja el archivo en el servidor falso: la verificación final
+        # ya no da por buena una subida que no aparece.
+        cliente.sftp.ficheros["/datos/series/Bleach/peli.mkv"] = local.read_bytes()
+    monkeypatch.setattr(cliente, "_store_stream_multi", _multi)
     ok, _ = cliente.upload_file(str(local), "/datos/series/Bleach", streams=4)
     assert ok
     assert repartos == [4]

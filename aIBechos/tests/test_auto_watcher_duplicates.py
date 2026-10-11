@@ -63,7 +63,7 @@ def _make_watcher(existing_remote_files, upload_calls, media_type="movie",
     ftp.build_remote_path.return_value = "/destino/"
     ftp.get_free_space.return_value = None
     ftp.get_remote_size.return_value = None
-    ftp.list_files.return_value = existing_remote_files
+    ftp.list_files.return_value = ftp.list_files_checked.return_value = existing_remote_files
 
     def _fake_upload(local_path, remote_path, **kw):
         upload_calls.append({"local_path": local_path, **kw})
@@ -127,10 +127,28 @@ def test_movie_uploads_when_remote_partial_is_smaller(tmp_path):
     upload_calls = []
     watcher, ftp = _make_watcher([], upload_calls, media_type="movie")
     ftp.get_remote_size.return_value = 3   # parcial menor que los 9 bytes locales
+    ftp._is_prefix_of_local.return_value = True   # y es el principio de este archivo
 
     watcher._process(original)
 
     assert len(upload_calls) == 1
+
+
+def test_movie_skips_smaller_remote_that_is_another_version(tmp_path):
+    """Más pequeño pero OTRO archivo (otra versión ya completa con el mismo
+    nombre limpio): antes se machacaba en silencio. Real: "Dragon Ball Daima
+    1x07 Collar.mkv" de 277 MB sustituido por uno de 1,4 GB sin aviso."""
+    original = tmp_path / "1.mi.pelicula.WEB-DL.2024.mkv"
+    original.write_bytes(b"contenido")
+    upload_calls = []
+    watcher, ftp = _make_watcher([], upload_calls, media_type="movie")
+    ftp.get_remote_size.return_value = 3
+    ftp._is_prefix_of_local.return_value = False
+
+    watcher._process(original)
+
+    assert upload_calls == []
+    assert any(v.get("status") == "duplicado" for v in watcher._processed.values()), watcher._processed
 
 
 def test_tv_skips_upload_when_same_episode_exists_under_different_name(tmp_path):
@@ -182,3 +200,19 @@ def test_scan_does_not_reprocess_file_already_marked_duplicado(tmp_path):
     watcher._scan()
 
     assert process_calls == [], "un archivo ya marcado como duplicado no debe reprocesarse en el siguiente escaneo"
+
+
+def test_does_not_upload_when_the_remote_folder_cannot_be_listed(tmp_path):
+    """Un listado fallido (timeout, conexión caída) se leía como "carpeta
+    vacía": sin duplicados a la vista, se subía encima de lo que ya había.
+    Sin saber qué hay no se sube; error_ftp se reintenta más tarde."""
+    original = tmp_path / "1.mi.pelicula.WEB-DL.2024.mkv"
+    original.write_bytes(b"contenido")
+    upload_calls = []
+    watcher, ftp = _make_watcher([], upload_calls, media_type="movie")
+    ftp.list_files_checked.return_value = None
+
+    watcher._process(original)
+
+    assert upload_calls == []
+    assert any(v.get("status") == "error_ftp" for v in watcher._processed.values()), watcher._processed

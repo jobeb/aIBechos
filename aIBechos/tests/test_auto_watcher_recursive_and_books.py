@@ -151,7 +151,7 @@ def test_process_identifies_and_uploads_a_comic(tmp_path):
     ftp.build_remote_path.return_value = "/libros/The Promise/"
     ftp.get_free_space.return_value = None
     ftp.get_remote_size.return_value = None
-    ftp.list_files.return_value = []
+    ftp.list_files.return_value = ftp.list_files_checked.return_value = []
     uploaded = []
     ftp.upload_file.side_effect = lambda local_path, remote_path, **kw: (
         uploaded.append(Path(local_path).name) or (True, "ok"))
