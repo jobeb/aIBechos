@@ -18,9 +18,9 @@ from datetime import date
 
 import requests
 from PySide6.QtCore import QAbstractListModel, QModelIndex, QPoint, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QGuiApplication, QPixmap
+from PySide6.QtGui import QAction, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QListView, QProgressBar, QPushButton, QScrollArea,
+                               QLabel, QLineEdit, QListView, QMenu, QProgressBar, QPushButton, QScrollArea,
                                QSplitter, QVBoxLayout, QWidget)
 
 from core.applog import get_logger
@@ -434,6 +434,8 @@ class MoviesTab(QWidget):
         view.setSelectionMode(QAbstractItemView.SingleSelection)
         view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        view.setContextMenuPolicy(Qt.CustomContextMenu)
+        view.customContextMenuRequested.connect(lambda pos, v=view: self._context_menu_cards(v, pos))
         try:
             from PySide6.QtWidgets import QStyle as _QS
             sb_h = view.style().pixelMetric(_QS.PM_ScrollBarExtent, None, view) or 16
@@ -674,6 +676,31 @@ class MoviesTab(QWidget):
         self.host._push_missing_movies_to_ftp()
 
     # ── Acciones de card ──
+
+    def _card_menu(self, view, item: dict) -> QMenu:
+        """Menú clic-derecho de una card: mismos botones + Ver ficha."""
+        from gui_qt.movies.cards import card_menu_entries
+        menu = QMenu(view)
+        for aid, text, enabled, tip in card_menu_entries(item, self._card_state(item)):
+            a = QAction(text, menu)
+            a.setToolTip(tip)
+            a.setEnabled(enabled)
+            if aid == "__detail__":
+                a.triggered.connect(lambda _c=False, i=item: self._on_card_selected(i))
+            else:
+                a.triggered.connect(lambda _c=False, i=item, _aid=aid: self._on_card_action(i, _aid))
+            menu.addAction(a)
+        return menu
+
+    def _context_menu_cards(self, view, pos):
+        index = view.indexAt(pos)
+        if not index.isValid():
+            return
+        item = view.model().data(index, CardRole)
+        if not isinstance(item, dict):
+            return
+        view.setCurrentIndex(index)
+        self._card_menu(view, item).exec(view.viewport().mapToGlobal(pos))
 
     def _on_card_selected(self, item: dict):
         sec_title = next((s["rowdef"]["title"] for s in self._sections

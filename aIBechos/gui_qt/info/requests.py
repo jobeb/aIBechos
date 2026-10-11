@@ -12,8 +12,9 @@ from __future__ import annotations
 import threading
 
 from PySide6.QtCore import QModelIndex, Qt, QTimer
+from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QPushButton, QTableView, QVBoxLayout, QWidget)
+                               QMenu, QPushButton, QTableView, QVBoxLayout, QWidget)
 
 from core.status_colors import PENDING_COLOR, SUCCESS_COLOR
 from gui_qt.actions import ActionsDelegate
@@ -70,6 +71,8 @@ class WebRequestsTab(QWidget):
         self.delegate = ActionsDelegate(self.view)
         self.delegate.actionTriggered.connect(self._on_action)
         self.view.setItemDelegateForColumn(H_ACT, self.delegate)
+        self.view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self._context_menu)
         hdr = self.view.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setSectionResizeMode(H_FILE, QHeaderView.Stretch)
@@ -116,6 +119,34 @@ class WebRequestsTab(QWidget):
 
     # ── Acciones ──
 
+    def _context_menu(self, pos):
+        index = self.view.indexAt(pos)
+        if not index.isValid() or not (0 <= index.row() < len(self.model.rows)):
+            return
+        self.view.selectRow(index.row())
+        row, e = index.row(), self.model.rows[index.row()]
+        st = e.get("status", "")
+        menu = QMenu(self.view)
+
+        def add(text, aid, enabled=True):
+            a = QAction(text, menu)
+            a.setEnabled(enabled)
+            a.triggered.connect(lambda _c=False: self._on_action(self.model.index(row, 0), aid))
+            menu.addAction(a)
+
+        add("🔍 Buscar a mano en Descargas", "search", bool(e.get("name", "")))
+        add("⬇ Descargar ahora mismo", "download", st in ("pending", "failed"))
+        add("✕ Cancelar solicitud", "cancel", st in _ACTIVE)
+        menu.addSeparator()
+        copy = QAction("📋 Copiar título", menu)
+        copy.setEnabled(bool(e.get("name", "")))
+        copy.triggered.connect(lambda _c=False, t=e.get("name", ""): self._copy_title(t))
+        menu.addAction(copy)
+        menu.exec(self.view.viewport().mapToGlobal(pos))
+
+    def _copy_title(self, text: str):
+        QGuiApplication.clipboard().setText(text)
+        self.ctx.set_status(f"Copiado: {text[:80]}", SUCCESS_COLOR)
     def _on_action(self, index: QModelIndex, action_id: str):
         if not (0 <= index.row() < len(self.model.rows)):
             return

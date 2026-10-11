@@ -194,6 +194,25 @@ def card_buttons(item: dict, state: dict) -> tuple:
     return primary, icons
 
 
+def card_menu_entries(item: dict, state: dict) -> list:
+    """[(id, texto, enabled, tooltip)] para el menú clic-derecho de una
+    card: los mismos botones + Ver ficha. Una sola fuente para la pestaña
+    y el diálogo Ver todo."""
+    primary, icons = card_buttons(item, state)
+    labels = {"auto": ("⚡ Quitar autocompletado" if state.get("auto_on")
+                       else "⚡ Autocompletar serie"),
+              "search": "🔍 Buscar en aMule",
+              "copy": "📋 Copiar nombre",
+              "download": primary.glyph,
+              "dismiss": "🚫 Quitar recomendación",
+              "fav": ("★ Quitar de favoritos" if state.get("fav") else "☆ Marcar favorita"),
+              "lock": ("🔓 Quitar protección" if state.get("locked") else "🔒 Proteger")}
+    entries = [(act.id, labels.get(act.id, act.glyph), act.enabled, act.tooltip)
+               for act in [primary] + icons]
+    entries.append(("__detail__", "🔎 Ver ficha", True, "Ver la ficha de la obra"))
+    return entries
+
+
 def card_state_key(state: dict) -> str:
     """Qué insignia lleva el póster: owned > downloading > requested >
     failed (misma prioridad que la web). Fase 1: requested siempre False

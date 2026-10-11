@@ -14,8 +14,8 @@ import datetime
 import time
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PySide6.QtGui import QBrush, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QPushButton,
+from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication
+from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QMenu, QPushButton,
                                QTableView, QVBoxLayout, QWidget)
 
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNING_COLOR
@@ -163,6 +163,8 @@ class WatchSyncTab(QWidget):
                              lambda e, c: (SUCCESS_COLOR if e.get("status", "ok") == "ok" else ERROR_COLOR)
                              if c == 5 else None)
         hview = _view(self.hmodel, 2)
+        hview.setContextMenuPolicy(Qt.CustomContextMenu)
+        hview.customContextMenuRequested.connect(lambda pos, v=hview: self._context_menu_history(v, pos))
         for c, w in ((0, 125), (1, 110), (3, 60), (4, 100), (5, 80)):
             hview.horizontalHeader().resizeSection(c, w)
         root.addWidget(hview, 1)
@@ -260,3 +262,21 @@ class WatchSyncTab(QWidget):
         except Exception:
             pass
         self.refresh_history()
+
+    def _context_menu_history(self, view, pos):
+        index = view.indexAt(pos)
+        if not index.isValid() or not (0 <= index.row() < len(self.hmodel.rows)):
+            return
+        view.selectRow(index.row())
+        texts = [t for t in self.hmodel.row_fn(self.hmodel.rows[index.row()]) if t]
+        text = " · ".join(texts)
+        menu = QMenu(view)
+        a = QAction("📋 Copiar fila", menu)
+        a.setEnabled(bool(text))
+        a.triggered.connect(lambda _c=False, t=text: self._copy(t))
+        menu.addAction(a)
+        menu.exec(view.viewport().mapToGlobal(pos))
+
+    def _copy(self, text: str):
+        QGuiApplication.clipboard().setText(text)
+        self._set_status(f"Copiado: {text[:80]}")

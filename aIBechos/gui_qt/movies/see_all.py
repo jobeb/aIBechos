@@ -5,8 +5,9 @@ openSectionList en solicitudes-web/app.js."""
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QHBoxLayout, QLabel,
-                               QListView, QPushButton, QVBoxLayout)
+                               QListView, QMenu, QPushButton, QVBoxLayout)
 
 from core.recommended_rows import apply_filters, build_params, filter_available, normalize_item
 from gui_qt import theme
@@ -54,8 +55,11 @@ class SeeAllDialog(QDialog):
         self.delegate.get_state = get_state
         self.delegate.cardAction.connect(on_action)
         self.delegate.cardSelected.connect(lambda item: (on_select(item), self.accept()))
+        self._cb_action, self._cb_select = on_action, on_select
         self.delegate.attach(self.view)
         self.view.setItemDelegate(self.delegate)
+        self.view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self._context_menu)
         lay.addWidget(self.view, 1)
         bottom = QHBoxLayout()
         bottom.addStretch(1)
@@ -68,6 +72,27 @@ class SeeAllDialog(QDialog):
         lay.addLayout(bottom)
         self.finished.connect(lambda _r: setattr(self, "_alive", False))
         self._load_next()
+
+    def _context_menu(self, pos):
+        from gui_qt.movies.cards import CardRole, card_menu_entries
+        index = self.view.indexAt(pos)
+        if not index.isValid():
+            return
+        item = self.model.data(index, CardRole)
+        if not isinstance(item, dict):
+            return
+        self.view.setCurrentIndex(index)
+        menu = QMenu(self.view)
+        for aid, text, enabled, tip in card_menu_entries(item, self.delegate.get_state(item)):
+            a = QAction(text, menu)
+            a.setToolTip(tip)
+            a.setEnabled(enabled)
+            if aid == "__detail__":
+                a.triggered.connect(lambda _c=False, i=item: (self._cb_select(i), self.accept()))
+            else:
+                a.triggered.connect(lambda _c=False, i=item, _aid=aid: self._cb_action(i, _aid))
+            menu.addAction(a)
+        menu.exec(self.view.viewport().mapToGlobal(pos))
 
     def _load_next(self):
         if self._loading or not self._alive:

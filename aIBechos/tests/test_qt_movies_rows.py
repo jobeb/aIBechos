@@ -183,3 +183,21 @@ def test_aviso_vacio_incrustado_no_ventana(qtbot):
     tab._sections[0]["box"].show()
     tab._update_empty()
     assert tab.empty_lbl.isHidden()
+
+
+def test_filas_con_menu_contextual(qtbot):
+    from PySide6.QtCore import Qt
+    tab = _tab(qtbot)
+    assert tab._sections, "sin secciones"
+    for sec in tab._sections:
+        assert sec["view"].contextMenuPolicy() == Qt.CustomContextMenu
+    # El menú de una card lleva los botones + Ver ficha.
+    sec = tab._sections[0]
+    tab._load_section(sec)
+    qtbot.wait(2000)
+    assert sec["state"] == "ready"
+    item = sec["model"].items[0]
+    menu = tab._card_menu(sec["view"], item)
+    texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert any("Descargar" in t or "Piloto" in t for t in texts)
+    assert texts[-1] == "🔎 Ver ficha"

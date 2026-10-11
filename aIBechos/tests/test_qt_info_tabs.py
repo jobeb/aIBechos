@@ -202,3 +202,13 @@ def test_reenvios_shown_hidden(qtbot):
     info.on_hidden()
     assert info.host._history_visible is False
     assert info.host._requests_visible is False
+
+
+def test_vistas_con_menu_contextual(qtbot):
+    from PySide6.QtCore import Qt
+    info = _info(qtbot)
+    for i in range(5):
+        info.tabs.setCurrentIndex(i)
+    for key in ("history", "requests", "protected"):
+        page = info.pages[key]
+        assert page.view.contextMenuPolicy() == Qt.CustomContextMenu, key

@@ -16,9 +16,9 @@ import time
 
 import requests
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor, QPixmap
+from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QPushButton, QScrollArea, QSplitter, QTableView,
+                               QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSplitter, QTableView,
                                QVBoxLayout, QWidget)
 
 from core.amule_search_session import FILE_TYPES, NETWORKS, AmuleSearchSession
@@ -301,6 +301,7 @@ class DownloadsTab(QWidget):
         vsplit.addWidget(lower)
         vsplit.setSizes([520, 260])
         root.addWidget(vsplit, 1)
+        self._wire_menus()
 
     def _table(self, model, act_col, act_w, attr="rdelegate"):
         v = QTableView()
@@ -316,8 +317,66 @@ class DownloadsTab(QWidget):
         delegate = ActionsDelegate(v)
         v.setItemDelegateForColumn(act_col, delegate)
         v.horizontalHeader().resizeSection(act_col, act_w)
+        v.setContextMenuPolicy(Qt.CustomContextMenu)
         setattr(self, attr, delegate)
         return v
+
+    def _wire_menus(self):
+        self.results_view.customContextMenuRequested.connect(self._context_menu_results)
+        self.active_view.customContextMenuRequested.connect(self._context_menu_active)
+
+    @staticmethod
+    def _menu(view, entries):
+        """QMenu con [(texto, fn, enabled)] -- None como separador."""
+        menu = QMenu(view)
+        for item in entries:
+            if item is None:
+                menu.addSeparator()
+                continue
+            text, fn, enabled = item
+            a = QAction(text, menu)
+            a.setEnabled(enabled)
+            a.triggered.connect(lambda _c=False, f=fn: f())
+            menu.addAction(a)
+        return menu
+
+    def _copy(self, text: str):
+        QGuiApplication.clipboard().setText(text)
+        self.ctx.set_status(f"Copiado: {text[:80]}", SUCCESS_COLOR)
+
+    def _context_menu_results(self, pos):
+        index = self.results_view.indexAt(pos)
+        if not index.isValid() or not (0 <= index.row() < len(self.rmodel.rows)):
+            return
+        self.results_view.selectRow(index.row())
+        row = index.row()
+        res = self.rmodel.rows[row]
+        menu = self._menu(self.results_view, [
+            ("⬇ Descargar este resultado", lambda: self._on_result_action(
+                self.rmodel.index(row, 0), "download"), True),
+            ("📋 Copiar nombre", lambda: self._copy(res.name), True),
+        ])
+        menu.exec(self.results_view.viewport().mapToGlobal(pos))
+
+    def _context_menu_active(self, pos):
+        index = self.active_view.indexAt(pos)
+        if not index.isValid() or not (0 <= index.row() < len(self.amodel.rows)):
+            return
+        self.active_view.selectRow(index.row())
+        row = index.row()
+        d = self.amodel.rows[row]
+        name = d.get("name", "")
+        menu = self._menu(self.active_view, [
+            ("🔍 Buscar alternativas (elegir a mano)", lambda: self._on_active_action(
+                self.amodel.index(row, 0), "alt_pick"), True),
+            ("↻ Alternativa automática", lambda: self._on_active_action(
+                self.amodel.index(row, 0), "alt_auto"), True),
+            ("✕ Cancelar descarga", lambda: self._on_active_action(
+                self.amodel.index(row, 0), "cancel"), bool(d.get("hash_hex", ""))),
+            None,
+            ("📋 Copiar nombre", lambda: self._copy(name), bool(name)),
+        ])
+        menu.exec(self.active_view.viewport().mapToGlobal(pos))
 
     def _build_detail(self):
         frame = QFrame()

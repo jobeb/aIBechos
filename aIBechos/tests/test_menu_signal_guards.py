@@ -3,7 +3,7 @@ QPushButton.clicked emiten `checked` como primer argumento posicional --
 una lambda `lambda s=serie: ...` lo recibe en `s` (caso real: "Template
 aMule por serie" en Archivos abría AmuleTemplateDialog con s=False y
 reventaba en silencio sin abrir nada). La convención es primer parámetro
-desechable (`_` / `_checked`)."""
+desechable (`_` / `_checked` / `_c`)."""
 
 import re
 from pathlib import Path
@@ -20,7 +20,7 @@ def test_lambdas_en_triggered_desechan_checked():
     for p in _py_files():
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
             m = re.search(r"\.triggered\.connect\(\s*lambda\s+([A-Za-z_]+)\s*=", line)
-            if m and m.group(1) not in ("_", "_checked", "checked"):
+            if m and m.group(1) not in ("_", "_c", "_checked", "checked"):
                 bad.append(f"{p.name}:{i}: {line.strip()}")
     assert not bad, "lambda en triggered que tragaría `checked`:\n" + "\n".join(bad)
 
@@ -30,7 +30,7 @@ def test_lambdas_en_clicked_desechan_checked():
     for p in _py_files():
         for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
             m = re.search(r"\.clicked\.connect\(\s*lambda\s+([A-Za-z_]+)\s*=", line)
-            if m and m.group(1) not in ("_", "_checked", "checked"):
+            if m and m.group(1) not in ("_", "_c", "_checked", "checked"):
                 bad.append(f"{p.name}:{i}: {line.strip()}")
     assert not bad, "lambda en clicked que tragaría `checked`:\n" + "\n".join(bad)
 

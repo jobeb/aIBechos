@@ -16,10 +16,11 @@ import threading
 import time
 
 from PySide6.QtCore import QAbstractItemModel, QModelIndex, Qt
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtGui import QAction, QBrush, QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFrame, QHBoxLayout,
-                               QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox, QProgressBar,
-                               QPushButton, QScrollArea, QSplitter, QTreeView, QVBoxLayout, QWidget)
+                               QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox, QMenu,
+                               QProgressBar, QPushButton, QScrollArea, QSplitter, QTreeView, QVBoxLayout,
+                               QWidget)
 
 from core.fmt import fmt_size
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, WARNING_COLOR
@@ -269,6 +270,8 @@ class CleanupTab(QWidget):
         self.delegate = ActionsDelegate(self.view)
         self.delegate.actionTriggered.connect(self._on_action)
         self.view.setItemDelegateForColumn(C_ACT, self.delegate)
+        self.view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self._context_menu)
         hdr = self.view.header()
         hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(C_NAME, QHeaderView.Stretch)
@@ -821,6 +824,40 @@ class CleanupTab(QWidget):
         mt = "tv" if it.media_type == "tv" else "movie"
         self.ficha.show(mt, it.tmdb_id, it.name)
         self.ficha.set_extra(f"{fmt_size(it.size_bytes)} -- {self.host._cleanup_item_reason_text(it)}\n📁 {it.ftp_path}")
+
+    def _context_menu(self, pos):
+        index = self.view.indexAt(pos)
+        n = self.model.node(index) if index.isValid() else None
+        if n is None:
+            return
+        self.view.setCurrentIndex(index)
+        menu = QMenu(self.view)
+        for act in self.actions_for(n):
+            a = QAction(f"{act.glyph} {self._action_label(act.id, n)}", menu)
+            a.setToolTip(act.tooltip)
+            a.setEnabled(act.enabled)
+            a.triggered.connect(lambda _c=False, aid=act.id: self._on_action(index, aid))
+            menu.addAction(a)
+        menu.addSeparator()
+        path = getattr(n.item, "ftp_path", "") or ""
+        name = getattr(n.item, "name", "") or ""
+        for text, value in (("📋 Copiar nombre", name), ("📁 Copiar ruta del servidor", path)):
+            a = QAction(text, menu)
+            a.setEnabled(bool(value))
+            a.triggered.connect(lambda _c=False, v=value: self._copy(v))
+            menu.addAction(a)
+        menu.exec(self.view.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _action_label(action_id: str, n) -> str:
+        return {"rescan": "Volver a listar", "open_server": "Abrir en servidor",
+                "delete": "Borrar del servidor", "search": "Buscar en eMule",
+                "slim_one": "Adelgazar capítulo", "slim_many": "Adelgazar",
+                "desired": "Peso objetivo", "retry": "Reintentar listado"}.get(action_id, action_id)
+
+    def _copy(self, text: str):
+        QGuiApplication.clipboard().setText(text)
+        self.set_status(f"Copiado: {text[:80]}")
 
     def _on_action(self, index, action_id):
         n = self.model.node(index)

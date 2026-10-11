@@ -17,9 +17,9 @@ import zipfile
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QMessageBox, QPushButton, QTableView, QVBoxLayout,
+                               QLabel, QLineEdit, QMessageBox, QMenu, QPushButton, QTableView, QVBoxLayout,
                                QWidget)
 
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNING_COLOR
@@ -179,6 +179,8 @@ class HistoryTab(QWidget):
         self.delegate = ActionsDelegate(self.view)
         self.delegate.actionTriggered.connect(self._on_action)
         self.view.setItemDelegateForColumn(H_ACT, self.delegate)
+        self.view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.view.customContextMenuRequested.connect(self._context_menu)
         hdr = self.view.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setSectionResizeMode(H_FILE, QHeaderView.Stretch)
@@ -231,6 +233,39 @@ class HistoryTab(QWidget):
         self.refresh()
 
     # ── Acciones ──
+
+    def _row_name(self, e: dict) -> str:
+        kind = e.get("kind", "subida")
+        return e.get("name", "") if kind in ("solicitud", "borrado") else e.get("filename", "")
+
+    def _copy(self, text: str):
+        QGuiApplication.clipboard().setText(text)
+        self.ctx.set_status(f"Copiado: {text[:80]}", SUCCESS_COLOR)
+
+    def _context_menu(self, pos):
+        index = self.view.indexAt(pos)
+        if not index.isValid() or not (0 <= index.row() < len(self.model.rows)):
+            return
+        self.view.selectRow(index.row())
+        row, e = index.row(), self.model.rows[index.row()]
+        kind = e.get("kind", "subida")
+        st = e.get("status", "ok")
+        menu = QMenu(self.view)
+
+        def add(text, fn, enabled=True):
+            a = QAction(text, menu)
+            a.setEnabled(enabled)
+            a.triggered.connect(lambda _c=False, f=fn: f())
+            menu.addAction(a)
+
+        if kind != "solicitud":
+            can_retry = st == "error" and kind != "borrado"
+            add("🔄 Reintentar subida", lambda: self._on_action(
+                self.model.index(row, 0), "retry"), can_retry)
+            menu.addSeparator()
+        add("📋 Copiar nombre", lambda: self._copy(self._row_name(e)),
+            bool(self._row_name(e)))
+        menu.exec(self.view.viewport().mapToGlobal(pos))
 
     def _on_action(self, index: QModelIndex, action_id: str):
         if action_id != "retry" or not (0 <= index.row() < len(self.model.rows)):
