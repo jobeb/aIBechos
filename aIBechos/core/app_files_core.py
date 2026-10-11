@@ -54,6 +54,19 @@ _log = get_logger("aIBechos.gui", "app.log")
 
 class FilesCoreMixin:
 
+    @staticmethod
+    def _unqueue_status(entry, prev_status: str) -> str:
+        """Estado al omitir una subida (X u Omitir en un diálogo): nunca un
+        estado transitorio de cola. Restaurar "en_cola" o
+        "esperando_confirmacion" dejaba la fila muerta -- ni el ▲ (solo
+        activo si status != "en_cola") ni Subir (solo "listo"/"renombrado")
+        la aceptaban, y al reiniciar seguía igual (real: Andrómeda 2x05
+        tras cerrar el diálogo de sustituir con la X). Vuelve a un estado
+        accionable; el resto de estados se respeta tal cual."""
+        if prev_status in ("en_cola", "esperando_confirmacion", "subiendo"):
+            return "listo" if getattr(entry, "media_info", None) else "pendiente"
+        return prev_status
+
     def _on_auto_file_event(self, path, tipo, new_name=None, progress=None, speed=None,
                              media_info=None, confidence=None, reason=None, renamed_on_disk=True,
                              size=None, remote_full=None, heavy_remote_file=None,
@@ -904,16 +917,14 @@ class FilesCoreMixin:
                     # "Omitir todos": los demás workers de la tanda que
                     # lleguen aquí ven el flag y se omiten sin preguntar.
                     self._upload_skip_all = True
-                    entry.status = prev_status
+                    entry.status = self._unqueue_status(entry, prev_status)
                     self.after(0, lambda e=entry: self._update_row(e))
                     return True, "omitido"
                 elif answer[0] == "skip":
                     # Omitir o cerrar el diálogo (por defecto también "skip"):
-                    # vuelve al estado de antes de preguntar en vez de quedarse
-                    # marcado "Omitido" — es un "ahora no", no una exclusión
-                    # permanente, así que la fila queda lista para reintentarse
-                    # normalmente más adelante.
-                    entry.status = prev_status
+                    # vuelve a un estado accionable, no al transitorio de
+                    # cola -- es un "ahora no", reintentable más adelante.
+                    entry.status = self._unqueue_status(entry, prev_status)
                     self.after(0, lambda e=entry: self._update_row(e))
                     return True, "omitido"
                 else:   # "overwrite"
@@ -953,7 +964,7 @@ class FilesCoreMixin:
                     if answer[0] == "all":
                         self._upload_duplicate_ignore_all = True
                     elif answer[0] != "overwrite":   # "skip" (Omitir o cerrado con la X)
-                        entry.status = prev_status
+                        entry.status = self._unqueue_status(entry, prev_status)
                         self.after(0, lambda e=entry: self._update_row(e))
                         return True, "omitido"
 
@@ -988,7 +999,7 @@ class FilesCoreMixin:
                     elif answer[0] == "overwrite":
                         force_overwrite = True
                     else:   # "skip" (Omitir o cerrado con la X)
-                        entry.status = prev_status
+                        entry.status = self._unqueue_status(entry, prev_status)
                         self.after(0, lambda e=entry: self._update_row(e))
                         return True, "omitido"
                 elif stalled and self._upload_overwrite_all:
@@ -2723,6 +2734,16 @@ class FilesCoreMixin:
                 return
             entries, skipped = _entries_from_dicts(raw)
             self.files = _dedupe_entries(entries)
+            # Rescate: estados transitorios de cola ("en_cola",
+            # "esperando_confirmacion", "subiendo") no pueden existir con la
+            # app recién abierta -- son de una tanda muerta al cerrar (diálogo
+            # con la X, cierre a mitad de subida...). Sin esto la fila queda
+            # muerta igual que antes del fix de _unqueue_status: ni el ▲ ni
+            # Subir la aceptan (real: Andrómeda 2x05 tras reiniciar).
+            for e in self.files:
+                if getattr(e, "status", "") in ("en_cola", "esperando_confirmacion",
+                                                "subiendo"):
+                    e.status = self._unqueue_status(e, e.status)
             self._apply_persisted_files_sort()
             self._refresh_table()
             try:
