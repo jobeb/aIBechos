@@ -47,6 +47,12 @@ def test_sin_typo_sobreescribir():
         "Typo 'Sobreescribir' en la app (es 'Sobrescribir')"
 
 
+def test_rename_overwrite_all_se_resetea_por_tanda():
+    seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "_rename_worker")
+    assert "_rename_overwrite_all = False" in seg, \
+        "_rename_worker no resetea _rename_overwrite_all"
+
+
 def test_is_batch_usa_tamano_inicial_no_cola_viva():
     seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "_upload_entry_with")
     assert "_upload_batch_size" in seg, \

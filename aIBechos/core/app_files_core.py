@@ -449,6 +449,12 @@ class FilesCoreMixin:
             if not getattr(entry, "ftp_status", "") or entry.ftp_status.startswith("0%"):
                 entry.ftp_status   = "En espera"
             entry.status       = "en_cola"
+            # Marcas por entrada de la tanda anterior (diálogos ya contestados,
+            # tamaños remotos viejos): si no, la segunda tanda no repregunta
+            # "resto antiguo"/duplicados y calcula stalled con datos rancios.
+            entry._stale_checked = False
+            entry._duplicate_checked = False
+            entry._last_upload_remote_size = 0
             self._update_row(entry)
         self._refresh_ftp_columns()
         threading.Thread(target=self._queue_worker, daemon=True).start()
@@ -1261,6 +1267,10 @@ class FilesCoreMixin:
                 self.after(0, lambda e=entry: self._ftp_row_set(e, "Error", 0, 0))
                 self.after(0, lambda e=entry: self._update_row(e))
             self._upload_running = False
+            self._upload_batch_size = 0
+            self._upload_queue = []
+            self._upload_slot_of = {}
+            self._upload_skip_events = []
             return
 
         if len(pool) < parallel:
@@ -1395,6 +1405,7 @@ class FilesCoreMixin:
                             self.after(0, lambda en=e: self._update_row(en))
                         self._reserve_manual_entries(stragglers)
                         self._upload_queue.extend(stragglers)
+                        self._upload_batch_size = len(self._upload_queue)
                         continue
                     # Esperar brevemente por nuevos ítems encolados en caliente
                     _time.sleep(0.2)
@@ -1409,6 +1420,16 @@ class FilesCoreMixin:
         except Exception:
             pass
 
+        # Lo no procesado vuelve a estado accionable (cancelada a medias o
+        # tanda incompleta): "en_cola" sin tanda viva es fila muerta.
+        for e in list(self._upload_queue or []):
+            try:
+                if getattr(e, "status", "") == "en_cola":
+                    e.status = self._unqueue_status(e, "en_cola")
+                    self.after(0, lambda en=e: self._update_row(en))
+            except Exception:
+                pass
+
         for c in pool:
             try:
                 c.disconnect()
@@ -1418,6 +1439,10 @@ class FilesCoreMixin:
         self._upload_running        = False
         self._upload_current_idx    = -1
         self._upload_current_remote = ""
+        self._upload_batch_size     = 0
+        self._upload_queue          = []
+        self._upload_slot_of        = {}
+        self._upload_skip_events    = []
         cancelled = self._upload_cancel.is_set()
         self.after(0, lambda: self._set_status(
             "Subida cancelada" if cancelled else "Subida completada",
@@ -1521,6 +1546,7 @@ class FilesCoreMixin:
             if entry not in self._upload_queue:
                 self._reserve_manual_entries([entry])
                 self._upload_queue.append(entry)
+                self._upload_batch_size = len(self._upload_queue)
                 entry.ftp_progress = 0.0
                 entry.ftp_speed    = 0.0
                 entry.ftp_status   = "En espera"
@@ -1838,6 +1864,7 @@ class FilesCoreMixin:
                 WARNING_COLOR))
             return
 
+        self._rename_overwrite_all = False   # cada tanda decide sus "todos"
         for entry in entries:
             ok, msg = rename_file(entry.path, entry.new_name)
             if not ok and msg.startswith("Ya existe:") and not self._rename_overwrite_all:
@@ -2048,6 +2075,7 @@ class FilesCoreMixin:
                 if e not in self._upload_queue and e.status in ("listo", "renombrado"):
                     self._reserve_manual_entries([e])
                     self._upload_queue.append(e)
+                    self._upload_batch_size = len(self._upload_queue)
                     e.ftp_progress = 0.0
                     e.ftp_speed = 0.0
                     e.ftp_status = "En espera"
@@ -2526,10 +2554,17 @@ class FilesCoreMixin:
             self._upload_all_ftp()
 
     def _effective_search_provider(self, entry) -> str:
-        """Proveedor que se usaría de verdad ahora mismo: el del selector."""
-        if self._search_provider_override == "auto":
-            return "tmdb"
-        return self._search_provider_override
+        """Proveedor que se usaría de verdad ahora mismo: el del selector,
+        o la cadena automática (cómic→ComicVine, libro→OpenLibrary, si no
+        TMDB) con "auto"."""
+        override = self._search_provider_override
+        if override is not None and override != "auto":
+            return override
+        if entry is not None and getattr(entry, "is_comic", False):
+            return "comicvine"
+        if entry is not None and getattr(entry, "is_book", False):
+            return "openlibrary"
+        return "tmdb"
 
     @staticmethod
     def _search_source_name(entry) -> str:
@@ -2710,6 +2745,9 @@ class FilesCoreMixin:
         entry.ftp_progress = 0.0
         entry.ftp_speed    = 0.0
         entry.ftp_status   = ""
+        entry._stale_checked = False
+        entry._duplicate_checked = False
+        entry._last_upload_remote_size = 0
         self._update_row(entry)
         self._refresh_ftp_columns()
 
@@ -2776,10 +2814,13 @@ class FilesCoreMixin:
         """Búsqueda manual del panel de detalle: (tipo_de_resultados,
         resultados). *override* es el proveedor forzado con el selector
         ("tmdb"/"openlibrary"/"google_books"/"comicvine"/"mangadex"/"anilist"/
-        "kitsu") o None: cómics -> ComicVine; libros -> OpenLibrary con Google
-        Books de respaldo; si no, TMDB. Llamar desde un hilo."""
+        "kitsu"); None o "auto" usa la cadena automática: cómics ->
+        ComicVine; libros -> OpenLibrary con Google Books de respaldo; si
+        no, TMDB. Llamar desde un hilo."""
         is_comic = bool(entry and entry.is_comic)
         is_book_only = bool(entry and entry.is_book and not entry.is_comic)
+        if override is None or override == "auto":
+            override = "comicvine" if is_comic else "openlibrary" if is_book_only else "tmdb"
         # Lista simple: TMDB/OpenLibrary/GoogleBooks/ComicVine/MangaDex/AniList/Kitsu
         if override == "tmdb":
             kind = "tmdb"

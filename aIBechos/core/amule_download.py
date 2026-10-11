@@ -292,8 +292,22 @@ def connect_ftp_from_config(config):
     return ftp
 
 
+def _typical_fingerprint(config) -> tuple:
+    """Huella del servidor+categorías para la caché de típicos: si cambia
+    de servidor o reorganiza raíces, los tamaños guardados no valen."""
+    try:
+        cats = config.get("ftp_categories", {"tv": []}) or {}
+        roots = tuple(sorted(str(c.get("root", "")) for c in cats.get("tv", []) or []))
+    except Exception:
+        roots = ()
+    try:
+        return (config.get("ftp_host", ""), config.get("ftp_port", 21), roots)
+    except Exception:
+        return ("", 21, roots)
+
+
 def typical_size_for_series(config, series_name: str, season: int | None = None,
-                            cache: dict | None = None) -> int | None:
+                             cache: dict | None = None) -> int | None:
     """Tamaño típico de episodio ya en el servidor para *series_name* (solo
     FTP). Usa la temporada pedida si tiene >=3 ficheros (>10MB); si no,
     acumula las más recientes hasta >=6 -- así no se mezclan calidades
@@ -308,9 +322,15 @@ def typical_size_for_series(config, series_name: str, season: int | None = None,
     except Exception:
         ckey = (series_name.lower(), season)
     now = time.time()
+    fingerprint = _typical_fingerprint(config)
     if ckey in cache:
-        ts, val = cache[ckey]
-        if now - ts < TYPICAL_CACHE_TTL:
+        stored = cache[ckey]
+        try:
+            ts, val = stored[0], stored[1]
+            same_server = len(stored) < 3 or tuple(stored[2]) == tuple(fingerprint)
+        except Exception:
+            ts, val, same_server = 0, None, False
+        if same_server and now - ts < TYPICAL_CACHE_TTL:
             return val
     own_ftp = make_client(config.get("ftp_protocol", "ftp"))
     try:
@@ -418,7 +438,7 @@ def typical_size_for_series(config, series_name: str, season: int | None = None,
             _log.info("Típico %r T%s: %d ficheros de T%s -> %s MB", series_name,
                       season if season is not None else "?", len(sizes), used,
                       f"{res/1024/1024:.0f}" if res else "None")
-            cache[ckey] = (now, res)
+            cache[ckey] = (now, res, _typical_fingerprint(config))
             return res
         except Exception as e:
             _log.info("Típico %r error calculando típico (%s)", series_name, e)

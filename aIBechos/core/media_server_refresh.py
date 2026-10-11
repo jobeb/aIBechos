@@ -979,7 +979,7 @@ def get_plex_home_users(host: str, owner_token: str, timeout: int = 15) -> Optio
     if not host or not owner_token:
         return None
     try:
-        account = MyPlexAccount(token=owner_token)
+        account = MyPlexAccount(token=owner_token, timeout=timeout)
         users = account.users()
     except Exception as e:
         _log.warning("Plex: fallo al listar usuarios de la cuenta: %s", e)
@@ -1011,8 +1011,8 @@ def get_plex_user_token(host: str, owner_token: str, plex_user_id: str,
     if plex_user_id == "owner":
         return owner_token
     try:
-        account = MyPlexAccount(token=owner_token)
-        plex = PlexServer(host, owner_token)
+        account = MyPlexAccount(token=owner_token, timeout=timeout)
+        plex = PlexServer(host, owner_token, timeout=timeout)
         user = next((u for u in account.users() if str(u.id) == str(plex_user_id)), None)
         if user is None:
             _log.warning("Plex: usuario id=%s no encontrado", plex_user_id)
@@ -1051,7 +1051,7 @@ def get_plex_episode_watched(host: str, user_token: str, rating_key: str,
     if not host or not user_token or not rating_key:
         return None
     try:
-        plex = PlexServer(host, user_token)
+        plex = PlexServer(host, user_token, timeout=timeout)
         show = plex.fetchItem(int(rating_key))
         result = {}
         for ep in show.episodes():
@@ -1104,7 +1104,7 @@ def get_plex_movie_watched(host: str, user_token: str, timeout: int = 20) -> Opt
     if not host or not user_token:
         return None
     try:
-        plex = PlexServer(host, user_token)
+        plex = PlexServer(host, user_token, timeout=timeout)
         result = {}
         for sec in plex.library.sections():
             if sec.type != "movie":
@@ -1160,7 +1160,7 @@ def mark_plex_watched(host: str, user_token: str, rating_key: str, timeout: int 
     if not host or not user_token or not rating_key:
         return False
     try:
-        plex = PlexServer(host, user_token)
+        plex = PlexServer(host, user_token, timeout=timeout)
         plex.fetchItem(int(rating_key)).markWatched()
         return True
     except Exception as e:

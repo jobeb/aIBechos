@@ -23,7 +23,7 @@ from gui_qt import theme
 from gui_qt.bridge import run_in_thread, ui
 
 PROVIDER_LABELS = {
-    "tmdb": "TMDB", "openlibrary": "OpenLibrary", "google_books": "GoogleBooks",
+    "auto": "Auto", "tmdb": "TMDB", "openlibrary": "OpenLibrary", "google_books": "GoogleBooks",
     "comicvine": "ComicVine", "mangadex": "MangaDex", "anilist": "AniList", "kitsu": "Kitsu",
 }
 SEARCH_DEBOUNCE_MS = 500
@@ -57,6 +57,7 @@ class FilesDetailPanel(QFrame):
         self.setMinimumWidth(260)
         self._results: list = []
         self._previewed = -1
+        self._results_token = object()
         self._token = None
         self._ftp_ruta = None
         self._ftp_tree_loaded_for = None
@@ -209,9 +210,8 @@ class FilesDetailPanel(QFrame):
         self.results.clear()
         self._results = []
         self._previewed = -1
+        self._results_token = object()
         self.host._results_kind = "tmdb"
-        if self.host._search_provider_override == "auto":
-            self.host._search_provider_override = "tmdb"
         idx = self.provider.findData(self.host._search_provider_override)
         if idx >= 0 and idx != self.provider.currentIndex():
             self.provider.blockSignals(True)
@@ -237,6 +237,8 @@ class FilesDetailPanel(QFrame):
         self.ctx.set_status("Buscando...", WARNING_COLOR)
         host = self.host
         override = host._search_provider_override
+        token = object()
+        self._results_token = token
 
         def worker():
             shown = query
@@ -251,10 +253,12 @@ class FilesDetailPanel(QFrame):
                 msg = str(e)
                 self.ctx.set_status(f"Error: {msg}", ERROR_COLOR)
                 return
-            ui(lambda: self._apply_results(shown, kind, results))
+            ui(lambda: self._apply_results(token, shown, kind, results))
         run_in_thread(worker)
 
-    def _apply_results(self, query: str, kind: str, results: list):
+    def _apply_results(self, token, query: str, kind: str, results: list):
+        if token is not self._results_token:
+            return   # respuesta de una búsqueda anterior: obsoleta
         if self.query.text().strip() != query:
             return   # el usuario ya escribió otra cosa mientras tanto: respuesta obsoleta
         self.host._results_kind = kind
@@ -310,7 +314,9 @@ class FilesDetailPanel(QFrame):
                 return
             from core.learned_comic_titles import add_comic_title_translation
             add_comic_title_translation(local_title, translated)
-            ui(lambda: self._apply_results(translated, "comic", results))
+            token = object()
+            self._results_token = token
+            ui(lambda: self._apply_results(token, translated, "comic", results))
             self.ctx.set_status(f'IA tradujo a "{translated}"', SUCCESS_COLOR)
         run_in_thread(worker)
 

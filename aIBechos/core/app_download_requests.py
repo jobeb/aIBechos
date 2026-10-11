@@ -146,17 +146,20 @@ class DownloadRequestsMixin:
                 pass
         if data is None:
             return
-        # Cambios que no se pudieron subir en el ciclo anterior (Fallo de
-        # red al final): se fusionan primero para no perder claims.
+        # Cambios que no se pudieron subir en el ciclo anterior (fallo de
+        # red al final): se fusionan primero para no perder claims. OJO: no
+        # vaciar el carry aquí -- si ESTE ciclo tampoco consigue subir, se
+        # perdería; se vacía solo tras un push con éxito (al final).
         carry = getattr(self, "_download_requests_carry", None) or {}
         if carry:
             data = _dr.merge(data, carry)
-            self._download_requests_carry = {}
         data = _dr.prune(data)
         my_ids = [rid for rid, e in data.items()
                   if isinstance(e, dict) and e.get("claimed_by") == user
                   and e.get("status") in ("claimed", "downloading")]
-        changed = False
+        # Si se trae carry (cambios sin subir del ciclo anterior), hay que
+        # intentar publicarlo aunque esta pasada no cambie nada más.
+        changed = bool(carry)
         # Canceladas desde la web que tenía este PC: fuera de aMule.
         for rid in _dr.to_cancel(data, user):
             if self._download_request_cancel_amule(data.get(rid) or {}):
@@ -261,6 +264,7 @@ class DownloadRequestsMixin:
                 changed = True
         if changed:
             if self._download_requests_push(data, remote_path):
+                self._download_requests_carry = {}
                 if done_now:
                     self._download_requests_notify_web()
             else:

@@ -82,7 +82,7 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         if isinstance(saved, dict) and "key" in saved:
             self._files_sort_key, self._files_sort_asc = saved.get("key"), bool(saved.get("asc", True))
         self._results_kind = "tmdb"
-        self._search_provider_override = "tmdb"
+        self._search_provider_override = "auto"
 
         # Cola de subida (mismos campos que App.__init__)
         self._upload_queue = []
@@ -124,6 +124,7 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         self._download_requests_carry = {}
         self._download_requests_worker = None
         self._fallback_missing_rows = None
+        self._fallback_missing_ts = 0.0
 
         # Recomendado
         self._movies_results = []
@@ -198,9 +199,15 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         rows = getattr(self.missing_view, "_results", None)
         if isinstance(rows, list):
             return rows
-        if self._fallback_missing_rows is None:
+        # Respaldo sin vista (arranque): foto de la caché con TTL corto, no
+        # congelada de por vida (antes un autocompletado decidía con datos
+        # del arranque aunque ya se hubiera reescaneado).
+        import time as _time
+        if (self._fallback_missing_rows is None
+                or _time.time() - (self._fallback_missing_ts or 0) > 300):
             from core.missing_episodes_cache import load_cache
             self._fallback_missing_rows = mer.rows_from_cache(load_cache(), complete=False)
+            self._fallback_missing_ts = _time.time()
         return self._fallback_missing_rows
 
     @property

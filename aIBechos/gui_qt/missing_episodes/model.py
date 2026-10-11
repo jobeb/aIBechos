@@ -78,7 +78,38 @@ class MissingEpisodesModel(QAbstractItemModel):
         self._tv_template = self.ctx.config.get("tv_template")
         self._summary_cache = {}
         self._roots = [Node("series", None, i, r) for i, r in enumerate(rows)]
+        self._prune_dl_state(rows)
         self.endResetModel()
+
+    def _prune_dl_state(self, rows: list) -> None:
+        """Tira insignias ⬇ de series/episodios que ya no están (evita que
+        un FAIL viejo reaparezca si el episodio vuelve a faltar). Las
+        en curso (busy) de filas presentes se conservan."""
+        try:
+            valid = set()
+            for r in rows or []:
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    tid = int(r.get("tmdb_id"))
+                except (TypeError, ValueError):
+                    continue
+                for season, eps in (r.get("missing") or {}).items():
+                    try:
+                        s = int(season)
+                    except (TypeError, ValueError):
+                        continue
+                    valid.add((tid, s))
+                    for e in eps or []:
+                        try:
+                            valid.add((tid, s, int(e)))
+                        except (TypeError, ValueError):
+                            continue
+            for key in list(self.dl_state):
+                if key not in valid:
+                    del self.dl_state[key]
+        except Exception:
+            pass
 
     def series_rows(self) -> list:
         return [n.r for n in self._roots]

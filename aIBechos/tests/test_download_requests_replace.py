@@ -173,3 +173,26 @@ def test_ciclo_quita_de_amule_lo_cancelado_en_la_web(monkeypatch):
     App._download_requests_cycle(app)
     assert cancelled == [["aa"]] and launched == []
     assert pushed[-1]["c"]["status"] == "cancelled" and pushed[-1]["c"]["cancel_done"] is True
+
+
+def test_carry_sobrevive_si_push_falla(monkeypatch):
+    """El carry (cambios sin subir) solo se vacía tras un push OK: si el
+    push final falla, el done sigue en carry para el siguiente ciclo."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {"r1": {"tmdb_id": 1, "media_type": "movie", "title": "P",
+                   "status": "downloading", "claimed_by": "Jose",
+                   "claimed_at": now - 60, "requested_at": now - 60, "attempts": 0}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    app._download_request_check_done = lambda entry, idx=None: "done"
+    app._download_requests_notify_web = lambda: None
+    app._download_requests_push = lambda d, path: pushed.append(d) or False
+    App._download_requests_cycle(app)
+    carry = getattr(app, "_download_requests_carry", {})
+    assert carry.get("r1", {}).get("status") == "done", "el done debe sobrevivir en carry"
+    app._download_requests_push = lambda d, path: pushed.append(d) or True
+    App._download_requests_cycle(app)
+    assert getattr(app, "_download_requests_carry", None) == {}
+    assert pushed[-1]["r1"]["status"] == "done"

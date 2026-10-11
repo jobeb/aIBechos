@@ -449,6 +449,8 @@ class DownloadsTab(QWidget):
         self._selected_key = None
         self._coalesce.stop()
         self._pending = None
+        self.rmodel.busy = {}
+        self._detail_token = object()   # invalida fichas en vuelo de la búsqueda anterior
         self._render()
         self._status(f'Buscando "{query}" en {st}... (los resultados se actualizan solos, hasta 1 minuto)')
         self.search_btn.setEnabled(False)

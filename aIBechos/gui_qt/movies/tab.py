@@ -730,7 +730,9 @@ class MoviesTab(QWidget):
         elif action_id == "dismiss":
             if self._shown_key == (mt, tid):
                 self._shown_key = None
+                self._poster_token = None   # hilos de ficha en vuelo: obsoletos
                 self._clear_detail()
+            self._dl_state.pop((mt, tid), None)   # sin insignia vieja si reaparece
             self.host._dismiss_missing_movie({"media_type": mt, "tmdb_id": tid,
                                               "title": item.get("title", "")})
         elif action_id == "fav":

@@ -768,7 +768,7 @@ def test_get_plex_home_users_without_config_returns_none():
 
 def test_get_plex_home_users_returns_id_and_title(monkeypatch):
     users = [_FakePlexUser("1", "Ana"), _FakePlexUser("2", "Bruno")]
-    monkeypatch.setattr(msr, "MyPlexAccount", lambda token: _FakeMyPlexAccount(
+    monkeypatch.setattr(msr, "MyPlexAccount", lambda token, timeout=None: _FakeMyPlexAccount(
         users, username="CineBechos", title="CineBechos", email="tecnicoefrenrr@gmail.com"))
     result = msr.get_plex_home_users("http://plex:32400", "owner_tok")
     # El propietario va PRIMERO -- MyPlexAccount.users() nunca lo incluye
@@ -786,7 +786,7 @@ def test_get_plex_home_users_returns_id_and_title(monkeypatch):
 
 def test_get_plex_home_users_owner_falls_back_to_title_or_username_without_email(monkeypatch):
     users = []
-    monkeypatch.setattr(msr, "MyPlexAccount", lambda token: _FakeMyPlexAccount(
+    monkeypatch.setattr(msr, "MyPlexAccount", lambda token, timeout=None: _FakeMyPlexAccount(
         users, username="CineBechos", title="Jose Title", email=""))
     result = msr.get_plex_home_users("http://plex:32400", "owner_tok")
     assert result == [{"id": "owner", "title": "Jose Title"}]
@@ -816,15 +816,15 @@ def test_get_plex_user_token_owner_returns_owner_token_directly(monkeypatch):
 
 def test_get_plex_user_token_returns_token_for_matching_user(monkeypatch):
     users = [_FakePlexUser("1", "Ana", token="tok_ana"), _FakePlexUser("2", "Bruno", token="tok_bruno")]
-    monkeypatch.setattr(msr, "MyPlexAccount", lambda token: _FakeMyPlexAccount(users))
-    monkeypatch.setattr(msr, "PlexServer", lambda baseurl, token: _FakePlexServer(baseurl, token))
+    monkeypatch.setattr(msr, "MyPlexAccount", lambda token, timeout=None: _FakeMyPlexAccount(users))
+    monkeypatch.setattr(msr, "PlexServer", lambda baseurl, token, timeout=None: _FakePlexServer(baseurl, token))
     assert msr.get_plex_user_token("http://plex:32400", "owner_tok", "2") == "tok_bruno"
 
 
 def test_get_plex_user_token_returns_none_when_user_not_found(monkeypatch):
     users = [_FakePlexUser("1", "Ana", token="tok_ana")]
-    monkeypatch.setattr(msr, "MyPlexAccount", lambda token: _FakeMyPlexAccount(users))
-    monkeypatch.setattr(msr, "PlexServer", lambda baseurl, token: _FakePlexServer(baseurl, token))
+    monkeypatch.setattr(msr, "MyPlexAccount", lambda token, timeout=None: _FakeMyPlexAccount(users))
+    monkeypatch.setattr(msr, "PlexServer", lambda baseurl, token, timeout=None: _FakePlexServer(baseurl, token))
     assert msr.get_plex_user_token("http://plex:32400", "owner_tok", "no_existe") is None
 
 
@@ -832,8 +832,8 @@ def test_get_plex_user_token_returns_none_when_switch_fails(monkeypatch):
     """Caso PIN-protegido u otro fallo del cambio de usuario -- se trata
     igual que "no disponible", nunca lanza."""
     users = [_FakePlexUser("1", "Ana", token_error=RuntimeError("necesita PIN"))]
-    monkeypatch.setattr(msr, "MyPlexAccount", lambda token: _FakeMyPlexAccount(users))
-    monkeypatch.setattr(msr, "PlexServer", lambda baseurl, token: _FakePlexServer(baseurl, token))
+    monkeypatch.setattr(msr, "MyPlexAccount", lambda token, timeout=None: _FakeMyPlexAccount(users))
+    monkeypatch.setattr(msr, "PlexServer", lambda baseurl, token, timeout=None: _FakePlexServer(baseurl, token))
     assert msr.get_plex_user_token("http://plex:32400", "owner_tok", "1") is None
 
 
@@ -849,7 +849,7 @@ def test_get_plex_episode_watched_parses_season_episode_and_watched(monkeypatch)
     ]
     show = _FakeShow(episodes)
     monkeypatch.setattr(msr, "PlexServer",
-                         lambda baseurl, token: _FakePlexServer(baseurl, token, fetch_item=show))
+                         lambda baseurl, token, timeout=None: _FakePlexServer(baseurl, token, fetch_item=show))
     result = msr.get_plex_episode_watched("http://plex:32400", "user_tok", "100")
     assert result == {
         (1, 1): {"watched": True, "ref": "e11"},
@@ -869,7 +869,7 @@ def test_get_plex_movie_watched_parses_tmdb_id_and_watched(monkeypatch):
     ]
     sections = [_FakeSection("movie", movies), _FakeSection("show", [])]
     monkeypatch.setattr(msr, "PlexServer",
-                         lambda baseurl, token: _FakePlexServer(baseurl, token, sections=sections))
+                         lambda baseurl, token, timeout=None: _FakePlexServer(baseurl, token, sections=sections))
     result = msr.get_plex_movie_watched("http://plex:32400", "user_tok")
     assert result == {
         111: {"watched": True, "ref": "m111", "name": "Peli Uno"},
@@ -884,7 +884,7 @@ def test_mark_plex_watched_without_config_returns_false():
 def test_mark_plex_watched_calls_markwatched_on_correct_item(monkeypatch):
     movie = _FakeMovie([], False)
     monkeypatch.setattr(msr, "PlexServer",
-                         lambda baseurl, token: _FakePlexServer(baseurl, token, fetch_item=movie))
+                         lambda baseurl, token, timeout=None: _FakePlexServer(baseurl, token, fetch_item=movie))
     assert msr.mark_plex_watched("http://plex:32400", "user_tok", "100") is True
     assert movie.marked_watched is True
 

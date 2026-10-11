@@ -272,6 +272,32 @@ class AutoCompleteMixin:
         if not s:
             m.pop(str(tmdb_id), None)
         self.config_data.set("missing_ep_auto_downloads", m)
+
+    def _clear_auto_series_state(self, tmdb_id) -> None:
+        """Serie completa: fuera checked/retries/unstuck de TODA la serie.
+        Si no, quedan entre sesiones y el tooltip ⚡ habla de reintentos
+        pendientes que ya no existen, o un primary_hash viejo dispara una
+        alternativa inmediata si la serie vuelve a tener hueco."""
+        key = str(tmdb_id)
+        try:
+            checked = self._auto_checked_map()
+            if checked.pop(key, None) is not None:
+                self.config_data.set("missing_ep_auto_checked", checked)
+        except Exception:
+            pass
+        try:
+            retries = self._auto_retry_map()
+            if retries.pop(key, None) is not None:
+                self.config_data.set("missing_ep_auto_retries", retries)
+        except Exception:
+            pass
+        try:
+            m = self._unstuck_map()
+            if m.pop(key, None) is not None:
+                self.config_data.set("missing_ep_auto_downloads", m)
+                self.config_data.save()
+        except Exception:
+            pass
         self.config_data.save()
 
     def _auto_retry_wait_for(self, tries: int) -> float:
@@ -681,6 +707,7 @@ class AutoCompleteMixin:
                 return
             if not fresh_results:
                 _log.info("Autocompletado: '%s' ya no tiene huecos", row["name"])
+                self._clear_auto_series_state(tmdb_id)
                 return
             fresh = fresh_results[0]
             series_name = fresh.get("name", row["name"])
@@ -718,6 +745,7 @@ class AutoCompleteMixin:
             fresh_missing = tmp.get("missing", expected)
             if not fresh_missing:
                 _log.info("Autocompletado: '%s' ya completa en FTP, no se descarga", series_name)
+                self._clear_auto_series_state(tmdb_id)
                 return
             fresh = {"name": series_name, "missing": fresh_missing}
 
