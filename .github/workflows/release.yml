@@ -166,13 +166,15 @@ jobs:
             ## aIBechos ${{ github.ref_name }}
 
             ### Novedades
-            - Menú clic-derecho en todas las tablas y cards (mismos botones + copiar).
-            - Solicitudes web: buscar a mano en Descargas y descarga inmediata por solicitud.
-            - Sustituir ya no descarga el mismo archivo; título canónico por tmdb_id.
-            - IA viva (nuevo modelo), juez de descargas y sinopsis en castellano.
-            - El filtro de doblaje solo oculta; las descargas las manda una opción de Cliente.
-            - Correcciones: diálogo de sobreescritura sin "todos" con un archivo, filas muertas
-              al omitir, aviso de Recomendado incrustado, Template aMule, acentos en Descargas.
+            - Quitar un archivo de la lista cancela de verdad su subida automática en curso.
+            - Sustituciones desde la web: sin carreras entre subidas ni borrados del archivo que se está subiendo.
+            - Subidas verificadas aunque el servidor no responda a SIZE; ya no se dan por buenas sin comprobar.
+            - Reanudar solo continúa una subida si el parcial es del mismo archivo (antes podía mezclar versiones).
+            - Si no se puede listar la carpeta del servidor, no se trata como vacía (evita duplicados y sobrescrituras).
+            - Los JSON compartidos se escriben de forma atómica (sin archivos a medias).
+            - Detección de episodios con "NxNN" al principio del nombre.
+            - El aviso de "ya en ejecución" sale delante y se cierra solo; la instancia única funciona en Windows.
+            - Correcciones de hilos Qt, diálogos con tiempo límite, estados huérfanos, timeouts de Plex y menos ruido en el log.
 
             ### Instalación
             - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).
