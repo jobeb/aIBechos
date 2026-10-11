@@ -771,9 +771,12 @@ class FilesCoreMixin:
         # corregida; si el usuario lo desea, se borra y se continúa. No
         # molesta en el caso normal (misma ruta -> sin resto).
         # "Borrar resto y subir (todos)"/"No borrar, subir (todos)" solo
-        # tiene sentido si hay más de un archivo en esta tanda de subida
-        # (mismo criterio que el diálogo de sobrescribir de más abajo).
-        is_batch = len(self._upload_queue) > 1
+        # tiene sentido si la tanda EMPEZÓ con más de un archivo (tamaño
+        # inicial, no la cola viva: esta crece con encolados en caliente
+        # y "restos" recogidos a mitad de tanda -- con un solo ▲ salían
+        # las 4 opciones). Igual para el diálogo de sobrescribir de abajo.
+        # Sin _upload_batch_size (vía automática) se mantiene lo de antes.
+        is_batch = (getattr(self, "_upload_batch_size", 0) or len(self._upload_queue)) > 1
 
         stale_remote = ("" if getattr(entry, "_stale_checked", False) else
                         self._stale_remote_from_history(entry.path, entry.name, remote_file))

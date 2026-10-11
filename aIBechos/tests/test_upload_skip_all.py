@@ -45,3 +45,11 @@ def test_skip_all_omite_sin_preguntar():
 def test_sin_typo_sobreescribir():
     assert "Sobreescribir" not in APP_SOURCE.read_text(encoding="utf-8"), \
         "Typo 'Sobreescribir' en la app (es 'Sobrescribir')"
+
+
+def test_is_batch_usa_tamano_inicial_no_cola_viva():
+    seg = _segment(ast.parse(APP_SOURCE.read_text(encoding="utf-8")), "_upload_entry_with")
+    assert "_upload_batch_size" in seg, \
+        "is_batch debe salir del tamaño inicial de la tanda (_upload_batch_size), no de " \
+        "len(self._upload_queue): la cola crece con encolados en caliente y con un solo " \
+        "archivo salían las 4 opciones (Sobrescribir/Omitir/todos)"
