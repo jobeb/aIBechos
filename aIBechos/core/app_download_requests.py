@@ -303,6 +303,10 @@ class DownloadRequestsMixin:
         from core.amule_search import build_amule_query, build_amule_season_query
         name, year = self._download_request_canonical(entry)
         if not name:
+            # Fila de tabla (trae "name", no "title"): vale igual.
+            name = str(entry.get("name") or "").strip()
+            year = str(entry.get("year") or "").strip()
+        if not name:
             return "", None, entry.get("media_type") == "movie"
         is_movie = entry.get("media_type") == "movie"
         try:

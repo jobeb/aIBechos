@@ -344,6 +344,9 @@ def test_history_rows():
     assert rows[0]["detail"] == "sin fuentes" and rows[0]["status_es"] == "Fallida"
     assert rows[1]["detail"] == "En el equipo de Jose" and rows[1]["person"] == "Efren"
     assert dr.history_rows(None) == []
+    # La fila lleva lo necesario para operar (buscar a mano / descargar ya).
+    assert rows[0]["title"] == "Reacher" and rows[0]["season"] == 1 and rows[0]["episode"] == 1
+    assert rows[1]["media_type"] == "movie" and rows[1]["year"] == "2026"
 
 
 def test_merge_cancelled_is_sticky():

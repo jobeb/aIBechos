@@ -758,6 +758,12 @@ def history_rows(data: dict) -> list:
         rows.append({"kind": "solicitud", "id": req_id, "ts": ts, "name": describe(entry),
                      "person": str(entry.get("requested_by") or "").strip(),
                      "status": status, "status_es": STATUS_ES.get(status, status or "¿?"),
-                     "detail": detail})
+                     "detail": detail,
+                     # Campos de la solicitud para operar (buscar a mano,
+                     # descargar ya): la fila sola no bastaba (ver
+                     # _web_request_search_query).
+                     "title": entry.get("title", ""), "media_type": entry.get("media_type", ""),
+                     "year": entry.get("year", ""), "season": entry.get("season"),
+                     "episode": entry.get("episode"), "tmdb_id": entry.get("tmdb_id")})
     rows.sort(key=lambda r: r["ts"], reverse=True)
     return rows

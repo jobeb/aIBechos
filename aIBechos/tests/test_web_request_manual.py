@@ -95,3 +95,24 @@ def test_search_query_peli_con_ano():
     query, year, is_movie = App._web_request_search_query(
         app, {"media_type": "movie", "title": "Peli", "year": "2024"})
     assert "Peli" in query and year == 2024 and is_movie is True
+
+
+def test_search_query_con_fila_de_tabla():
+    # Regresión: la fila trae "name" (y media/season/episode), no "title";
+    # sin esto salía "Sin título que buscar" y no se abría Descargas.
+    import core.download_requests as dr
+    app = SimpleNamespace(config_data={"series_search_patterns": {}})
+    app._download_request_canonical = lambda entry: (entry.get("title") or "", "")
+    app._series_prefers_castellano = lambda name: False
+    app._download_request_targets = lambda entry, name: [("episode", 1, 2)]
+    row = dr.history_rows({"r1": {"title": "Serie", "media_type": "tv", "season": 1,
+                                  "episode": 2, "requested_by": "Jose",
+                                  "requested_at": 1.0, "status": "pending"}})[0]
+    assert "title" in row and row["season"] == 1
+    query, year, is_movie = App._web_request_search_query(app, dict(row))
+    assert "Serie" in query and "1x02" in query.replace("1x2", "1x02")
+    assert is_movie is False
+    # Y si el canónico viene vacío, tira del "name" de la fila.
+    app._download_request_canonical = lambda entry: ("", "")
+    query2, _, _ = App._web_request_search_query(app, dict(row))
+    assert query2 != ""
