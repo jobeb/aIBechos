@@ -40,9 +40,20 @@ def warn_already_running() -> None:
     # un diálogo: simplemente no se abre una segunda instancia.
     if "--minimized" in sys.argv:
         return
+    from PySide6.QtCore import Qt, QTimer
     from PySide6.QtWidgets import QMessageBox
     app = QApplication.instance() or QApplication(sys.argv)
-    QMessageBox.warning(None, "aIBechos ya está en ejecución",
-                        "Ya hay una instancia de aIBechos abierta.\n\n"
-                        "Búscala en la bandeja del sistema (junto al reloj) si no ves la ventana.")
+    box = QMessageBox(QMessageBox.Warning, "aIBechos ya está en ejecución",
+                      "Ya hay una instancia de aIBechos abierta.\n\n"
+                      "Búscala en la bandeja del sistema (junto al reloj) si no ves la ventana.")
+    # Delante de todo y con cierre solo: sin padre, el aviso podía salir
+    # detrás de otras ventanas (solo se oía el sonido) y, sin nadie que lo
+    # cerrara, el proceso se quedaba vivo indefinidamente (11/10: dos
+    # quedaron horas abiertos y bloquearon los siguientes arranques).
+    box.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    QTimer.singleShot(15000, box.accept)
+    box.show()
+    box.raise_()
+    box.activateWindow()
+    box.exec()
     del app
