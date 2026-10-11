@@ -51,7 +51,9 @@ class SeeAllDialog(QDialog):
         self.view.setGridSize(QSize(CARD_W + 10, CARD_H + 10))
         self.view.setSelectionMode(QAbstractItemView.SingleSelection)
         self.delegate = CardDelegate(self.view)
-        self.delegate.posters = parent.delegate.posters
+        parent_delegate = getattr(parent, "delegate", None)
+        if parent_delegate is not None and hasattr(parent_delegate, "posters"):
+            self.delegate.posters = parent_delegate.posters
         self.delegate.get_state = get_state
         self.delegate.cardAction.connect(on_action)
         self.delegate.cardSelected.connect(lambda item: (on_select(item), self.accept()))

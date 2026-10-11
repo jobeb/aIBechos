@@ -778,18 +778,36 @@ class HistoryCoreMixin:
             return
         try:
             own_ftp = self._new_ftp_client()
+            try:
+                ftp_port = int(self.config_data.get("ftp_port", 21))
+            except (TypeError, ValueError):
+                self.after(0, lambda: self._set_status("Puerto FTP inválido en Ajustes", ERROR_COLOR))
+                self._save_history_entry(
+                    Path(local_path).name, f"{remote_dir.rstrip('/')}/{remote_filename}",
+                    "error", 0, error_msg="Puerto FTP inválido", local_path=local_path)
+                self.after(0, self._refresh_history_view)
+                return
             ok, msg = own_ftp.connect(
-                self.config_data.get("ftp_host", ""), int(self.config_data.get("ftp_port", 21)),
+                self.config_data.get("ftp_host", ""), ftp_port,
                 self.config_data.get("ftp_user", ""), self.config_data.get("ftp_password", ""),
                 self.config_data.get("ftp_use_tls", False))
             if not ok:
                 self.after(0, lambda: self._set_status(f"No se pudo conectar: {msg}", ERROR_COLOR))
+                self._save_history_entry(
+                    Path(local_path).name, f"{remote_dir.rstrip('/')}/{remote_filename}",
+                    "error", 0, error_msg=f"No se pudo conectar: {msg}", local_path=local_path)
+                self.after(0, self._refresh_history_view)
                 return
             try:
-                speed_kbs = float(self.config_data.get("ftp_speed_limit", 0)) * 1024
+                try:
+                    speed_kbs = float(self.config_data.get("ftp_speed_limit", 0)) * 1024
+                except (TypeError, ValueError):
+                    speed_kbs = 0
                 up_ok, up_msg = own_ftp.upload_file(
                     local_path, remote_dir, speed_limit_kbs=speed_kbs,
                     try_resume=True, remote_filename=remote_filename)
+            except Exception as e:
+                up_ok, up_msg = False, f"Error al subir: {e}"
             finally:
                 own_ftp.disconnect()
         finally:

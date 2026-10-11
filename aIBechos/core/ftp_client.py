@@ -10,6 +10,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Callable
 
+from core.applog import get_logger
+
+_log = get_logger("aIBechos.ftp", "app.log")
+
 
 class FTPClient:
     def __init__(self):
@@ -538,7 +542,11 @@ class FTPClient:
                 remote_size = self.get_remote_size(remote_file)
                 if remote_size is not None:
                     if remote_size >= total:
-                        # Archivo ya completo en el servidor
+                        # Archivo ya completo en el servidor: éxito sin
+                        # transferir (mismo local + misma ruta + tamaño:
+                        # reintento sobre algo ya subido).
+                        _log.info("Subida: %s ya completo en servidor (%s), se omite",
+                                  remote_file, total)
                         return True, remote_file
                     if remote_size > 0:
                         resume_offset = remote_size

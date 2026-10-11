@@ -174,7 +174,7 @@ def _already_completed(ec, best) -> bool:
     compartidos (vía amulecmd)."""
     try:
         time.sleep(1.0)
-        q = ec.get_download_queue()
+        q = ec.get_download_queue() or []
         h = _result_hash(best)
         in_q = any(x.get("hash_hex", "").lower() == h for x in q) if h else False
         if not in_q and h:
@@ -187,8 +187,10 @@ def _already_completed(ec, best) -> bool:
                 r = subprocess.run(args, capture_output=True, timeout=6, **_no_console_kwargs())
                 if h in decode_console_output(r.stdout or b"").lower():
                     return True
-    except Exception:
-        pass
+    except Exception as e:
+        # Sin verificación no se acusa: se sigue como no completado (la
+        # descarga duplicada la acepta igual aMule, sin daño).
+        _log.debug("Sin verificación de completado para %r: %s", getattr(best, "name", "?"), e)
     return False
 
 
@@ -207,13 +209,14 @@ def auto_download(config, ec_lock, query: str, search_type: str | None = None,
         with ec_lock:
             try:
                 ec.connect()
-            except (EcConnectionError, EcAuthError, OSError):
+            except (EcConnectionError, EcAuthError, EcProtocolError, OSError):
                 return False, "aMule no disponible", "", ""
             st = search_type or config.get("amule_search_type", "Kad")
             excluded = _excluded_hashes(exclude_hashes)
             best = None
             last_key = None
             only_excluded = False
+            results: list = []
             try:
                 # Se lee en vivo (aMule va llenando la lista); si el mejor se
                 # repite dos sondeos seguidos se sale antes del límite.
@@ -246,6 +249,11 @@ def auto_download(config, ec_lock, query: str, search_type: str | None = None,
             except (EcProtocolError, OSError) as e:
                 # Con eD2k caído iter_search lanza: se devuelve como fallo
                 # normal (el autocompletado lo deja en su backoff).
+                return False, f"aMule: {e}", "", ""
+            except Exception as e:
+                # Cualquier otra cosa (parseo, bug): fallo normal, nunca
+                # excepción hacia el worker (moría en silencio).
+                _log.warning("auto_download: fallo inesperado en %r: %s", query, e)
                 return False, f"aMule: {e}", "", ""
     finally:
         try:

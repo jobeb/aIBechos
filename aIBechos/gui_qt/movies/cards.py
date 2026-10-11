@@ -80,6 +80,8 @@ class PosterCache:
         return os.path.join(str(directory), hashlib.sha1(url.encode("utf-8")).hexdigest())
 
     def get(self, url: str | None) -> QPixmap | None:
+        """QPixmap cacheado o None. SOLO hilo GUI (QPixmap lo exige);
+        desde un worker usar cached()/store()."""
         if not url:
             return None
         with self._lock:
@@ -103,11 +105,37 @@ class PosterCache:
                 pass
         return None
 
+    def cached(self, url: str | None) -> bool:
+        """¿Hay póster (memoria o disco)? Sin QPixmap: apto para workers."""
+        if not url:
+            return False
+        with self._lock:
+            if url in self._mem:
+                return True
+        path = self._disk_path(url, self._dir)
+        return path is not None and os.path.exists(path)
+
+    def store(self, url: str | None, raw: bytes | None):
+        """Guarda bytes descargados (crea el QPixmap). SOLO hilo GUI.
+        Devuelve el QPixmap o None."""
+        if not url or not raw:
+            return None
+        pm = QPixmap()
+        if not pm.loadFromData(raw):
+            return None
+        with self._lock:
+            self._mem[url] = pm
+            while len(self._mem) > self._MEM_MAX:
+                self._mem.popitem(last=False)
+        return pm
+
     def load_async(self, url: str | None, on_ready) -> None:
         """Descarga *url* en un hilo y llama on_ready() en la GUI al
-        terminar (haya póster o no). Sin url o ya en vuelo: nada."""
-        if not url or self.get(url) is not None:
-            if url and self.get(url) is not None:
+        terminar (haya póster o no). Sin url o ya en vuelo: nada. El worker
+        solo trae bytes y escribe disco; el QPixmap se crea en la GUI
+        (Qt lo prohíbe en workers)."""
+        if not url or self.cached(url):
+            if url and self.cached(url):
                 ui(on_ready)
             return
         with self._lock:
@@ -122,23 +150,21 @@ class PosterCache:
             except Exception:
                 raw = None
             if raw:
-                pm = QPixmap()
-                if pm.loadFromData(raw):
-                    with self._lock:
-                        self._mem[url] = pm
-                        while len(self._mem) > self._MEM_MAX:
-                            self._mem.popitem(last=False)
-                    path = self._disk_path(url, self._dir)
-                    if path is not None:
-                        try:
-                            with open(path, "wb") as f:
-                                f.write(raw)
-                            self._prune_disk()
-                        except OSError:
-                            pass
+                path = self._disk_path(url, self._dir)
+                if path is not None:
+                    try:
+                        with open(path, "wb") as f:
+                            f.write(raw)
+                        self._prune_disk()
+                    except OSError:
+                        pass
             with self._lock:
                 self._flying.discard(url)
-            ui(on_ready)
+
+            def done():
+                self.store(url, raw)
+                on_ready()
+            ui(done)
         run_in_thread(worker)
 
     def _prune_disk(self) -> None:

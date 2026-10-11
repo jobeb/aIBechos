@@ -726,6 +726,7 @@ class AutoCompleteMixin:
         now = _time.time()
         # Pre-cargar cola aMule para status y para decidir si un checked reciente (italiano borrado) debe liberarse ya
         _q_cache_early: dict[str, dict] = {}
+        _q_read_ok = False
         try:
             with self._amule_ec_lock:
                 ec_q2 = EcClient(host=self.config_data.get("amule_host", "localhost"),
@@ -733,9 +734,10 @@ class AutoCompleteMixin:
                                  password=self.config_data.get("amule_password", ""),
                                  timeout=5.0)
                 ec_q2.connect()
-                for it in ec_q2.get_download_queue():
+                for it in ec_q2.get_download_queue() or []:
                     _q_cache_early[it["hash_hex"]] = it
                 ec_q2.close()
+                _q_read_ok = True
         except Exception:
             _q_cache_early = {}
 
@@ -757,8 +759,10 @@ class AutoCompleteMixin:
                     try:
                         rec_ep = self._unstuck_get_rec(tmdb_id, season, ep)
                         in_q = bool(rec_ep and (rec_ep.get("primary_hash") in _q_cache_early or rec_ep.get("alt_hash") in _q_cache_early))
-                        if not in_q:
-                            # No está en cola -> se borró (ej. Slime italiano) -> forzar reintento con filtro actual
+                        if not in_q and _q_read_ok:
+                            # No está en cola -> se borró (ej. Slime italiano) -> forzar reintento con filtro actual.
+                            # Solo si la cola se leyó de verdad: sin lectura no se decide (evita relanzar
+                            # duplicado creyendo que se borró).
                             drop_checked = True
                             self._unset_auto_checked_episode(tmdb_id, season, ep)
                             action = auto_complete_state.ATTEMPT

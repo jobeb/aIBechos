@@ -878,13 +878,23 @@ class DownloadRequestsMixin:
         if ok_any:
             _log.info("Solicitudes: %s en descarga", _dr.describe(entry))
             nd = _dr.mark_status(data, req_id, "downloading", user=user)
-            if nd is not None and hashes:
+            if nd is None:
+                # Carrera: otro equipo reclamó entre medias -- la descarga
+                # está lanzada en aMule pero sin estado persistido: NO
+                # cantar éxito (antes devolvía (None, True), huérfana y
+                # sin hashes para el watchdog).
+                _log.warning("Solicitudes: %s se lanzó pero otro equipo reclamó a la vez; "
+                             "se suelta para reintentar", _dr.describe(entry))
+                return None, False
+            if hashes:
                 # Para ver luego si sigue en aMule (ver _dr.lost_in_amule).
                 nd = _dr.set_amule_hashes(nd, req_id, hashes) or nd
-            if nd is not None and _dr.is_replacement(entry):
+            if _dr.is_replacement(entry):
                 self._download_request_record_replacement(entry, name, year)
                 nd = _dr.mark_replacement_launched(nd, req_id) or nd
             return nd, True
+        _log.warning("Solicitudes: %s sin candidato (%s)", _dr.describe(entry),
+                     last_error or "sin candidato")
         return _dr.release(data, req_id, user=user, error=last_error or "sin candidato"), False
 
     def _download_request_record_replacement(self, entry: dict, name: str, year: str):

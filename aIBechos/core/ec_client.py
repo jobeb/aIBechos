@@ -205,14 +205,17 @@ class _Tag:
         self.data = data
 
     def to_int(self) -> int:
-        if self.tagtype == EC_TAGTYPE_UINT8:
-            return self.data[0]
-        if self.tagtype == EC_TAGTYPE_UINT16:
-            return struct.unpack(">H", self.data)[0]
-        if self.tagtype == EC_TAGTYPE_UINT32:
-            return struct.unpack(">I", self.data)[0]
-        if self.tagtype == EC_TAGTYPE_UINT64:
-            return struct.unpack(">Q", self.data)[0]
+        try:
+            if self.tagtype == EC_TAGTYPE_UINT8:
+                return self.data[0]
+            if self.tagtype == EC_TAGTYPE_UINT16:
+                return struct.unpack(">H", self.data)[0]
+            if self.tagtype == EC_TAGTYPE_UINT32:
+                return struct.unpack(">I", self.data)[0]
+            if self.tagtype == EC_TAGTYPE_UINT64:
+                return struct.unpack(">Q", self.data)[0]
+        except (struct.error, IndexError) as e:
+            raise EcProtocolError(f"tag 0x{self.name:04X} truncado: {e}") from e
         raise EcProtocolError(f"tag 0x{self.name:04X} no es entero (type={self.tagtype})")
 
     def to_str(self) -> str:
@@ -228,6 +231,13 @@ class _Tag:
 
 
 def _read_tag(data: bytes, pos: int) -> Tuple[_Tag, int]:
+    try:
+        return _read_tag_inner(data, pos)
+    except (struct.error, IndexError) as e:
+        raise EcProtocolError(f"paquete EC truncado en offset {pos}: {e}") from e
+
+
+def _read_tag_inner(data: bytes, pos: int) -> Tuple[_Tag, int]:
     start = pos
     wire_name = struct.unpack(">H", data[pos:pos + 2])[0]
     pos += 2
@@ -242,7 +252,7 @@ def _read_tag(data: bytes, pos: int) -> Tuple[_Tag, int]:
         count = struct.unpack(">H", data[pos:pos + 2])[0]
         pos += 2
         for _ in range(count):
-            child, pos = _read_tag(data, pos)
+            child, pos = _read_tag_inner(data, pos)
             children.append(child)
     # taglen cuenta hijos + data, pero NO el campo de cuenta (uint16), así
     # que con hijos el final se desplaza 2 bytes más allá de start+7+taglen.

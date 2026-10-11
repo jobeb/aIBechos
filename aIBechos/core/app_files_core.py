@@ -67,6 +67,18 @@ class FilesCoreMixin:
             return "listo" if getattr(entry, "media_info", None) else "pendiente"
         return prev_status
 
+    @staticmethod
+    def _wait_dialog(ev: threading.Event, what: str, timeout: float = 30.0) -> bool:
+        """Espera la respuesta de un diálogo de la GUI sin colgarse
+        eternamente si esta no llega (hilo GUI atascado, factoría que
+        devuelve None...): True si contestó. Con False el llamador aplica
+        su valor seguro (lo mismo que cerrar con la X)."""
+        ok = ev.wait(timeout)
+        if not ok:
+            _log.warning("Diálogo %s sin respuesta en %ds: se suelta como cerrado",
+                         what, int(timeout))
+        return ok
+
     def _on_auto_file_event(self, path, tipo, new_name=None, progress=None, speed=None,
                              media_info=None, confidence=None, reason=None, renamed_on_disk=True,
                              size=None, remote_full=None, heavy_remote_file=None,
@@ -631,7 +643,7 @@ class FilesCoreMixin:
                                 ans[0] = dlg.result
                                 e.set()
                             self.after(0, _ask)
-                            ev.wait()
+                            self._wait_dialog(ev, "series-match")
                             if answer[0] == "yes":
                                 chosen = candidate
 
@@ -814,7 +826,7 @@ class FilesCoreMixin:
                     ans[0] = dlg.result
                     e.set()
                 self.after(0, _ask_stale)
-                ev.wait()
+                self._wait_dialog(ev, "stale-upload")
                 entry._stale_checked = True   # no volver a preguntar en reintentos de esta tanda
                 if answer[0] is None:
                     # Cancelar esta subida
@@ -909,7 +921,9 @@ class FilesCoreMixin:
                     ans[0] = dlg.result
                     e.set()
                 self.after(0, _ask)
-                ev.wait()
+                self._wait_dialog(ev, "overwrite")
+                if answer[0] is None:
+                    answer[0] = "skip"   # como cerrar con la X: jamás sobreescribir por defecto
                 if answer[0] == "all":
                     self._upload_overwrite_all = True
                     force_overwrite = True
@@ -960,7 +974,7 @@ class FilesCoreMixin:
                         ans[0] = dlg.result
                         e.set()
                     self.after(0, _ask)
-                    ev.wait()
+                    self._wait_dialog(ev, "duplicate")
                     if answer[0] == "all":
                         self._upload_duplicate_ignore_all = True
                     elif answer[0] != "overwrite":   # "skip" (Omitir o cerrado con la X)
@@ -992,7 +1006,7 @@ class FilesCoreMixin:
                         ans[0] = dlg.result
                         e.set()
                     self.after(0, _ask)
-                    ev.wait()
+                    self._wait_dialog(ev, "stalled")
                     if answer[0] == "all":
                         self._upload_overwrite_all = True
                         force_overwrite = True
@@ -1841,7 +1855,7 @@ class FilesCoreMixin:
                     ans[0] = dlg.result
                     e.set()
                 self.after(0, _ask)
-                ev.wait()
+                self._wait_dialog(ev, "rename-local")
                 if answer[0] == "all":
                     self._rename_overwrite_all = True
                     ok, msg = rename_file(entry.path, entry.new_name, force_overwrite=True)

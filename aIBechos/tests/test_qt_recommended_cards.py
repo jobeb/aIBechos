@@ -94,3 +94,34 @@ def test_row_model(qapp):
     assert seen
     model.refresh_all()
     assert len(seen) == 2
+
+
+def test_poster_cache_sin_qpixmap_en_worker(qapp, qtbot, tmp_path, monkeypatch):
+    # Regresión: PosterCache creaba QPixmap en el hilo worker (Qt lo
+    # prohíbe: crash intermitente). El worker solo trae bytes.
+    import threading
+    from types import SimpleNamespace
+
+    import gui_qt.movies.cards as cards
+    from gui_qt.bridge import install
+    install()
+    monkeypatch.setattr(cards, "app_data_dir", lambda: tmp_path)
+    created = []
+    RealPM = cards.QPixmap
+
+    class SpyPM(RealPM):
+        def __init__(self, *a, **k):
+            created.append(threading.current_thread())
+            super().__init__(*a, **k)
+
+    monkeypatch.setattr(cards, "QPixmap", SpyPM)
+    monkeypatch.setattr(cards.requests, "get",
+                        lambda *a, **k: SimpleNamespace(ok=True, content=b"no-es-imagen"))
+    cache = cards.PosterCache()
+    done = []
+    cache.load_async("http://x/p.jpg", lambda: done.append(True))
+    qtbot.wait(2000)
+    assert done, "on_ready debe llegar por ui()"
+    main = threading.main_thread()
+    assert created, "se esperaba algún QPixmap (en GUI)"
+    assert all(t is main for t in created), "QPixmap creado fuera de la GUI"

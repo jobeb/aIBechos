@@ -808,9 +808,10 @@ class MoviesTab(QWidget):
         poster_url = item.get("poster_url")
 
         def worker():
-            out = {"poster_pm": self.delegate.posters.get(poster_url), "poster_raw": None,
+            have_cached = self.delegate.posters.cached(poster_url)
+            out = {"poster_url": poster_url, "poster_raw": None,
                    "cast": [], "cert": None}
-            if out["poster_pm"] is None and poster_url:
+            if not have_cached and poster_url:
                 try:
                     resp = requests.get(poster_url, timeout=8)
                     out["poster_raw"] = resp.content if resp.ok else None
@@ -850,12 +851,10 @@ class MoviesTab(QWidget):
     def _apply_detail(self, token, out):
         if token is not self._poster_token:
             return
-        pm = out.get("poster_pm")
+        pm = self.delegate.posters.get(out.get("poster_url") or None)
         raw = out.get("poster_raw")
         if raw:
-            loaded = QPixmap()
-            if loaded.loadFromData(raw):
-                pm = loaded
+            pm = self.delegate.posters.store(out.get("poster_url"), raw) or pm
         if pm is not None and not pm.isNull():
             self.poster.setPixmap(pm.scaled(170, 245, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             self.poster.setText("")

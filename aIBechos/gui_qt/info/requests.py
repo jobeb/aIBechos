@@ -145,7 +145,13 @@ class WebRequestsTab(QWidget):
         menu.exec(self.view.viewport().mapToGlobal(pos))
 
     def _copy_title(self, text: str):
-        QGuiApplication.clipboard().setText(text)
+        try:
+            cb = QGuiApplication.clipboard()
+            if cb is None:
+                return
+            cb.setText(text)
+        except Exception:
+            return
         self.ctx.set_status(f"Copiado: {text[:80]}", SUCCESS_COLOR)
     def _on_action(self, index: QModelIndex, action_id: str):
         if not (0 <= index.row() < len(self.model.rows)):
@@ -191,7 +197,10 @@ class WebRequestsTab(QWidget):
         self.ctx.set_status(f"Lanzando descarga: {e.get('name', '')}...")
 
         def worker():
-            msg = self.host._download_now_request(req_id)
+            try:
+                msg = self.host._download_now_request(req_id)
+            except Exception as e:
+                msg = f"No se pudo lanzar: {e}"
             self.host.after(0, lambda: self._after_download_now(msg))
         threading.Thread(target=worker, daemon=True).start()
 

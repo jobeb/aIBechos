@@ -116,3 +116,28 @@ def test_search_query_con_fila_de_tabla():
     app._download_request_canonical = lambda entry: ("", "")
     query2, _, _ = App._web_request_search_query(app, dict(row))
     assert query2 != ""
+
+
+def test_launch_con_carrera_no_canta_exito():
+    # Otro equipo reclamó entre medias: mark_status da None -> (None, False),
+    # nunca (None, True) con descarga huérfana.
+    app = SimpleNamespace(config_data={"series_search_patterns": {}})
+    app._download_requests_user = lambda: "Jose"
+    app._download_request_canonical = lambda entry: ("Peli", "2024")
+    app._series_prefers_castellano = lambda name: False
+    app._download_request_targets = lambda entry, name: [("movie",)]
+    app._typical_size_for_series = lambda *a: None
+    app._download_request_record_replacement = lambda *a: None
+    app._auto_amule_download_series = lambda *a, **k: (True, "", "b" * 32)
+    data = {"r1": _req("pending", claimed_by="Otro")}
+    nd, ok = App._download_request_launch(app, data, "r1")
+    assert (nd, ok) == (None, False)
+
+
+def test_wait_dialog_con_timeout():
+    import threading
+    from core.app_files_core import FilesCoreMixin
+    assert FilesCoreMixin._wait_dialog(threading.Event(), "x", timeout=0.05) is False
+    ev = threading.Event()
+    ev.set()
+    assert FilesCoreMixin._wait_dialog(ev, "x", timeout=5) is True
