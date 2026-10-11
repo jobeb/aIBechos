@@ -774,7 +774,10 @@ class DownloadRequestsMixin:
         if media_type == "movie":
             return [("movie",)]
         if season is not None and episode is not None:
-            return [("episode", int(season), int(episode))]
+            try:
+                return [("episode", int(season), int(episode))]
+            except (TypeError, ValueError):
+                return []
         try:
             tmdb_id = int(entry.get("tmdb_id"))
         except (TypeError, ValueError):
@@ -837,7 +840,10 @@ class DownloadRequestsMixin:
             typical = self._typical_size_for_series(name, entry.get("season"))
         except Exception:
             typical = None
-        targets = self._download_request_targets(entry, name)
+        try:
+            targets = self._download_request_targets(entry, name)
+        except Exception:
+            targets = []
         if not targets:
             return _dr.release(data, req_id, user=user, error="sin objetivos"), False
         ok_any = False
@@ -854,6 +860,7 @@ class DownloadRequestsMixin:
             except Exception:
                 old_hashes = set()
         for target in targets:
+            query = ""
             try:
                 if target[0] == "movie":
                     query = build_amule_query(name, None, None, year, templates, prefers)

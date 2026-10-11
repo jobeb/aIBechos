@@ -191,5 +191,11 @@ class ProtectedTab(QWidget):
         menu.exec(self.view.viewport().mapToGlobal(pos))
 
     def _copy(self, text: str):
-        QGuiApplication.clipboard().setText(text)
+        try:
+            cb = QGuiApplication.clipboard()
+            if cb is None:
+                return
+            cb.setText(text)
+        except Exception:
+            return
         self.ctx.set_status(f"Copiado: {text[:80]}", PENDING_COLOR)

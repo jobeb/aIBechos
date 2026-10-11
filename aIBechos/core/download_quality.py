@@ -26,7 +26,6 @@ cuenta el score (de mayor a menor peso):
 import os
 import re
 from collections import Counter
-from dataclasses import dataclass
 
 from core.amule_client import AmuleSearchResult
 from core.series_match import normalize_series_name, series_similarity
@@ -504,7 +503,7 @@ def set_filter_lists(langs=None, adult=None, sample=None, scr=None,
     - *exts*: extensiones no-vídeo extra (se suman a las del motor,
       sin punto, en minúsculas). None = no tocar.
     Nunca lanza excepción."""
-    global _USER_LANG, _USER_LANG_RES, _USER_ADULT, _USER_ADULT_RES
+    global _USER_ADULT, _USER_ADULT_RES
     global _USER_SAMPLE, _USER_SAMPLE_RES, _USER_SCR, _USER_SCR_RES
     global _USER_NONVIDEO
     try:

@@ -723,8 +723,14 @@ class MoviesTab(QWidget):
             if win is not None:
                 win.amule_search(item.get("title", ""), expected_year=year, is_movie=not is_tv)
         elif action_id == "copy":
-            QGuiApplication.clipboard().setText(f"{item.get('title', '')} ({item.get('year', '')})")
-            self.ctx.set_status(f"Copiado: {item.get('title', '')} ({item.get('year', '')})", SUCCESS_COLOR)
+            try:
+                cb = QGuiApplication.clipboard()
+                if cb is not None:
+                    cb.setText(f"{item.get('title', '')} ({item.get('year', '')})")
+                    self.ctx.set_status(f"Copiado: {item.get('title', '')} ({item.get('year', '')})",
+                                        SUCCESS_COLOR)
+            except Exception:
+                pass
         elif action_id == "download":
             self._download(item, year, is_tv)
         elif action_id == "dismiss":

@@ -20,7 +20,7 @@ from collections import OrderedDict
 import requests
 from PySide6.QtCore import QEvent, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPixmap
-from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QToolTip
+from PySide6.QtWidgets import QStyledItemDelegate, QToolTip
 
 from core.appdirs import app_data_dir
 from gui_qt import theme

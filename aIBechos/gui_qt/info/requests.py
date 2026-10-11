@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLab
 from core.status_colors import PENDING_COLOR, SUCCESS_COLOR
 from gui_qt.actions import ActionsDelegate
 from gui_qt.dialogs import confirm
-from gui_qt.history.tab import H_ACT, H_DEST, H_FILE, H_STATE, HistoryModel
+from gui_qt.history.tab import H_ACT, H_DEST, H_FILE, HistoryModel
 
 _ACTIVE = ("pending", "claimed", "downloading")
 

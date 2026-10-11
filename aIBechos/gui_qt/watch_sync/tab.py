@@ -278,5 +278,11 @@ class WatchSyncTab(QWidget):
         menu.exec(view.viewport().mapToGlobal(pos))
 
     def _copy(self, text: str):
-        QGuiApplication.clipboard().setText(text)
+        try:
+            cb = QGuiApplication.clipboard()
+            if cb is None:
+                return
+            cb.setText(text)
+        except Exception:
+            return
         self._set_status(f"Copiado: {text[:80]}")

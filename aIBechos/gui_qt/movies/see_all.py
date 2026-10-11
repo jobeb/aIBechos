@@ -135,6 +135,13 @@ class SeeAllDialog(QDialog):
         if not self._alive:
             return
         self._loading = False
+        try:
+            pages = int(pages)
+        except (TypeError, ValueError):
+            pages = page
+        if not isinstance(items, list):
+            items = []
+        items = [i for i in items if isinstance(i, dict)]
         self._page, self._pages = page, pages
         if page == 1:
             self.model.set_items(items)

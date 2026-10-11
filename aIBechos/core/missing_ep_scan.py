@@ -863,7 +863,6 @@ class MissingEpScanMixin:
         que un reescaneo completo). Aquí se localiza directamente la
         carpeta de ESTA serie (_find_category_with_existing_folder, mismo
         método que ya usa el botón de borrar) y solo se lista esa."""
-        import types
         from core.missing_episodes import find_missing_episodes, find_unknown_seasons, format_missing_summary
 
         if not self.config_data.get("ftp_host", ""):
@@ -881,8 +880,6 @@ class MissingEpScanMixin:
             if not own_ftp.is_connected():
                 _log.warning("Cruce FTP (individual): omitido, no se pudo conectar al servidor")
                 return result
-            info = types.SimpleNamespace(title=result["name"], media_type="tv",
-                                         folder_name=result.get("folder_name"))
             # Localizar TODAS las carpetas de la serie, no solo una: una
             # misma serie puede estar repartida en varias carpetas del
             # servidor (caso real: "Prodigiosa Las aventuras de Ladybug"
@@ -1173,9 +1170,6 @@ class MissingEpScanMixin:
         # Fuente de verdad: FTP con un único listado (no Jellyfin/Plex, que aún cree que los borrados siguen ahí)
         present = None
         try:
-            from core.ftp_categories import choose_category
-            from core.api_client import MediaInfo
-            dummy = MediaInfo(title=name, media_type="tv", tmdb_id=tmdb_id, season=1, episode=1)
             # Localizar carpeta(s) de la serie en FTP y listar una sola vez (todas las que casan, como Prodigiosa en 2 carpetas)
             own_ftp_single = self._new_ftp_client()
             try:

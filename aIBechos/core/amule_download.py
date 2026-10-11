@@ -138,8 +138,7 @@ def _best_not_excluded(results, query, expected_year, is_movie, typical_size, ma
     """best_result ignorando los hashes de *excluded* (Sustituir: no volver
     a elegir el archivo que ya está en el servidor). Sin hash conocido el
     candidato no se puede comparar y se conserva (fail-open). None si no
-    queda nada elegible."""
-    from core.download_quality import best_result
+    queda nada elegible. Usa el best_result importado arriba."""
     pool = []
     for r in results or []:
         h = _result_hash(r).lower()

@@ -341,7 +341,13 @@ class DownloadsTab(QWidget):
         return menu
 
     def _copy(self, text: str):
-        QGuiApplication.clipboard().setText(text)
+        try:
+            cb = QGuiApplication.clipboard()
+            if cb is None:
+                return
+            cb.setText(text)
+        except Exception:
+            return
         self.ctx.set_status(f"Copiado: {text[:80]}", SUCCESS_COLOR)
 
     def _context_menu_results(self, pos):

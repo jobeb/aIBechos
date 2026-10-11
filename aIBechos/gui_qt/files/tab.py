@@ -498,7 +498,13 @@ class FilesTab(QWidget):
             self.host._update_row(entry)
 
     def _copy(self, text: str):
-        QGuiApplication.clipboard().setText(text)
+        try:
+            cb = QGuiApplication.clipboard()
+            if cb is None:
+                return
+            cb.setText(text)
+        except Exception:
+            return
         self.ctx.set_status(f"Copiado: {text}", SUCCESS_COLOR)
 
     def _context_menu(self, pos):
