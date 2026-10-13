@@ -24,6 +24,23 @@ def run(argv=None) -> int:
     ctx = AppContext()
     win = MainWindow(ctx, start_minimized="--minimized" in argv)
     app._main_window = win   # mantener la referencia viva
+
+    def _save_on_system_shutdown():
+        # Cierre de sesión/apagado del equipo (el programado de las
+        # 12:00): quit_app ya guarda al cerrar a mano, pero al apagar
+        # Windows no pasa por ahí -- sin esto, otro día entero de filas
+        # sin guardar. Nunca lanza (estamos saliendo).
+        try:
+            host = getattr(win, "host", None)
+            save = getattr(host, "_save_session", None)
+            if callable(save):
+                save()
+        except Exception:
+            pass
+    try:
+        app.aboutToQuit.connect(_save_on_system_shutdown)
+    except Exception:
+        pass
     rc = app.exec()
     # Salida garantizada, igual que App._force_quit en Tk: la sesión y la
     # configuración ya están guardadas (MainWindow.quit_app); si un hilo de

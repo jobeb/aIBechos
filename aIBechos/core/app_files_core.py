@@ -142,6 +142,7 @@ class FilesCoreMixin:
                     entry.status    = "auto"
                     entry.error_msg = ""   # nuevo intento -- descartar el motivo anterior
                     self._update_row(entry)
+                self._autosave_session()
                 return
 
             if tipo == "slim_replaced":
@@ -211,6 +212,7 @@ class FilesCoreMixin:
                 self._update_row(entry)
                 if self._selected_entry is entry:
                     self._update_detail(entry)
+                self._autosave_session()
 
             elif tipo == "queued":
                 # Ya se resolvió categoría/duplicado/espacio, pero todavía
@@ -222,6 +224,7 @@ class FilesCoreMixin:
                 entry.status       = "en_cola"
                 entry.new_name     = new_name or entry.new_name
                 self._update_row(entry)
+                self._autosave_session()
 
             elif tipo == "uploading":
                 # Llega en cada tramo de progreso: solo el primero (cambio
@@ -269,6 +272,10 @@ class FilesCoreMixin:
                 self._remove_uploaded_episode_from_missing_list(entry.media_info)
                 self._remove_uploaded_movie_from_movies_list(entry.media_info)
                 self._refresh_ftp_space()
+                # Fila final ("subido") guardada YA: el post-proceso puede
+                # borrar el original justo después, y un apagón antes del
+                # cierre se llevaría la fila (real: Snoopy 12/10).
+                self._autosave_session(force=True)
 
             elif tipo == "skip":
                 entry.status    = "omitido"
@@ -277,6 +284,7 @@ class FilesCoreMixin:
                 self._update_row(entry)
                 if self._selected_entry is entry:
                     self._update_detail(entry)
+                self._autosave_session()
 
             elif tipo == "error":
                 entry.status    = "error"
@@ -289,6 +297,7 @@ class FilesCoreMixin:
                 self._update_row(entry)
                 if self._selected_entry is entry:
                     self._update_detail(entry)
+                self._autosave_session()
 
         # Todo menos los ticks de progreso ("uploading", que se repiten
         # solos al siguiente chunk) es crítico: si se descarta, la fila
@@ -1549,6 +1558,7 @@ class FilesCoreMixin:
                 self.files.append(entry)
                 added.append(entry)
         self._refresh_table()
+        self._autosave_session()
         if not added:
             return
         if same_series_prompt:
@@ -2520,6 +2530,7 @@ class FilesCoreMixin:
         self.files = [e for e in self.files if e is not entry]
         self._multi_selected.discard(entry)
         self._refresh_table()
+        self._autosave_session()
         if self._selected_entry is entry:
             self._clear_detail()
         self._update_assign_button_label()
@@ -2771,6 +2782,53 @@ class FilesCoreMixin:
 
     def _session_path(self) -> Path:
         return _appdata_dir() / "session.json"
+
+    #: Segundos entre autoguardados de sesión no forzados (ver
+    #: _autosave_session).
+    _SESSION_AUTOSAVE_SECONDS = 10.0
+
+    def _autosave_session(self, force: bool = False) -> None:
+        """Guarda session.json sin esperar al cierre limpio (antes solo se
+        guardaba en shutdown: un apagón a diario se llevaba las filas del
+        día, real: Snoopy 12/10 subido y borrado de la tabla al reiniciar
+        porque session.json era de las 17:20). force=True guarda ya
+        (transiciones finales del AutoWatcher); si no, como mucho cada
+        _SESSION_AUTOSAVE_SECONDS, con un guardado de remate programado
+        por si no llega otro evento. Los ticks de progreso ("uploading")
+        no pasan por aquí: el % no es crítico y llegarían uno por chunk.
+        Nunca lanza."""
+        try:
+            now = _time.monotonic()
+            last = float(getattr(self, "_session_autosave_at", 0.0) or 0.0)
+            if force or now - last >= self._SESSION_AUTOSAVE_SECONDS:
+                self._session_autosave_at = now
+                self._session_flush_pending = False
+                self._save_session()
+                return
+            self._session_dirty = True
+            if not getattr(self, "_session_flush_pending", False):
+                self._session_flush_pending = True
+                wait_ms = int((self._SESSION_AUTOSAVE_SECONDS - (now - last)) * 1000) + 50
+                after = getattr(self, "after", None)
+                if callable(after):
+                    after(wait_ms, self._flush_session)
+                else:
+                    # Sin bucle de interfaz (tests): guardar ya, no hay
+                    # nada que posponga.
+                    self._flush_session()
+        except Exception:
+            pass
+
+    def _flush_session(self) -> None:
+        """Guardado de remate de _autosave_session. Nunca lanza."""
+        try:
+            self._session_flush_pending = False
+            if getattr(self, "_session_dirty", False):
+                self._session_dirty = False
+                self._session_autosave_at = _time.monotonic()
+                self._save_session()
+        except Exception:
+            pass
 
     def _save_session(self):
         if getattr(self, "_session_load_failed", False):
