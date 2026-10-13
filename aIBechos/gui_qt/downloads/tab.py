@@ -817,7 +817,7 @@ class DownloadsTab(QWidget):
             return
         d = dict(self.amodel.rows[index.row()])
         if action_id == "cancel":
-            self._cancel(d.get("hash_hex", ""))
+            self._cancel(d.get("hash_hex", ""), d.get("name", ""))
         elif action_id == "alt_pick":
             q = self.host._alternative_query_for_download(d) or d.get("name", "")
             self.search(q)
@@ -825,7 +825,7 @@ class DownloadsTab(QWidget):
         elif action_id == "alt_auto":
             self._alternative_auto(d)
 
-    def _cancel(self, hash_hex: str):
+    def _cancel(self, hash_hex: str, name: str = ""):
         if not hash_hex:
             return
         host = self.host
@@ -842,7 +842,23 @@ class DownloadsTab(QWidget):
                         ec.close()
             except Exception as e:
                 ok, msg = False, str(e)
-            ui(lambda: (self._set_active_status("Cancelada" if ok else f"Error: {msg}",
+            extra = ""
+            if ok:
+                # Si era la descarga de una solicitud web reclamada por
+                # este equipo, cancelarla también: si no, se queda en
+                # "Descargando 67%" y el worker la relanza (real:
+                # Animales 2026). La de otro equipo no se toca.
+                try:
+                    rid, desc = host._download_request_for_amule(hash_hex, name)
+                except Exception:
+                    rid, desc = "", ""
+                if rid:
+                    try:
+                        if host._cancel_web_request(rid):
+                            extra = f" y solicitud eliminada: {desc}"
+                    except Exception:
+                        pass
+            ui(lambda: (self._set_active_status(("Cancelada" + extra) if ok else f"Error: {msg}",
                                                 SUCCESS_COLOR if ok else ERROR_COLOR), self._poll_active()))
         run_in_thread(worker)
 

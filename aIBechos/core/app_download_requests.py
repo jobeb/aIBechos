@@ -242,13 +242,13 @@ class DownloadRequestsMixin:
                     except Exception:
                         pass
             elif outcome == "lost":
-                nd = _dr.release(data, rid, user=user, error="ya no estaba en aMule")
+                nd = _dr.release(data, rid, user=user, error="descarga incompleta")
                 if nd is not None:
                     data = nd
                     changed = True
                     if (nd.get(rid) or {}).get("status") == "failed":
                         failed_now += 1
-                    _log.info("Solicitudes: %s ya no estaba en aMule, se vuelve a lanzar",
+                    _log.info("Solicitudes: %s descarga incompleta, se vuelve a lanzar",
                               _dr.describe(data.get(rid) or {}))
             elif outcome == "relaunch":
                 nd = _dr.mark_status(data, rid, "claimed", user=user)
@@ -455,7 +455,7 @@ class DownloadRequestsMixin:
             self._download_requests_push(data, remote_path)
         if launched:
             return f"Lanzada: {_dr.describe(data.get(req_id) or {})}"
-        err = str(((data.get(req_id) or {}).get("last_error")) or "sin candidato")
+        err = str(((data.get(req_id) or {}).get("last_error")) or "no encontrado")
         return f"No se pudo lanzar: {err}"
 
     def _cancel_web_request(self, req_id: str) -> bool:
@@ -507,6 +507,52 @@ class DownloadRequestsMixin:
             pass
         _log.info("Solicitudes: %s cancelada por %s", _dr.describe(entry), user)
         return True
+
+    def _download_request_for_amule(self, hash_hex: str, name: str = "") -> tuple:
+        """(req_id, descripción) de MI solicitud en curso (claimed o
+        downloading reclamada por este equipo) cuya descarga de aMule es
+        *hash_hex* (o se llama *name* si no guarda hashes), o ("", "") si
+        no hay. Para que "Cancelar descarga" de Descargas cancele también
+        la solicitud web: si no, queda en "Descargando 67%" y el worker la
+        relanza (real: Animales 2026). Solo las mías: la reclamada por otro
+        equipo no se toca. Lee la cola compartida; ("", "") sin red.
+        Llamar desde un worker, nunca desde la interfaz. Nunca lanza."""
+        from core import download_requests as _dr
+        try:
+            user = self._download_requests_user()
+            remote_path = self._download_requests_remote_path()
+            if not remote_path:
+                return "", ""
+            own_ftp = self._download_requests_ftp()
+            if own_ftp is None:
+                return "", ""
+            try:
+                from core.shared_data import read_shared_json
+                data, _is_new = read_shared_json(own_ftp, remote_path, "dict")
+            finally:
+                try:
+                    own_ftp.disconnect()
+                except Exception:
+                    pass
+            if not isinstance(data, dict):
+                return "", ""
+            hh = str(hash_hex or "").strip().lower()
+            nm = str(name or "")
+            for rid, entry in data.items():
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("status") not in ("claimed", "downloading"):
+                    continue
+                if (entry.get("claimed_by") or "") != user:
+                    continue
+                hashes = {str(h).lower() for h in (entry.get("amule_hashes") or [])}
+                if hh and hashes and hh in hashes:
+                    return str(rid), _dr.describe(entry)
+                if nm and not hashes and _dr._name_is_request(entry, nm):
+                    return str(rid), _dr.describe(entry)
+            return "", ""
+        except Exception:
+            return "", ""
 
     def _download_requests_amule_state(self, needed: bool):
         """(cola de aMule [{hash_hex, name}] o None si no se pudo leer,
@@ -1160,7 +1206,7 @@ class DownloadRequestsMixin:
                     hashes.append(_h)
             else:
                 last_error = motivo
-                _log.warning("Solicitudes: %s sin candidato (%s): %s",
+                _log.warning("Solicitudes: %s no se pudo lanzar (%s): %s",
                              _dr.describe(entry), query, motivo)
         if ok_any:
             _log.info("Solicitudes: %s en descarga", _dr.describe(entry))
@@ -1180,9 +1226,9 @@ class DownloadRequestsMixin:
                 self._download_request_record_replacement(entry, name, year)
                 nd = _dr.mark_replacement_launched(nd, req_id) or nd
             return nd, True
-        _log.warning("Solicitudes: %s sin candidato (%s)", _dr.describe(entry),
-                     last_error or "sin candidato")
-        return _dr.release(data, req_id, user=user, error=last_error or "sin candidato"), False
+        _log.warning("Solicitudes: %s no se pudo lanzar (%s)", _dr.describe(entry),
+                     last_error or "no encontrado")
+        return _dr.release(data, req_id, user=user, error=last_error or "no encontrado"), False
 
     def _download_request_record_replacement(self, entry: dict, name: str, year: str):
         """Sustitución pedida desde la web: registra el pendiente
