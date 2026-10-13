@@ -213,7 +213,7 @@ class WebRequestsTab(QWidget):
             return
         if not confirm(self, "Cancelar solicitud", f"¿Cancelar '{e.get('name', '')}'?",
                        "Se libera la solicitud y se quita su descarga de aMule si la tenía este equipo.",
-                       confirm_text="Cancelar", danger=True):
+                       confirm_text="Sí, cancelar", danger=True):
             return
         req_id = e.get("id", "")
         self.ctx.set_status(f"Cancelando: {e.get('name', '')}...")

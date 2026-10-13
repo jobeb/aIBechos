@@ -386,3 +386,68 @@ def test_prune_and_history_cancelled():
     assert dr.prune(old, now=10 ** 9) == {}
     row = dr.history_rows({"r": {**old["r"], "updated_at": 5}})[0]
     assert row["status_es"] == "Cancelada" and row["detail"] == "Cancelada por Ana"
+
+
+def _downloading_entry():
+    _, entry = dr.new_request(7, "tv", "Serie", "Ana", season=1,
+                              episode=2, year="2024", now=100.0)
+    data = dr.claim({"a": entry}, "a", "Jose", now=200.0)
+    return dr.mark_status(data, "a", "downloading", user="Jose", now=300.0)
+
+
+def test_set_progress_writes_and_detects_no_change():
+    data = _downloading_entry()
+    nd = dr.set_progress(data, "a", dl_percent=42.6, dl_speed=1000, now=400.0)
+    assert nd is not None
+    assert nd["a"]["dl_percent"] == 43
+    assert nd["a"]["dl_speed"] == 1000
+    assert nd["a"]["updated_at"] == 400.0
+    # Sin cambios: None (no se sube la cola al FTP por nada).
+    assert dr.set_progress(nd, "a", dl_percent=43, dl_speed=1000) is None
+
+
+def test_set_progress_clamps_and_clears():
+    data = _downloading_entry()
+    nd = dr.set_progress(data, "a", dl_percent=150, up_percent=-3)
+    assert nd["a"]["dl_percent"] == 100
+    assert nd["a"]["up_percent"] == 0
+    nd2 = dr.set_progress(nd, "a", dl_percent=None, up_percent=None)
+    assert nd2["a"]["dl_percent"] is None
+    assert nd2["a"]["up_percent"] is None
+
+
+def test_set_progress_rejects_non_downloading():
+    _, entry = dr.new_request(7, "tv", "Serie", "Ana", now=100.0)
+    assert dr.set_progress({"a": entry}, "a", dl_percent=10) is None
+    assert dr.set_progress({"nope": entry}, "zzz", dl_percent=10) is None
+
+
+def test_transitions_clear_progress():
+    data = _downloading_entry()
+    data = dr.set_progress(data, "a", dl_percent=50, up_percent=3)
+    assert data["a"]["dl_percent"] == 50
+    # Liberada y reclamada de nuevo: limpio.
+    data2 = dr.claim(dr.release(data, "a", user="Jose", now=500.0), "a",
+                     "Otro", now=600.0)
+    assert data2["a"]["dl_percent"] is None
+    assert data2["a"]["up_percent"] is None
+    # done: limpio.
+    data3 = _downloading_entry()
+    data3 = dr.set_progress(data3, "a", dl_percent=99)
+    done = dr.mark_status(data3, "a", "done", user="Jose", now=700.0)
+    assert done["a"]["dl_percent"] is None
+    assert done["a"]["dl_speed"] is None
+    assert done["a"]["up_percent"] is None
+    assert done["a"]["completed_at"] == 700.0
+
+
+def test_progress_text_and_history_detail():
+    assert dr._progress_text({"dl_percent": 42}) == "Descargando 42%"
+    assert dr._progress_text({"up_percent": 7}) == "Subiendo 7%"
+    assert dr._progress_text({}) == ""
+    data = _downloading_entry()
+    data = dr.set_progress(data, "a", dl_percent=42)
+    data["a"]["claimed_by"] = "Jose"
+    row = dr.history_rows({**data, "a": {**data["a"], "requested_by": "Ana",
+                                          "requested_at": 1}})[0]
+    assert row["detail"] == "En el equipo de Jose · Descargando 42%"

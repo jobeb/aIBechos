@@ -27,21 +27,34 @@ class DownloadRequestsMixin:
         retardo tras abrir la app y repite cada download_requests_interval
         (defecto 5 min). Reclama pendientes (first-claim-wins con
         app_user_name), lanza las descargas en aMule con el mismo embudo
-        que el autocompletado y marca done/failed. Ver
-        _download_requests_cycle. Nunca lanza: cualquier fallo queda en
-        app.log y el siguiente ciclo reintenta."""
+        que el autocompletado y marca done/failed. Entre ciclos completos,
+        si hay descargas en marcha, un tick ligero publica solo el
+        progreso (% descarga/subida) cada minuto para que la web lo
+        enseñe casi en vivo. Ver _download_requests_cycle. Nunca lanza:
+        cualquier fallo queda en app.log y el siguiente ciclo reintenta."""
         def _loop():
             _time.sleep(self._DOWNLOAD_REQUESTS_STARTUP_DELAY)
+            next_full = 0.0
             while True:
                 try:
                     interval = int(self.config_data.get("download_requests_interval", 300) or 300)
                 except (TypeError, ValueError):
                     interval = 300
-                try:
-                    self._download_requests_cycle()
-                except Exception:
-                    _log.exception("Solicitudes: fallo en el ciclo")
-                _time.sleep(max(60, interval))
+                now = _time.time()
+                if now >= next_full:
+                    try:
+                        self._download_requests_cycle()
+                    except Exception:
+                        _log.exception("Solicitudes: fallo en el ciclo")
+                    next_full = _time.time() + max(60, interval)
+                else:
+                    if bool(getattr(self, "_download_requests_hasty", False)):
+                        try:
+                            self._download_requests_progress_tick()
+                        except Exception:
+                            _log.debug("Solicitudes: fallo en el tick de progreso",
+                                       exc_info=True)
+                    _time.sleep(60)
         if self._download_requests_worker is None or not self._download_requests_worker.is_alive():
             self._download_requests_worker = threading.Thread(target=_loop, daemon=True)
             self._download_requests_worker.start()
@@ -188,9 +201,26 @@ class DownloadRequestsMixin:
         except Exception:
             server_index = {}
         done_now = 0
+        failed_now = 0
         amule_queue, local_names = self._download_requests_amule_state(
             any((data.get(r) or {}).get("status") == "downloading" for r in my_ids))
+        try:
+            from core import upload_progress as _up
+            _uploading_now = set(_up.snapshot())
+        except Exception:
+            _uploading_now = set()
         for rid in my_ids:
+            entry_r = data.get(rid) or {}
+            # Solo el PC reclamante evalúa el done de sus solicitudes, y
+            # comparte proceso con su AutoWatcher: si el registro local
+            # dice que se está subiendo ahora mismo, el parcial en el
+            # servidor puede parecer "ya está" (indexado a medias) y no
+            # se da done en este ciclo. (El up_percent conservado en la
+            # entrada NO vale como guarda: tras terminar la subida sin
+            # dato en vivo se quedaría para siempre y bloquearía el done.)
+            if (entry_r.get("status") == "downloading"
+                    and self._download_request_up_key(entry_r) in _uploading_now):
+                continue
             outcome = self._download_request_check_done(data.get(rid) or {}, server_index)
             if outcome is None and amule_queue is not None and _dr.lost_in_amule(
                     data.get(rid) or {}, amule_queue, local_names):
@@ -202,11 +232,22 @@ class DownloadRequestsMixin:
                     changed = True
                     done_now += 1
                     _log.info("Solicitudes: %s completada (%s)", rid, _dr.describe(data.get(rid) or {}))
+                    # Ya está en el servidor (a menudo por otra vía: subida
+                    # manual): quitar su descarga de aMule para que no siga
+                    # bajando días algo redundante y confunda (caso real:
+                    # Andrómeda, completando en aMule lo ya subido). Sin
+                    # reintentos aquí: el barrido horario reintenta.
+                    try:
+                        self._download_request_cancel_amule(data.get(rid) or {})
+                    except Exception:
+                        pass
             elif outcome == "lost":
                 nd = _dr.release(data, rid, user=user, error="ya no estaba en aMule")
                 if nd is not None:
                     data = nd
                     changed = True
+                    if (nd.get(rid) or {}).get("status") == "failed":
+                        failed_now += 1
                     _log.info("Solicitudes: %s ya no estaba en aMule, se vuelve a lanzar",
                               _dr.describe(data.get(rid) or {}))
             elif outcome == "relaunch":
@@ -219,6 +260,8 @@ class DownloadRequestsMixin:
                 if nd is not None:
                     data = nd
                     changed = True
+                    if (nd.get(rid) or {}).get("status") == "failed":
+                        failed_now += 1
         # Solo ocupan hueco las recientes: una descarga de más de
         # CLAIM_TTL_SECONDS sigue en aMule esperando fuentes (el done
         # llega al subirse) y contarla bloqueaba la cola entera -- caso
@@ -262,10 +305,35 @@ class DownloadRequestsMixin:
             if nd is not None:
                 data = nd
                 changed = True
+                if (nd.get(rid) or {}).get("status") == "failed":
+                    # Sin candidato tras agotar los intentos: se avisa.
+                    failed_now += 1
+                if _launched:
+                    # Hay descarga nueva en marcha: ticks rápidos ya.
+                    self._download_requests_hasty = True
+        # my_ids es de antes de reclamar/lanzar: recalcular para que lo
+        # recién lanzado publique su progreso desde este mismo ciclo.
+        my_ids = [rid for rid, e in data.items()
+                  if isinstance(e, dict) and e.get("claimed_by") == user
+                  and e.get("status") in ("claimed", "downloading")]
+        # Progreso para la web (buscando→% descarga→% subida): con la
+        # cola de aMule ya leída y las subidas en curso. Barato y con
+        # detección de cambios (solo sube si algo se movió).
+        try:
+            data, _prog = self._download_requests_publish_progress(
+                data, my_ids, amule_queue or [])
+            changed = changed or _prog
+        except Exception:
+            _log.debug("Solicitudes: no se pudo publicar el progreso", exc_info=True)
+        # Huérfanas en aMule de solicitudes ya finales (ver método).
+        try:
+            self._download_requests_sweep_finished(data, amule_queue)
+        except Exception:
+            pass
         if changed:
             if self._download_requests_push(data, remote_path):
                 self._download_requests_carry = {}
-                if done_now:
+                if done_now or failed_now:
                     self._download_requests_notify_web()
             else:
                 self._download_requests_carry = _dr.merge(
@@ -456,7 +524,11 @@ class DownloadRequestsMixin:
                               timeout=8.0)
                 ec.connect()
                 try:
-                    queue = [{"hash_hex": it.get("hash_hex"), "name": it.get("name")}
+                    # Con % y velocidad: además de detectar descargas
+                    # perdidas, se publica el progreso en la cola
+                    # compartida para que la web lo enseñe.
+                    queue = [{"hash_hex": it.get("hash_hex"), "name": it.get("name"),
+                              "percent": it.get("percent"), "speed": it.get("speed")}
                              for it in (ec.get_download_queue() or [])]
                 finally:
                     ec.close()
@@ -476,12 +548,216 @@ class DownloadRequestsMixin:
                 pass
         return queue, names
 
+    @staticmethod
+    def _download_request_dl_match(entry: dict, queue: list) -> tuple:
+        """(percent, speed) de la descarga de *entry* en la cola de aMule,
+        o (None, 0) si no está. Por hashes si los hay, por nombre si no
+        (misma regla que lost_in_amule). Nunca lanza."""
+        try:
+            hashes = {str(h).lower() for h in (entry.get("amule_hashes") or [])}
+            hits = []
+            for it in queue or []:
+                if not isinstance(it, dict):
+                    continue
+                if hashes:
+                    if str(it.get("hash_hex") or "").lower() in hashes:
+                        hits.append(it)
+                else:
+                    from core import download_requests as _dr
+                    if _dr._name_is_request(entry, str(it.get("name") or "")):
+                        hits.append(it)
+            if not hits:
+                return None, 0
+            pcts = []
+            speed = 0
+            for it in hits:
+                try:
+                    p = float(it.get("percent"))
+                except (TypeError, ValueError):
+                    continue
+                pcts.append(max(0.0, min(100.0, p)))
+                try:
+                    speed += max(0, int(it.get("speed") or 0))
+                except (TypeError, ValueError):
+                    pass
+            if not pcts:
+                return None, speed
+            return sum(pcts) / len(pcts), speed
+        except Exception:
+            return None, 0
+
+    @staticmethod
+    def _download_request_up_key(entry: dict):
+        """Clave para core/upload_progress de lo pedido, o None."""
+        try:
+            mt = str(entry.get("media_type") or "").strip().lower()
+            if mt not in ("tv", "movie"):
+                return None
+            tid = int(entry.get("tmdb_id"))
+            if tid <= 0:
+                return None
+            s = entry.get("season")
+            e = entry.get("episode")
+            s = int(s) if s is not None else None
+            e = int(e) if e is not None else None
+            if mt == "movie":
+                s, e = None, None
+            return (mt, tid, s, e)
+        except (TypeError, ValueError):
+            return None
+
+    def _download_requests_publish_progress(self, data: dict, my_ids: list,
+                                            amule_queue) -> tuple:
+        """Escribe dl_percent/dl_speed/up_percent de mis "downloading"
+        según la cola de aMule y las subidas en curso. Devuelve
+        (nuevo_data, cambió_algo). La subida en curso manda sobre la
+        descarga (es la fase posterior). Sin dato se limpia (la web
+        enseña indeterminado). Nunca lanza."""
+        from core import download_requests as _dr
+        try:
+            from core import upload_progress as _up
+            registry = _up.snapshot()
+        except Exception:
+            registry = {}
+        changed = False
+        for rid in my_ids:
+            entry = data.get(rid) if isinstance(data, dict) else None
+            if not isinstance(entry, dict) or entry.get("status") != "downloading":
+                continue
+            key = self._download_request_up_key(entry)
+            up = registry.get(key) if key is not None else None
+            if up is not None:
+                try:
+                    up_pct = int(round(max(0.0, min(1.0, float(up))) * 100))
+                except (TypeError, ValueError):
+                    up_pct = None
+            else:
+                up_pct = None
+            if up_pct is not None:
+                nd = _dr.set_progress(data, rid, up_percent=up_pct)
+            else:
+                dl_pct, speed = self._download_request_dl_match(entry, amule_queue or [])
+                if dl_pct is not None:
+                    nd = _dr.set_progress(data, rid, dl_percent=dl_pct,
+                                          dl_speed=speed, up_percent=None)
+                else:
+                    # Sin dato en vivo (aMule parado, entre descarga y
+                    # subida): se conserva el último % publicado en vez
+                    # de limpiarlo.
+                    continue
+            if nd is not None:
+                data = nd
+                changed = True
+        self._download_requests_hasty = any(
+            isinstance((data.get(rid) if isinstance(data, dict) else None), dict)
+            and (data.get(rid) or {}).get("status") == "downloading"
+            for rid in my_ids)
+        return data, changed
+
+    def _download_requests_progress_tick(self) -> bool:
+        """Tick ligero entre ciclos completos: relee la cola compartida,
+        repinta solo el progreso de mis descargas y lo sube si cambió.
+        True si publicó algo. Nunca lanza: los fallos se ignoran (el
+        ciclo completo reintenta)."""
+        from core import download_requests as _dr
+        from core.shared_data import read_shared_json
+        try:
+            user = self._download_requests_user()
+            remote_path = self._download_requests_remote_path()
+            if not remote_path:
+                return False
+            own_ftp = self._download_requests_ftp()
+            if own_ftp is None:
+                return False
+            try:
+                data, _is_new = read_shared_json(own_ftp, remote_path, "dict")
+            finally:
+                try:
+                    own_ftp.disconnect()
+                except Exception:
+                    pass
+            if not isinstance(data, dict):
+                return False
+            my_ids = [rid for rid, e in data.items()
+                      if isinstance(e, dict) and e.get("claimed_by") == user
+                      and e.get("status") == "downloading"]
+            if not my_ids:
+                self._download_requests_hasty = False
+                return False
+            amule_queue = None
+            try:
+                amule_queue, _names = self._download_requests_amule_state(True)
+            except Exception:
+                amule_queue = None
+            data, changed = self._download_requests_publish_progress(
+                data, my_ids, amule_queue or [])
+            if changed:
+                return bool(self._download_requests_push(data, remote_path))
+            return False
+        except Exception:
+            return False
+
+    def _download_requests_sweep_finished(self, data: dict, amule_queue) -> None:
+        """Barrido: quita de aMule las descargas lanzadas para solicitudes
+        que ya están finales (done/failed/cancelled) — llegaron al
+        servidor por otra vía y su descarga siguió en aMule hasta
+        terminar días después (caso real: Andrómeda). Solo por hash
+        exacto guardado en la solicitud (nunca por nombre: no se toca
+        nada del usuario). Una vez por hora como mucho; si no hay cola
+        leída y toca, la lee. Nunca lanza."""
+        try:
+            now = _time.time()
+            if now - float(self._download_requests_sweep_ts or 0) < 3600:
+                return
+            queue = amule_queue
+            if queue is None:
+                try:
+                    queue, _names = self._download_requests_amule_state(True)
+                except Exception:
+                    queue = None
+            queued = {str(it.get("hash_hex") or "").lower()
+                      for it in (queue or []) if isinstance(it, dict)}
+            queued.discard("")
+            if not queued:
+                return
+            self._download_requests_sweep_ts = now
+            targets = set()
+            for entry in (data or {}).values():
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("status") not in ("done", "failed", "cancelled"):
+                    continue
+                for h in (entry.get("amule_hashes") or []):
+                    h = str(h).lower()
+                    if h in queued:
+                        targets.add(h)
+            if not targets:
+                return
+            with self._amule_ec_lock:
+                ec = EcClient(host=self.config_data.get("amule_host", "localhost"),
+                              port=self.config_data.get("amule_port", 4712),
+                              password=self.config_data.get("amule_password", ""),
+                              timeout=8.0)
+                ec.connect()
+                try:
+                    for h in sorted(targets):
+                        try:
+                            ec.cancel_download(h)
+                        except Exception:
+                            pass
+                finally:
+                    ec.close()
+            _log.info("Solicitudes: quitadas de aMule %d descarga(s) de solicitudes ya finales",
+                      len(targets))
+        except Exception:
+            pass
+
     def _download_requests_notify_web(self):
-        """Avisa a la web de solicitudes de que hay algo completado (ya
-        escrito en la cola compartida): la web relee la cola y manda la
-        notificación push a quien lo pidió (ver api/index.php
-        notify_check). En un hilo y sin reintentos: si falla, la web lo
-        detecta igual al usarse. Nunca lanza."""
+        """Avisa a la web de solicitudes de que hay novedades (algo
+        completado o fallido, ya escrito en la cola compartida): la web
+        relee la cola y manda la notificación push a quien lo pidió (ver
+        api/index.php notify_check). En un hilo y sin reintentos: si
+        falla, la web lo detecta igual al usarse. Nunca lanza."""
         base = (self.config_data.get("solicitudes_web_url", "") or "").strip()
         if not base:
             return

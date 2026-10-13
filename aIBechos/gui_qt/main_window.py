@@ -400,18 +400,38 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction(quit_)
         tray.setContextMenu(menu)
+        # Trigger (clic) y DoubleClick (mucha gente abre así lo de la
+        # bandeja): los dos restauran la ventana.
         tray.activated.connect(lambda reason: self._show_from_tray()
-                               if reason == QSystemTrayIcon.Trigger else None)
+                               if reason in (QSystemTrayIcon.Trigger,
+                                             QSystemTrayIcon.DoubleClick) else None)
         tray.show()
         self.tray = tray
 
     def _show_from_tray(self):
+        self._ensure_on_screen()
         if self.host.config_data.get("window_maximized", False):
             self.showMaximized()
         else:
             self.showNormal()
         self.raise_()
         self.activateWindow()
+
+    def _ensure_on_screen(self):
+        """Si la ventana quedó fuera de todas las pantallas (monitor
+        desconectado o apagado con la app abierta), la trae al centro de
+        la principal antes de enseñarla. Nunca lanza."""
+        try:
+            geo = self.frameGeometry()
+            if QGuiApplication.screenAt(geo.topLeft() + QPoint(40, 20)) is not None:
+                return
+            screen = QGuiApplication.primaryScreen()
+            if screen is None:
+                return
+            avail = screen.availableGeometry()
+            self.move(avail.center() - QPoint(geo.width() // 2, geo.height() // 2))
+        except Exception:
+            pass
 
     # ── Cierre ──
 

@@ -59,6 +59,7 @@ class FilesDetailPanel(QFrame):
         self._previewed = -1
         self._results_token = object()
         self._token = None
+        self._shown_key = None   # ficha de archivo mostrada (ver show_entry)
         self._ftp_ruta = None
         self._ftp_tree_loaded_for = None
         self._debounce = QTimer(self)
@@ -370,6 +371,7 @@ class FilesDetailPanel(QFrame):
 
     def clear(self):
         self._token = None
+        self._shown_key = None
         for w in (self.title, self.episode, self.year, self.confidence, self.meta, self.cert,
                   self.cast, self.overview, self.error, self.path_lbl):
             w.setText("")
@@ -384,6 +386,13 @@ class FilesDetailPanel(QFrame):
         info = entry.media_info
         reason = entry.error_msg if entry.status in ("error", "omitido") and entry.error_msg else ""
         prefix = "⚠ Error: " if entry.status == "error" else "⏭ Omitido: "
+        # Misma ficha que ya se ve (p.ej. la fila cambió de estado): solo el
+        # aviso de error. Recargarla volvía a pedir carátula, reparto y ruta
+        # FTP, y parpadeaba en cada actualización de la fila.
+        key = (id(entry), repr(info), getattr(entry, "confidence", 0)) if info else None
+        if key is not None and key == self._shown_key:
+            self.error.setText((prefix + reason) if reason else "")
+            return
         if not info:
             self.clear()
             self.title.setText(entry.detected.get("title", entry.name))
@@ -392,11 +401,13 @@ class FilesDetailPanel(QFrame):
             self.error.setText((prefix + reason) if reason else "")
             return
         self._show_info(info, confidence=getattr(entry, "confidence", 0), vote=0)
+        self._shown_key = key
         self.error.setText((prefix + reason) if reason else "")
 
     def _show_info(self, info, confidence: int, vote: float):
         token = object()
         self._token = token
+        self._shown_key = None   # p.ej. vista previa de un resultado: ya no es la ficha del archivo
         self.title.setText(info.title or "")
         if info.season and info.episode:
             ep_text = f"S{info.season:02d}E{info.episode:02d} - {info.episode_title}"

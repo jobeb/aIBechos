@@ -4,7 +4,7 @@ hechas al ver que ya están en el servidor (estaban antes de pedirlas);
 solo cuenta una subida posterior al lanzamiento."""
 
 import time
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import core.download_requests as dr
 from core.app_download_requests import DownloadRequestsMixin as App
@@ -54,6 +54,15 @@ def _cycle_app(data, launched, pushed):
     app._download_requests_server_index = lambda wanted: {}
     app._download_requests_amule_state = lambda needed: (None, [])   # sin aMule
     app._download_request_check_done = lambda entry, idx=None: None
+    # Progreso: métodos reales del mixin (sin aMule no publican nada).
+    # MethodType porque van colgados de un SimpleNamespace, no de una
+    # instancia del mixin (si no, no les llegaría el self).
+    app._download_request_up_key = App._download_request_up_key
+    app._download_request_dl_match = App._download_request_dl_match
+    app._download_requests_publish_progress = MethodType(
+        App._download_requests_publish_progress, app)
+    app._download_request_cancel_amule = lambda entry: True
+    app._download_requests_sweep_ts = 9999999999.0   # barrido apagado salvo test propio
 
     def _launch(d, rid):
         launched.append(rid)
@@ -196,3 +205,120 @@ def test_carry_sobrevive_si_push_falla(monkeypatch):
     App._download_requests_cycle(app)
     assert getattr(app, "_download_requests_carry", None) == {}
     assert pushed[-1]["r1"]["status"] == "done"
+
+
+def test_ciclo_avisa_a_la_web_al_fallar(monkeypatch):
+    """Al agotar los intentos (failed) también se avisa a la web para
+    que mande el push; no solo al completar."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {"r1": {"tmdb_id": 1, "media_type": "movie", "title": "P",
+                   "status": "downloading", "claimed_by": "Jose",
+                   "claimed_at": now - 3 * 86400, "requested_at": now - 3 * 86400,
+                   "attempts": dr.MAX_ATTEMPTS - 1}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    app._download_requests_amule_state = lambda needed: ([{"hash_hex": "x", "name": "Otra.mkv"}], [])
+    avisos = []
+    app._download_requests_notify_web = lambda: avisos.append(1)
+    App._download_requests_cycle(app)
+    assert pushed and pushed[-1]["r1"]["status"] == "failed"
+    assert avisos == [1]
+
+
+def test_ciclo_no_da_done_mientras_sube(monkeypatch):
+    """El parcial en el servidor puede parecer 'ya está' (indexado a
+    medias) mientras AutoWatcher lo sube: si hay subida en curso de lo
+    pedido, el ciclo no marca done aunque check_done lo diga."""
+    import core.shared_data as sd
+    from core import upload_progress as up
+    now = time.time()
+    data = {"r1": {"tmdb_id": 1, "media_type": "movie", "title": "P",
+                   "status": "downloading", "claimed_by": "Jose",
+                   "claimed_at": now - 60, "requested_at": now - 60, "attempts": 0}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    app._download_request_check_done = lambda entry, idx=None: "done"
+    app._download_requests_notify_web = lambda: None
+    up.report("movie", 1, None, None, 0.5)
+    try:
+        App._download_requests_cycle(app)
+    finally:
+        up.discard("movie", 1, None, None)
+    assert pushed, "debe subir el up_percent aunque no haya done"
+    assert pushed[-1]["r1"]["status"] == "downloading"
+    assert pushed[-1]["r1"]["up_percent"] == 50
+
+
+def test_publish_conserva_ultimo_porcentaje_sin_dato():
+    """Sin cola de aMule ni subida en curso no se limpia el último %
+    (la web lo sigue enseñando hasta que haya dato fresco)."""
+    app = _cycle_app({}, [], [])
+    data = {"r1": {"tmdb_id": 1, "media_type": "movie", "title": "P",
+                   "status": "downloading", "claimed_by": "Jose",
+                   "dl_percent": 63}}
+    nd, changed = App._download_requests_publish_progress(app, data, ["r1"], [])
+    assert not changed and nd["r1"]["dl_percent"] == 63
+
+
+def test_ciclo_quita_de_amule_al_marcar_done(monkeypatch):
+    """Al darse por hecha (llegó por otra vía), su descarga se quita de
+    aMule en el mismo ciclo para que no termine días después (caso
+    real: Andrómeda, completando en aMule lo ya subido a mano)."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {"r1": {"tmdb_id": 1, "media_type": "movie", "title": "P",
+                   "status": "downloading", "claimed_by": "Jose",
+                   "amule_hashes": ["aa"],
+                   "claimed_at": now - 60, "requested_at": now - 60, "attempts": 0}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed, quitadas = [], [], []
+    app = _cycle_app(data, launched, pushed)
+    app._download_request_check_done = lambda entry, idx=None: "done"
+    app._download_requests_notify_web = lambda: None
+    app._download_request_cancel_amule = lambda entry: quitadas.append(entry.get("amule_hashes")) or True
+    App._download_requests_cycle(app)
+    assert pushed and pushed[-1]["r1"]["status"] == "done"
+    assert quitadas == [["aa"]]
+
+
+def test_sweep_quita_huerfanas_finales(monkeypatch):
+    """Barrido: solo hashes exactos de solicitudes finales que sigan en
+    la cola; respeta el throttle horario."""
+    import threading
+    import core.app_download_requests as mod
+    app = _cycle_app({}, [], [])
+    app.config_data = {}
+    app._amule_ec_lock = threading.Lock()
+    app._download_requests_sweep_ts = 0.0
+    cancelled = []
+
+    class FakeEC:
+        def __init__(self, **kw):
+            pass
+
+        def connect(self):
+            pass
+
+        def cancel_download(self, h):
+            cancelled.append(h)
+            return True, "ok"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(mod, "EcClient", FakeEC)
+    data = {
+        "done": {"status": "done", "amule_hashes": ["aa", "bb"]},
+        "failed": {"status": "failed", "amule_hashes": ["cc"]},
+        "down": {"status": "downloading", "claimed_by": "Jose", "amule_hashes": ["dd"]},
+    }
+    queue = [{"hash_hex": "aa"}, {"hash_hex": "cc"}, {"hash_hex": "dd"}, {"hash_hex": "zz"}]
+    App._download_requests_sweep_finished(app, data, queue)
+    assert sorted(cancelled) == ["aa", "cc"]
+    # Segunda llamada seguida: throttle, sin más conexiones.
+    cancelled.clear()
+    App._download_requests_sweep_finished(app, data, queue)
+    assert cancelled == []

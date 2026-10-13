@@ -224,11 +224,18 @@ class FilesCoreMixin:
                 self._update_row(entry)
 
             elif tipo == "uploading":
+                # Llega en cada tramo de progreso: solo el primero (cambio
+                # de estado/nombre) repinta la fila entera; el resto solo la
+                # barra. Antes cada tick hacía _update_row y, con el archivo
+                # seleccionado, recargaba la ficha lateral sin parar.
+                changed = (entry.status != "subiendo"
+                           or (new_name and new_name != entry.new_name))
                 entry.status       = "subiendo"
                 entry.ftp_progress = progress or 0.0
                 entry.ftp_speed    = speed or 0.0
                 entry.new_name     = new_name or entry.new_name
-                self._update_row(entry)
+                if changed:
+                    self._update_row(entry)
                 self._ftp_row_live(entry, entry.ftp_progress, entry.ftp_speed)
 
             elif tipo == "uploaded":

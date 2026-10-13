@@ -33,6 +33,8 @@ from core.ftp_client import FTPClient, _ftp_safe
 from core.series_match import best_match
 from core.ftp_categories import choose_category
 from core.upload_slots import UploadSlotManager
+from core.upload_progress import report as _report_upload_progress
+from core.upload_progress import discard as _discard_upload_progress
 from core.appdirs import app_data_dir
 from core.applog import get_logger
 from core.path_key import canon_path
@@ -1290,6 +1292,16 @@ class AutoWatcher:
             if not _upload_tick_due(_tick_state["pct"], _tick_state["ts"], pct, now):
                 return
             _tick_state["pct"], _tick_state["ts"] = pct, now
+            # El worker de solicitudes enseña este % en la web cuando lo
+            # subido es algo pedido (mismo tmdb/temporada/episodio).
+            try:
+                _report_upload_progress(
+                    getattr(media_info, "media_type", ""),
+                    getattr(media_info, "tmdb_id", 0),
+                    getattr(media_info, "season", None),
+                    getattr(media_info, "episode", None), pct)
+            except Exception:
+                pass
             self.on_file_event(new_path, "uploading", new_name=new_name, progress=pct, speed=speed,
                                is_slim=(_slimpend is not None))
 
@@ -1341,6 +1353,11 @@ class AutoWatcher:
                         skip_event=skip_event,
                         speed_limit_kbs=self._get_speed_limit_kbs,
                         remote_filename=remote_filename,
+                        # Reanudar el parcial si lo es de verdad (ver
+                        # _is_prefix_of_local): tras un reinicio a media
+                        # subida se continúa, no se reenvía desde cero.
+                        # Salvo sustitución pedida: ahí se sobrescribe.
+                        try_resume=(_reqpend is None),
                     )
                 finally:
                     with self._skip_lock:
@@ -1348,6 +1365,16 @@ class AutoWatcher:
                     own_ftp.disconnect()
         finally:
             self.upload_slots.release()
+            # La subida terminó (ok, cancelada, saltada o error): el %
+            # ya no vale para nadie.
+            try:
+                _discard_upload_progress(
+                    getattr(media_info, "media_type", ""),
+                    getattr(media_info, "tmdb_id", 0),
+                    getattr(media_info, "season", None),
+                    getattr(media_info, "episode", None))
+            except Exception:
+                pass
         if ok3:
             _log.info("FTP upload OK: %s -> %s", new_name, remote_path)
             self.on_event("ok", f"✓ Subido: {new_name}")

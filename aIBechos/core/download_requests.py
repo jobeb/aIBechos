@@ -19,7 +19,8 @@ Formato: {"<req_id>": {"tmdb_id": 1234, "media_type": "tv",
 "requested_by": "nombre Jellyfin", "requested_at": 1789700000,
 "status": "pending", "claimed_by": "", "claimed_at": 0, "attempts": 0,
 "last_error": "", "completed_at": 0, "updated_at": 1789700000,
-"replace": true, "replace_since": 1789700100.0}}
+"replace": true, "replace_since": 1789700100.0,
+"dl_percent": 42, "dl_speed": 1258291, "up_percent": 7}}
 
 - season/episode solo para capítulos sueltos de TV (None = serie o
   temporada entera; las pelis no los usan).
@@ -44,6 +45,12 @@ Formato: {"<req_id>": {"tmdb_id": 1234, "media_type": "tv",
 - "claimed_at" (epoch): un claim de más de CLAIM_TTL_SECONDS se
   considera muerto (PC apagado a medias) y otro cliente puede
   reclamarla (attempts+1).
+- Progreso (solo lo escribe el PC que la tiene reclamada, ver
+  set_progress): "dl_percent" (0-100 en aMule) y "dl_speed"
+  (bytes/s) mientras descarga; "up_percent" (0-100 del FTP) cuando
+  AutoWatcher ya la está subiendo al servidor. Ausentes = sin dato
+  (la web enseña indeterminado). claim/mark_status/release los
+  limpian al cambiar de fase para no enseñar un % viejo.
 - "requested_by" lo fija el servidor web desde la sesión Jellyfin,
   nunca lo que mande el navegador (ver solicitudes-web/api.php).
 """
@@ -165,7 +172,9 @@ def claim(data: dict, req_id: str, user: str,
     result[req_id] = {**entry, "status": "claimed",
                       "claimed_by": str(user).strip(),
                       "claimed_at": ts, "attempts": attempts,
-                      "updated_at": ts}
+                      "updated_at": ts,
+                      "dl_percent": None, "dl_speed": None,
+                      "up_percent": None}
     return result
 
 
@@ -182,7 +191,10 @@ def mark_status(data: dict, req_id: str, status: str, user: str = "",
     if user and entry.get("claimed_by") and entry.get("claimed_by") != user:
         return None
     ts = now if now is not None else time.time()
-    updated = {**entry, "status": status, "updated_at": ts}
+    updated = {**entry, "status": status, "updated_at": ts,
+               # Cambio de fase: el % anterior ya no vale (lo repinta
+               # set_progress en los ticks siguientes si sigue bajando).
+               "dl_percent": None, "dl_speed": None, "up_percent": None}
     if error:
         updated["last_error"] = str(error)[:500]
     if status == "done":
@@ -213,10 +225,13 @@ def release(data: dict, req_id: str, user: str = "", error: str = "",
     if attempts >= MAX_ATTEMPTS:
         result[req_id] = {**entry, "status": "failed", "attempts": attempts,
                           "updated_at": ts,
+                          "dl_percent": None, "dl_speed": None,
+                          "up_percent": None,
                           "last_error": str(error or entry.get("last_error") or "")[:500]}
         return result
     updated = {**entry, "status": "pending", "claimed_by": "",
-               "claimed_at": 0, "attempts": attempts, "updated_at": ts}
+               "claimed_at": 0, "attempts": attempts, "updated_at": ts,
+               "dl_percent": None, "dl_speed": None, "up_percent": None}
     if error:
         updated["last_error"] = str(error)[:500]
     result[req_id] = updated
@@ -465,6 +480,21 @@ def mark_replacement_launched(data: dict, req_id: str,
     return result
 
 
+def _progress_text(entry: dict) -> str:
+    """'Descargando 42%' / 'Subiendo 7%' según dl/up_percent, o '' sin
+    dato. Para history_rows (Info) y logs -- nunca lanza."""
+    try:
+        up = entry.get("up_percent")
+        if up is not None:
+            return f"Subiendo {int(up)}%"
+        dl = entry.get("dl_percent")
+        if dl is not None:
+            return f"Descargando {int(dl)}%"
+    except (TypeError, ValueError):
+        pass
+    return ""
+
+
 def describe(entry: dict) -> str:
     """"Título (año) [T1 / T1E02]" para logs y la web -- nunca lanza."""
     try:
@@ -652,6 +682,60 @@ def set_amule_hashes(data: dict, req_id: str, hashes) -> dict | None:
     return result
 
 
+_UNSET = object()
+
+
+def _clamp_percent(value) -> int | None:
+    """Entero 0-100 o None (sin dato). Nunca lanza."""
+    if value is None:
+        return None
+    try:
+        pct = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return max(0, min(100, pct))
+
+
+def set_progress(data: dict, req_id: str, *, dl_percent=_UNSET,
+                 dl_speed=_UNSET, up_percent=_UNSET,
+                 now: float | None = None) -> dict | None:
+    """Dict NUEVO con el progreso de *req_id*, o None si no existe, no
+    está en "downloading" o nada cambió (para no subir la cola al FTP
+    en cada tick sin novedad). Solo toca las claves pasadas (las
+    omitidas se quedan; None las limpia). Nunca lanza."""
+    entry = _entry(data, req_id)
+    if entry is None or entry.get("status") != "downloading":
+        return None
+    updated = dict(entry)
+    changed = False
+    if dl_percent is not _UNSET:
+        value = _clamp_percent(dl_percent)
+        if updated.get("dl_percent") != value:
+            updated["dl_percent"] = value
+            changed = True
+    if dl_speed is not _UNSET:
+        try:
+            speed = int(dl_speed) if dl_speed is not None else None
+        except (TypeError, ValueError):
+            speed = None
+        if speed is not None and speed < 0:
+            speed = 0
+        if updated.get("dl_speed") != speed:
+            updated["dl_speed"] = speed
+            changed = True
+    if up_percent is not _UNSET:
+        value = _clamp_percent(up_percent)
+        if updated.get("up_percent") != value:
+            updated["up_percent"] = value
+            changed = True
+    if not changed:
+        return None
+    updated["updated_at"] = now if now is not None else time.time()
+    result = dict(data)
+    result[req_id] = updated
+    return result
+
+
 def _name_is_request(entry: dict, name: str) -> bool:
     """¿El nombre de archivo (cola de aMule o carpeta vigilada) es lo
     pedido? Capítulos: título + SxE (matches_upload); pelis: mismo
@@ -742,6 +826,10 @@ def history_rows(data: dict) -> list:
         error = str(entry.get("last_error") or "").strip()
         if status in ("claimed", "downloading") and claimed_by:
             detail = f"En el equipo de {claimed_by}"
+            if status == "downloading":
+                prog = _progress_text(entry)
+                if prog:
+                    detail += f" · {prog}"
         elif status == "cancelled":
             who = str(entry.get("cancelled_by") or "").strip()
             detail = f"Cancelada por {who}" if who else "Cancelada"
