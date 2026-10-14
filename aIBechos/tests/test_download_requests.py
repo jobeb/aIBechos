@@ -481,3 +481,21 @@ def test_relaunch_only_for_cancelled():
     assert dr.relaunch_cancelled({rid: e}, rid) is None
     assert dr.relaunch_cancelled({}, "nope") is None
     assert "cancelled" in dr.LAUNCHABLE_STATUSES
+
+
+def test_active_hashes_protect_relaunched_download():
+    """Caso Animales: la cancelada y la nueva comparten archivo (mismo
+    hash). Quitar lo de la cancelada no puede tocar la de la nueva."""
+    old = {"status": "cancelled", "amule_hashes": ["AB12"], "title": "Animales"}
+    new = {"status": "downloading", "amule_hashes": ["ab12"], "title": "Animales"}
+    done = {"status": "done", "amule_hashes": ["cd34"]}
+    data = {"old": old, "new": new, "done": done}
+    keep = dr.active_amule_hashes(data)
+    assert keep == {"ab12"}
+    queue = [{"hash_hex": "ab12", "name": "Animales (2026).mkv"},
+             {"hash_hex": "cd34", "name": "Otra.mkv"}]
+    assert dr.amule_hashes_to_cancel(old, queue, keep) == []
+    assert dr.amule_hashes_to_cancel(done, queue, keep) == ["cd34"]
+    # Sin hashes guardados (por nombre) tampoco se lleva la en curso.
+    assert dr.amule_hashes_to_cancel({"status": "cancelled", "title": "Animales",
+                                      "media_type": "movie"}, queue, keep) == []

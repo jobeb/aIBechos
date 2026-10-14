@@ -821,18 +821,35 @@ STATUS_ES = {"pending": "Pendiente", "claimed": "Reclamada", "downloading": "Des
              "done": "Lista", "failed": "Fallida", "cancelled": "Cancelada"}
 
 
-def amule_hashes_to_cancel(entry: dict, queue: list) -> list:
+def active_amule_hashes(data: dict) -> set:
+    """Hashes de aMule de las solicitudes EN CURSO (pending/claimed/
+    downloading). Nada que quite descargas de solicitudes terminadas o
+    canceladas debe tocarlos: si se vuelve a pedir lo mismo, aMule suele
+    elegir el MISMO archivo, y el barrido lo tomaba por el resto de la
+    vieja y lo cancelaba (caso real: Animales, relanzada tras cancelarla:
+    desapareció de aMule, de la carpeta y de la app al minuto y medio)."""
+    out = set()
+    for entry in (data or {}).values():
+        if (isinstance(entry, dict)
+                and entry.get("status") in ("pending", "claimed", "downloading")):
+            out.update(str(h).lower() for h in (entry.get("amule_hashes") or []) if h)
+    return out
+
+
+def amule_hashes_to_cancel(entry: dict, queue: list, keep=()) -> list:
     """Hashes de la cola de aMule [{hash_hex, name}] que son la descarga
     de *entry*: por sus "amule_hashes" o, si no los tiene (lanzadas
-    antes de guardarlos), por nombre. Nunca lanza."""
+    antes de guardarlos), por nombre. Nunca devuelve los de *keep* (ver
+    active_amule_hashes). Nunca lanza."""
     try:
         hashes = {str(h).lower() for h in (entry.get("amule_hashes") or [])}
+        keep = {str(h).lower() for h in (keep or ())}
         out = []
         for it in queue or []:
             if not isinstance(it, dict):
                 continue
             h = str(it.get("hash_hex") or "").lower()
-            if not h:
+            if not h or h in keep:
                 continue
             if (h in hashes) if hashes else _name_is_request(entry, str(it.get("name") or "")):
                 out.append(h)

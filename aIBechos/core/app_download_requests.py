@@ -179,7 +179,7 @@ class DownloadRequestsMixin:
         changed = bool(carry)
         # Canceladas desde la web que tenía este PC: fuera de aMule.
         for rid in _dr.to_cancel(data, user):
-            if self._download_request_cancel_amule(data.get(rid) or {}):
+            if self._download_request_cancel_amule(data.get(rid) or {}, data):
                 nd = _dr.mark_cancel_done(data, rid)
                 if nd is not None:
                     data = nd
@@ -242,7 +242,7 @@ class DownloadRequestsMixin:
                     # Andrómeda, completando en aMule lo ya subido). Sin
                     # reintentos aquí: el barrido horario reintenta.
                     try:
-                        self._download_request_cancel_amule(data.get(rid) or {})
+                        self._download_request_cancel_amule(data.get(rid) or {}, data)
                     except Exception:
                         pass
             elif outcome == "lost":
@@ -343,11 +343,12 @@ class DownloadRequestsMixin:
                 self._download_requests_carry = _dr.merge(
                     getattr(self, "_download_requests_carry", None) or {}, data)
 
-    def _download_request_cancel_amule(self, entry: dict) -> bool:
+    def _download_request_cancel_amule(self, entry: dict, data: dict | None = None) -> bool:
         """Quita de aMule la descarga de una solicitud cancelada desde la
         web (borra también lo descargado a medias). True si ya no queda
         nada suyo en aMule; False si aMule no responde (se reintenta en
-        el siguiente ciclo)."""
+        el siguiente ciclo). Con *data* (la cola), respeta las descargas
+        de las solicitudes en curso (ver _dr.active_amule_hashes)."""
         from core import download_requests as _dr
         try:
             with self._amule_ec_lock:
@@ -359,7 +360,8 @@ class DownloadRequestsMixin:
                 try:
                     queue = [{"hash_hex": it.get("hash_hex"), "name": it.get("name")}
                              for it in (ec.get_download_queue() or [])]
-                    for h in _dr.amule_hashes_to_cancel(entry, queue):
+                    keep = _dr.active_amule_hashes(data) if data else ()
+                    for h in _dr.amule_hashes_to_cancel(entry, queue, keep):
                         ok, msg = ec.cancel_download(h)
                         if not ok:
                             _log.warning("Solicitudes: no se pudo cancelar %s en aMule: %s", h, msg)
@@ -447,7 +449,7 @@ class DownloadRequestsMixin:
             # quita ya: si no, el ciclo siguiente la quitaría por hash...
             # y podría ser el mismo archivo que se va a lanzar ahora.
             if entry.get("claimed_by") == user and not entry.get("cancel_done"):
-                if not self._download_request_cancel_amule(entry):
+                if not self._download_request_cancel_amule(entry, data):
                     return "aMule no responde: inténtalo en un momento"
                 data = _dr.mark_cancel_done(data, req_id) or data
             relaunched = _dr.relaunch_cancelled(data, req_id)
@@ -518,7 +520,7 @@ class DownloadRequestsMixin:
             return False
         try:
             if isinstance(entry, dict):
-                self._download_request_cancel_amule(entry)
+                self._download_request_cancel_amule(entry, nd)
         except Exception:
             pass
         _log.info("Solicitudes: %s cancelada por %s", _dr.describe(entry), user)
@@ -767,6 +769,7 @@ class DownloadRequestsMixin:
         exacto guardado en la solicitud (nunca por nombre: no se toca
         nada del usuario). Una vez por hora como mucho; si no hay cola
         leída y toca, la lee. Nunca lanza."""
+        from core import download_requests as _dr
         try:
             now = _time.time()
             if now - float(self._download_requests_sweep_ts or 0) < 3600:
@@ -793,6 +796,9 @@ class DownloadRequestsMixin:
                     h = str(h).lower()
                     if h in queued:
                         targets.add(h)
+            # Ni lo que es de una solicitud en curso (la misma pedida otra
+            # vez suele bajar el MISMO archivo, ver active_amule_hashes).
+            targets -= _dr.active_amule_hashes(data)
             if not targets:
                 return
             with self._amule_ec_lock:

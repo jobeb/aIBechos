@@ -61,7 +61,7 @@ def _cycle_app(data, launched, pushed):
     app._download_request_dl_match = App._download_request_dl_match
     app._download_requests_publish_progress = MethodType(
         App._download_requests_publish_progress, app)
-    app._download_request_cancel_amule = lambda entry: True
+    app._download_request_cancel_amule = lambda entry, data=None: True
     app._download_requests_sweep_ts = 9999999999.0   # barrido apagado salvo test propio
 
     def _launch(d, rid):
@@ -175,10 +175,10 @@ def test_ciclo_quita_de_amule_lo_cancelado_en_la_web(monkeypatch):
     monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
     launched, pushed, cancelled = [], [], []
     app = _cycle_app(data, launched, pushed)
-    app._download_request_cancel_amule = lambda entry: False   # aMule caído
+    app._download_request_cancel_amule = lambda entry, data=None: False   # aMule caído
     App._download_requests_cycle(app)
     assert launched == [] and not pushed
-    app._download_request_cancel_amule = lambda entry: cancelled.append(entry["amule_hashes"]) or True
+    app._download_request_cancel_amule = lambda entry, data=None: cancelled.append(entry["amule_hashes"]) or True
     App._download_requests_cycle(app)
     assert cancelled == [["aa"]] and launched == []
     assert pushed[-1]["c"]["status"] == "cancelled" and pushed[-1]["c"]["cancel_done"] is True
@@ -278,7 +278,7 @@ def test_ciclo_quita_de_amule_al_marcar_done(monkeypatch):
     app = _cycle_app(data, launched, pushed)
     app._download_request_check_done = lambda entry, idx=None: "done"
     app._download_requests_notify_web = lambda: None
-    app._download_request_cancel_amule = lambda entry: quitadas.append(entry.get("amule_hashes")) or True
+    app._download_request_cancel_amule = lambda entry, data=None: quitadas.append(entry.get("amule_hashes")) or True
     App._download_requests_cycle(app)
     assert pushed and pushed[-1]["r1"]["status"] == "done"
     assert quitadas == [["aa"]]
