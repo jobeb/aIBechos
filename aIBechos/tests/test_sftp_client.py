@@ -480,9 +480,8 @@ def test_el_parche_no_se_encadena_sobre_si_mismo():
 
 
 # ----------------------------------- repartir un archivo entre conexiones --
-# El servidor limita CADA conexión por separado (~2 MB/s medidos, y le pasa
-# igual al putfo() de paramiko), así que un archivo solo nunca alcanza el
-# límite configurado. Repartirlo sí: 2 -> 3,9 MB/s, 4 -> 6,5, 6 -> 9,2.
+# Una conexión ya da casi toda la línea (ver SOCKET_BUFFER_BYTES); repartir
+# apura lo que queda y aguanta mejor que se caiga una conexión.
 
 def _grande(tmp_path, cliente):
     local = tmp_path / "peli.mkv"
@@ -617,3 +616,98 @@ def test_si_no_hay_forma_de_conectar_la_subida_falla(cliente, tmp_path, monkeypa
     with pytest.raises(OSError):
         cliente._store_stream_multi(str(local), "/x/peli.mkv", 4 * 1024 * 1024,
                                     lambda d: None, 0, total, 4)
+
+
+# ------------------------------------------- pipeline de escritura acotado --
+
+class _SftpPipeline:
+    """Lo justo de paramiko.SFTPClient para _write_pipelined: apunta cada
+    escritura (posición, tamaño) y contesta según se le pide."""
+    def __init__(self, fallar_en=None):
+        self.escrituras = []
+        self.max_pendientes = 0
+        self.fallar_en = fallar_en
+        self.fichero = None
+        class _Sock:
+            def recv_ready(self_):
+                return False        # el servidor nunca va por delante
+        self.sock = _Sock()
+
+    def _async_request(self, _tipo, _cmd, _handle, pos, datos):
+        self.escrituras.append((int(pos.value if hasattr(pos, "value") else pos),
+                                len(datos)))
+        self.max_pendientes = max(self.max_pendientes, len(self.fichero._reqs) + 1)
+        return len(self.escrituras) - 1
+
+    def _read_response(self, num):
+        from paramiko.sftp import CMD_STATUS
+        if num == self.fallar_en:
+            raise IOError("disco lleno")
+        return CMD_STATUS, None
+
+
+class _FicheroPipeline:
+    MAX_REQUEST_SIZE = 32768
+
+    def __init__(self, sftp, pos=0):
+        from collections import deque
+        self.sftp = sftp
+        sftp.fichero = self
+        self._reqs = deque()
+        self.handle = b"h"
+        self._realpos = self._pos = pos
+
+    def flush(self):
+        pass
+
+
+def test_pipeline_escribe_cada_trozo_en_su_sitio(monkeypatch):
+    from core import sftp_client as mod
+    import paramiko.sftp
+    monkeypatch.setattr(paramiko.sftp, "int64", lambda n: n)
+    sftp = _SftpPipeline()
+    f = _FicheroPipeline(sftp, pos=1000)
+    mod._write_pipelined(f, b"x" * (100 * 1024))
+    mod._write_pipelined(f, b"y" * 10)
+    assert sftp.escrituras == [(1000, 32768), (33768, 32768), (66536, 32768),
+                               (99304, 4096), (103400, 10)]
+    assert f._realpos == f._pos == 1000 + 100 * 1024 + 10
+
+
+def test_pipeline_no_acumula_mas_de_la_cuenta(monkeypatch):
+    """Ni se para a esperarlas todas (lo que hacía paramiko) ni deja crecer
+    sin fin las pendientes."""
+    from core import sftp_client as mod
+    import paramiko.sftp
+    monkeypatch.setattr(paramiko.sftp, "int64", lambda n: n)
+    sftp = _SftpPipeline()
+    f = _FicheroPipeline(sftp)
+    for _ in range(20):
+        mod._write_pipelined(f, b"x" * (256 * 1024))
+    assert sftp.max_pendientes <= mod.PIPELINE_MAX_PENDIENTES + 1
+    assert len(f._reqs) >= mod.PIPELINE_MAX_PENDIENTES - 8   # siguen en vuelo
+    mod._vaciar_pipeline(f)
+    assert not f._reqs
+
+
+def test_un_error_de_escritura_no_se_pierde_al_cerrar(monkeypatch):
+    """paramiko se salta las respuestas pendientes al cerrar: un "disco lleno"
+    en la última escritura tiene que salir en la subida."""
+    from core import sftp_client as mod
+    import paramiko.sftp
+    monkeypatch.setattr(paramiko.sftp, "int64", lambda n: n)
+    sftp = _SftpPipeline(fallar_en=3)
+    f = _FicheroPipeline(sftp)
+    mod._write_pipelined(f, b"x" * (4 * 32768))
+    with pytest.raises(IOError):
+        mod._vaciar_pipeline(f)
+
+
+def test_sin_internas_de_paramiko_usa_write_normal():
+    from core import sftp_client as mod
+    escrito = []
+    class _Simple:
+        def write(self, d): escrito.append(d)
+    mod._write_pipelined(_Simple(), b"abc")
+    mod._vaciar_pipeline(_Simple())
+    assert escrito == [b"abc"]

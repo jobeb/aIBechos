@@ -26,9 +26,9 @@ def default_port(protocol: str) -> int:
 
 #: Ayuda de "Conexiones por archivo" (solo SFTP) en Ajustes.
 TOOLTIP_CONEXIONES_POR_ARCHIVO = (
-    "El servidor limita cada conexión por separado, así que un archivo solo no "
-    "llega al límite de velocidad por muy alto que esté. Repartirlo entre varias "
-    "lo acelera: medido contra el servidor, 1 conexión da 2 MB/s y 4 dan 6,5.\n"
+    "Repartir un archivo entre varias conexiones apura el ancho de banda: "
+    "medido contra el servidor, 1 conexión da ~34 MB/s y 2-4 llenan una línea "
+    "de 300 Mbps. Con la conexión inestable, más conexiones aguantan mejor.\n"
     "Es un total: si se suben varios archivos a la vez, se reparte entre ellos."
 )
 

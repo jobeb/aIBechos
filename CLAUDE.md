@@ -163,6 +163,15 @@ seams instead of reaching for `self.ftp` directly: `self.ftp` is `None` under
 SFTP, and a direct call there breaks SFTP silently (it already did once, for
 the resume check and the final size check).
 
+Upload speed: `connect()` hands paramiko its own socket with an 8 MB
+`SO_SNDBUF`/`SO_RCVBUF` (`_socket_con_buffer_grande`), and writes go through
+`_write_pipelined` (bounded window of pending acks, read as they arrive)
+instead of paramiko's pipelined `write()`, which stalls draining every ack each
+100 requests. With Windows' default buffer each connection capped at ~2.3 MB/s
+against the ~100 ms-RTT server; with both fixes one connection does ~34 MB/s.
+Don't revert either one to "simplify"; `_vaciar_pipeline` must run before
+closing, or a write error (disk full) is silently dropped by paramiko's close.
+
 Free space is one place where SFTP is strictly better than FTP: instead of
 probing non-standard commands (AVBL/SITE AVAIL/XDISKFREE, none of which vsftpd
 answers), it uses the `statvfs@openssh.com` extension. paramiko exposes **no**

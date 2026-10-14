@@ -24,6 +24,7 @@ tiene por qué pagar su carga al arrancar la aplicación.
 import errno
 import io
 import os
+import socket
 import stat as stat_mod
 import threading
 from collections import deque
@@ -39,6 +40,92 @@ _log = get_logger("aIBechos.sftp", "app.log")
 
 #: Puerto estándar de SSH/SFTP (el de FTP es el 21).
 DEFAULT_SFTP_PORT = 22
+
+#: Búfer de envío/recepción del socket. Era EL cuello de botella: con el que
+#: pone Windows por defecto, cada conexión se quedaba en ~2,3 MB/s contra el
+#: servidor (~100 ms de latencia), y con 8 MB sube a ~34 MB/s -- lo que da la
+#: línea de 300 Mbps. Tiene que cubrir lo que cabe "en vuelo" (velocidad x
+#: latencia: 37 MB/s x 0,1 s ~ 4 MB) con margen.
+SOCKET_BUFFER_BYTES = 8 * 1024 * 1024
+
+#: Escrituras pendientes de confirmar como mucho (de 32 KB cada una: ~2 MB,
+#: la ventana SSH que anuncia OpenSSH). Ver _write_pipelined.
+PIPELINE_MAX_PENDIENTES = 64
+
+
+def _socket_con_buffer_grande(host: str, port: int):
+    """Socket TCP ya conectado, con búferes grandes, para dárselo a paramiko.
+
+    paramiko abre el suyo sin tocar los búferes, así que hay que crearlo aquí.
+    Si el sistema no deja ampliarlos, se sigue con lo que haya."""
+    sock = socket.create_connection((host, port), timeout=15)
+    for opcion in (socket.SO_SNDBUF, socket.SO_RCVBUF):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, opcion, SOCKET_BUFFER_BYTES)
+        except OSError:
+            pass
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
+    return sock
+
+
+def _write_pipelined(remoto, datos) -> None:
+    """remoto.write(datos), pero sin los parones del pipeline de paramiko.
+
+    Con set_pipelined(True), paramiko manda escrituras sin esperar respuesta
+    hasta que acumula 100, y entonces se para a esperar las confirmaciones de
+    TODAS: la conexión se queda vacía una vez cada ~3 MB, y con el búfer
+    grande eso dejaba la velocidad bailando entre 8 y 27 MB/s. Aquí se van
+    leyendo las confirmaciones según llegan y solo se espera si hay demasiadas
+    pendientes, así que siempre hay datos en vuelo (medido: ~34 MB/s estables).
+
+    Usa la parte interna de paramiko (_async_request, _reqs); si no la tiene
+    (otra versión, o un doble de pruebas), se usa el write() normal."""
+    sftp = getattr(remoto, "sftp", None)
+    pendientes = getattr(remoto, "_reqs", None)
+    handle = getattr(remoto, "handle", None)
+    if (sftp is None or pendientes is None or handle is None
+            or not hasattr(sftp, "_async_request")
+            or not hasattr(remoto, "_realpos")):
+        remoto.write(datos)
+        return
+    from paramiko.sftp import CMD_STATUS, CMD_WRITE, int64
+    remoto.flush()      # por si quedara algo en el búfer de paramiko
+    vista = memoryview(datos)
+    enviado = 0
+    while enviado < len(vista):
+        n = min(len(vista) - enviado, remoto.MAX_REQUEST_SIZE)
+        pendientes.append(sftp._async_request(
+            type(None), CMD_WRITE, handle, int64(remoto._realpos + enviado),
+            vista[enviado:enviado + n]))
+        enviado += n
+        while pendientes and (len(pendientes) > PIPELINE_MAX_PENDIENTES
+                              or sftp.sock.recv_ready()):
+            _confirmar(sftp, pendientes.popleft(), CMD_STATUS)
+    remoto._realpos += enviado
+    remoto._pos += enviado
+
+
+def _vaciar_pipeline(remoto) -> None:
+    """Espera las confirmaciones pendientes antes de cerrar el archivo.
+
+    paramiko, al cerrar, se las salta sin mirar si alguna era un error (disco
+    lleno...); así el fallo sale aquí, en la subida, y no se da por buena."""
+    sftp = getattr(remoto, "sftp", None)
+    pendientes = getattr(remoto, "_reqs", None)
+    if sftp is None or pendientes is None or not hasattr(sftp, "_read_response"):
+        return
+    from paramiko.sftp import CMD_STATUS
+    while pendientes:
+        _confirmar(sftp, pendientes.popleft(), CMD_STATUS)
+
+
+def _confirmar(sftp, peticion, cmd_status) -> None:
+    t, _msg = sftp._read_response(peticion)
+    if t != cmd_status:
+        raise IOError("respuesta inesperada del servidor SFTP al escribir")
 
 
 class SFTPClient(FTPClient):
@@ -76,7 +163,8 @@ class SFTPClient(FTPClient):
             self._ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             self._ssh.connect(hostname=host, port=self.port, username=user,
                               password=password, timeout=15,
-                              allow_agent=False, look_for_keys=False)
+                              allow_agent=False, look_for_keys=False,
+                              sock=_socket_con_buffer_grande(host, self.port))
             self.sftp = self._ssh.open_sftp()
             self.sftp.get_channel().settimeout(30)
             return True, f"Conectado a {host} por SFTP"
@@ -372,12 +460,13 @@ class SFTPClient(FTPClient):
                       callback, resume_offset: int = 0, streams: int = 1):
         """Manda el archivo, por una conexión o repartido entre varias.
 
-        Repartirlo es lo único que sube de verdad la velocidad con un archivo
-        solo: medido contra el servidor, CADA conexión se queda clavada en ~2
-        MB/s (da igual el tamaño de bloque, y le pasa igual al putfo() del
-        propio paramiko), pero varias suman casi linealmente: 2 -> 3,9 MB/s,
-        4 -> 6,5, 6 -> 9,2. El cuello no es la línea ni la ventana SSH (con 98
-        ms de latencia darían para 20 MB/s): es un límite por conexión."""
+        Antes cada conexión se quedaba clavada en ~2 MB/s y repartir era la
+        única forma de correr. La causa era el búfer de envío del socket que
+        pone Windows (ver SOCKET_BUFFER_BYTES) más los parones del pipeline de
+        paramiko (ver _write_pipelined). Arreglado eso, una sola conexión da
+        ~34 MB/s y 2-4 llenan la línea de 300 Mbps (32-37 MB/s medidos).
+        Repartir sigue ayudando a apurar lo que queda y a aguantar mejor la
+        pérdida de paquetes."""
         ruta_local = getattr(fileobj, "name", None)
         total = None
         if ruta_local:
@@ -482,10 +571,14 @@ class SFTPClient(FTPClient):
                             datos = local.read(min(blocksize, queda))
                             if not datos:
                                 break
-                            remoto.write(datos)
+                            _write_pipelined(remoto, datos)
                             queda -= len(datos)
                             callback(datos)
                         if queda <= 0:
+                            # El trozo no está hecho hasta que el servidor
+                            # confirma sus escrituras: si se cae antes, hay
+                            # que reencolarlo entero.
+                            _vaciar_pipeline(remoto)
                             en_curso[0] = None
                 return True
             except (OSError, EOFError) as e:
@@ -543,8 +636,9 @@ class SFTPClient(FTPClient):
                 datos = fileobj.read(blocksize)
                 if not datos:
                     break
-                remoto.write(datos)
+                _write_pipelined(remoto, datos)
                 callback(datos)
+            _vaciar_pipeline(remoto)
 
     def upload_bytes(self, data: bytes, remote_path: str) -> tuple[bool, str]:
         if not self.is_connected():

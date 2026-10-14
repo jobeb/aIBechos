@@ -599,9 +599,8 @@ class FTPClient:
           nombre del archivo local (p.ej. "renombrar en destino" sin haber
           renombrado en origen). Por defecto, el nombre del archivo local.
         streams: cuántas conexiones se reparten ESTE archivo. Solo lo aprovecha
-          SFTP (ver core/sftp_client.py); por FTP se ignora. El servidor limita
-          cada conexión por separado (~2 MB/s medidos), así que con una sola no
-          se llega al límite de velocidad configurado por muy alto que esté.
+          SFTP (ver core/sftp_client.py); por FTP se ignora. Una conexión ya
+          da casi toda la línea; repartir apura lo que queda.
         Retorna: (ok, msg) donde msg puede ser 'cancelado' o 'saltado'.
         """
         if not self.is_connected():
