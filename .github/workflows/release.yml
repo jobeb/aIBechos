@@ -166,15 +166,13 @@ jobs:
             ## aIBechos ${{ github.ref_name }}
 
             ### Novedades
-            - Quitar un archivo de la lista cancela de verdad su subida automática en curso.
-            - Sustituciones desde la web: sin carreras entre subidas ni borrados del archivo que se está subiendo.
-            - Subidas verificadas aunque el servidor no responda a SIZE; ya no se dan por buenas sin comprobar.
-            - Reanudar solo continúa una subida si el parcial es del mismo archivo (antes podía mezclar versiones).
-            - Si no se puede listar la carpeta del servidor, no se trata como vacía (evita duplicados y sobrescrituras).
-            - Los JSON compartidos se escriben de forma atómica (sin archivos a medias).
-            - Detección de episodios con "NxNN" al principio del nombre.
-            - El aviso de "ya en ejecución" sale delante y se cierra solo; la instancia única funciona en Windows.
-            - Correcciones de hilos Qt, diálogos con tiempo límite, estados huérfanos, timeouts de Plex y menos ruido en el log.
+            - Subidas SFTP mucho más rápidas: ~34 MB/s por conexión (antes ~2,3 MB/s).
+            - Volver a pedir algo cancelado o terminado ya no hace que la limpieza de aMule borre la descarga nueva.
+            - Las solicitudes canceladas se pueden volver a descargar con "Descargar ahora".
+            - Cancelar en Descargas cancela también la solicitud web.
+            - El progreso de las solicitudes llega antes a la web (también las subidas manuales).
+            - Sustituciones desde la web también en el AutoWatcher.
+            - Autoguardado de la sesión ante apagones.
 
             ### Instalación
             - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).
