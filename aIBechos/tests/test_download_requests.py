@@ -451,3 +451,33 @@ def test_progress_text_and_history_detail():
     row = dr.history_rows({**data, "a": {**data["a"], "requested_by": "Ana",
                                           "requested_at": 1}})[0]
     assert row["detail"] == "En el equipo de Jose · Descargando 42%"
+
+
+def test_relaunch_cancelled_creates_new_pending_request():
+    """Descargar ahora una cancelada: solicitud NUEVA (la original no se
+    puede descancelar, merge() la volvería a cancelar)."""
+    rid, e = dr.new_request(42, "tv", "Serie", "ana", season=1, episode=3, year="2020", now=100)
+    data = dr.mark_status({rid: e}, rid, "cancelled", now=200)
+    data[rid] = {**data[rid], "replace": True, "amule_hashes": ["ab"],
+                 "claimed_by": "pc1", "cancel_done": True}
+    out = dr.relaunch_cancelled(data, rid, now=300)
+    assert out is not None
+    new_id, nd = out
+    assert new_id != rid
+    assert nd[rid]["status"] == "cancelled"          # historial intacto
+    n = nd[new_id]
+    assert (n["status"], n["tmdb_id"], n["season"], n["episode"], n["requested_by"]) == \
+        ("pending", 42, 1, 3, "ana")
+    assert n["replace"] is True
+    assert "amule_hashes" not in n and n["claimed_by"] == ""
+    # Y sobrevive a la fusión con la copia remota (que no la tiene).
+    merged = dr.merge(nd, data)
+    assert merged[new_id]["status"] == "pending"
+    assert merged[rid]["status"] == "cancelled"
+
+
+def test_relaunch_only_for_cancelled():
+    rid, e = dr.new_request(42, "movie", "Peli", "ana", now=100)
+    assert dr.relaunch_cancelled({rid: e}, rid) is None
+    assert dr.relaunch_cancelled({}, "nope") is None
+    assert "cancelled" in dr.LAUNCHABLE_STATUSES

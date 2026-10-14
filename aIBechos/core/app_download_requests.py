@@ -21,6 +21,10 @@ class DownloadRequestsMixin:
     # Constantes de clase (antes en App, gui/app.py)
     _DOWNLOAD_REQUESTS_STARTUP_DELAY = 120
     _DOWNLOAD_REQUESTS_EXPAND_CAP = 50
+    #: Cada cuánto se publica el % de las descargas en marcha entre ciclos.
+    #: Con 60 s, sumado a la caché de 20 s de la API y al refresco de la
+    #: web, el % de la web iba hasta 2 min y pico por detrás de la app.
+    _DOWNLOAD_REQUESTS_TICK = 30
 
     def _start_download_requests_worker(self):
         """Hilo daemon que atiende aIBechos_solicitudes.json: arranca con
@@ -29,8 +33,8 @@ class DownloadRequestsMixin:
         app_user_name), lanza las descargas en aMule con el mismo embudo
         que el autocompletado y marca done/failed. Entre ciclos completos,
         si hay descargas en marcha, un tick ligero publica solo el
-        progreso (% descarga/subida) cada minuto para que la web lo
-        enseñe casi en vivo. Ver _download_requests_cycle. Nunca lanza:
+        progreso (% descarga/subida) cada _DOWNLOAD_REQUESTS_TICK s para
+        que la web lo enseñe casi en vivo. Ver _download_requests_cycle. Nunca lanza:
         cualquier fallo queda en app.log y el siguiente ciclo reintenta."""
         def _loop():
             _time.sleep(self._DOWNLOAD_REQUESTS_STARTUP_DELAY)
@@ -54,7 +58,7 @@ class DownloadRequestsMixin:
                         except Exception:
                             _log.debug("Solicitudes: fallo en el tick de progreso",
                                        exc_info=True)
-                    _time.sleep(60)
+                    _time.sleep(self._DOWNLOAD_REQUESTS_TICK)
         if self._download_requests_worker is None or not self._download_requests_worker.is_alive():
             self._download_requests_worker = threading.Thread(target=_loop, daemon=True)
             self._download_requests_worker.start()
@@ -436,9 +440,21 @@ class DownloadRequestsMixin:
         if not isinstance(entry, dict):
             return "La solicitud ya no existe"
         status = entry.get("status")
-        if status not in ("pending", "failed"):
+        if status not in _dr.LAUNCHABLE_STATUSES:
             return "Ya está en marcha o terminada"
-        if status == "failed":
+        if status == "cancelled":
+            # Si este PC aún no quitó de aMule la descarga cancelada, se
+            # quita ya: si no, el ciclo siguiente la quitaría por hash...
+            # y podría ser el mismo archivo que se va a lanzar ahora.
+            if entry.get("claimed_by") == user and not entry.get("cancel_done"):
+                if not self._download_request_cancel_amule(entry):
+                    return "aMule no responde: inténtalo en un momento"
+                data = _dr.mark_cancel_done(data, req_id) or data
+            relaunched = _dr.relaunch_cancelled(data, req_id)
+            if relaunched is None:
+                return "No se pudo repetir la solicitud"
+            req_id, data = relaunched
+        elif status == "failed":
             entry = {**entry, "status": "pending", "claimed_by": "", "claimed_at": 0,
                      "attempts": 0, "last_error": ""}
             data = dict(data)

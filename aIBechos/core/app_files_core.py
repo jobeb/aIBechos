@@ -1085,9 +1085,20 @@ class FilesCoreMixin:
         self.after(0, lambda e=entry: self._update_row(e))
         self.after(0, lambda e=entry: self._ftp_row_uploading(e))
 
+        # Igual que AutoWatcher: si lo que se sube es algo pedido desde la
+        # web, el worker de solicitudes publica este % (y no da la
+        # solicitud por hecha a media subida). Antes solo lo hacía
+        # AutoWatcher, y al subirlo a mano la web se quedaba en el último
+        # % de descarga.
+        from core import upload_progress as _up
+        _mi = entry.media_info
+        _up_key = (getattr(_mi, "media_type", ""), getattr(_mi, "tmdb_id", 0),
+                   getattr(_mi, "season", None), getattr(_mi, "episode", None))
+
         def progress(sent, total_b, spd, e=entry):
             e.ftp_progress = sent / total_b if total_b > 0 else 0
             e.ftp_speed    = spd
+            _up.report(*_up_key, e.ftp_progress)
             self.after(0, lambda p=e.ftp_progress, s=spd, en=e: self._ftp_row_live(en, p, s))
 
         _log.info("Subida: iniciando %r -> %s (resume=%s)",
@@ -1104,6 +1115,7 @@ class FilesCoreMixin:
             )
         finally:
             self._upload_slots.release()
+            _up.discard(*_up_key)
 
         try:
             size = Path(entry.path).stat().st_size

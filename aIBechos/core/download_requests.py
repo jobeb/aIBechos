@@ -71,6 +71,9 @@ STUCK_AFTER_SECONDS = 7 * 86400
 
 #: Estados finales que prune() borra pasados PRUNE_AFTER_SECONDS.
 FINAL_STATUSES = ("done", "failed", "cancelled")
+#: Las que el botón "Descargar ahora mismo" puede lanzar: pendientes, fallidas
+#: y canceladas (estas como solicitud nueva, ver relaunch_cancelled).
+LAUNCHABLE_STATUSES = ("pending", "failed", "cancelled")
 PRUNE_AFTER_SECONDS = 30 * 86400
 
 _VALID_MEDIA_TYPES = ("tv", "movie")
@@ -288,6 +291,33 @@ def _sticky_cancel(cancelled: dict, other: dict) -> dict:
         out["claimed_by"] = other.get("claimed_by")
         out["cancel_done"] = False
     return out
+
+
+def relaunch_cancelled(data: dict, req_id: str,
+                       now: float | None = None) -> tuple[str, dict] | None:
+    """(nuevo_id, dict NUEVO) con una solicitud "pending" que repite la
+    cancelada *req_id* (mismo título/alcance y mismo requested_by, para que
+    siga saliendo en sus "Mis solicitudes"), o None si no es cancelada.
+
+    No se "descancela" la original: "cancelled" es pegajoso en merge() y
+    la siguiente fusión la volvería a cancelar. Se queda como historial."""
+    entry = _entry(data, req_id)
+    if entry is None or entry.get("status") != "cancelled":
+        return None
+    try:
+        new_id, fresh = new_request(entry.get("tmdb_id"), entry.get("media_type"),
+                                    entry.get("title") or "",
+                                    entry.get("requested_by") or "",
+                                    season=entry.get("season"),
+                                    episode=entry.get("episode"),
+                                    year=entry.get("year") or "", now=now)
+    except ValueError:
+        return None
+    if is_replacement(entry):
+        fresh["replace"] = True
+    result = dict(data)
+    result[new_id] = fresh
+    return new_id, result
 
 
 def to_cancel(data: dict, user: str) -> list:

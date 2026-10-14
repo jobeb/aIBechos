@@ -16,6 +16,7 @@ from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QMenu, QPushButton, QTableView, QVBoxLayout, QWidget)
 
+from core.download_requests import LAUNCHABLE_STATUSES
 from core.status_colors import PENDING_COLOR, SUCCESS_COLOR
 from gui_qt.actions import ActionsDelegate
 from gui_qt.dialogs import confirm
@@ -135,7 +136,7 @@ class WebRequestsTab(QWidget):
             menu.addAction(a)
 
         add("🔍 Buscar a mano en Descargas", "search", bool(e.get("name", "")))
-        add("⬇ Descargar ahora mismo", "download", st in ("pending", "failed"))
+        add("⬇ Descargar ahora mismo", "download", st in LAUNCHABLE_STATUSES)
         add("✕ Cancelar solicitud", "cancel", st in _ACTIVE)
         menu.addSeparator()
         copy = QAction("📋 Copiar título", menu)
@@ -191,7 +192,7 @@ class WebRequestsTab(QWidget):
     def _download_now(self, e: dict):
         """Ejecuta la descarga automática ya (reclama y lanza sin esperar
         al ciclo del worker)."""
-        if e.get("status") not in ("pending", "failed"):
+        if e.get("status") not in LAUNCHABLE_STATUSES:
             return
         req_id = e.get("id", "")
         self.ctx.set_status(f"Lanzando descarga: {e.get('name', '')}...")

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog, QHBoxL
                                QLabel, QLineEdit, QMessageBox, QMenu, QPushButton, QTableView, QVBoxLayout,
                                QWidget)
 
+from core.download_requests import LAUNCHABLE_STATUSES
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNING_COLOR
 from gui_qt import theme
 from gui_qt.actions import Action, ActionsDelegate, ActionsRole
@@ -108,11 +109,13 @@ class HistoryModel(QAbstractTableModel):
         elif role == ActionsRole and col == H_ACT:
             if is_req:
                 can_cancel = st in ("pending", "claimed", "downloading")
-                can_launch = st in ("pending", "failed")
+                can_launch = st in LAUNCHABLE_STATUSES
                 return [Action("search", "🔍", theme.ICON_AMULE,
                                "Buscar a mano en Descargas lo pedido por esta solicitud."),
                         Action("download", "⬇", theme.ICON_DL_IDLE,
-                               "Descargar ahora mismo (reclama y lanza la descarga automática)."
+                               ("Volver a pedirla y descargarla ahora mismo (como solicitud nueva)."
+                                if st == "cancelled" else
+                                "Descargar ahora mismo (reclama y lanza la descarga automática).")
                                if can_launch else "Ya está en marcha o terminada.",
                                enabled=can_launch),
                         Action("cancel", "✕", theme.ICON_IGNORE,
