@@ -542,9 +542,14 @@ class DownloadsTab(QWidget):
         if not self._results:
             return None
         try:
+            # Solo self._is_movie (fijado en search(): explícito o deducido de
+            # la query). Antes se le sumaba "query sin NxNN => película", que
+            # pisaba un is_movie=False explícito: buscando la serie a secas
+            # ("Margo tiene problemas de dinero") se excluían todos los
+            # capítulos (1x01...) como "no son la película" y no había
+            # candidato.
             return best_result(self._results, self.query.text(), expected_year=self._expected_year,
-                               is_movie=self._is_movie or not _EP_RE.search(self.query.text()),
-                               typical_size=self._typical)
+                               is_movie=self._is_movie, typical_size=self._typical)
         except Exception:
             return None
 
@@ -597,7 +602,7 @@ class DownloadsTab(QWidget):
         best = self.rmodel.best
         try:
             exp = explain_score(res, q, expected_year=self._expected_year,
-                                is_movie=self._is_movie or not _EP_RE.search(q), typical_size=self._typical)
+                                is_movie=self._is_movie, typical_size=self._typical)
             head = "✓ Recomendado\n" if res is best else "✗ No recomendado\n"
             if res is not best and best is not None:
                 head += f"Gana: {best.name[:50]} ({best.size_human}, {best.sources} fuentes)\n\n"

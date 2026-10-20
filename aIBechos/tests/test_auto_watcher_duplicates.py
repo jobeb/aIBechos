@@ -63,6 +63,7 @@ def _make_watcher(existing_remote_files, upload_calls, media_type="movie",
     ftp.build_remote_path.return_value = "/destino/"
     ftp.get_free_space.return_value = None
     ftp.get_remote_size.return_value = None
+    ftp._local_is_prefix_of_remote.return_value = False
     ftp.list_files.return_value = ftp.list_files_checked.return_value = existing_remote_files
 
     def _fake_upload(local_path, remote_path, **kw):
@@ -149,6 +150,35 @@ def test_movie_skips_smaller_remote_that_is_another_version(tmp_path):
 
     assert upload_calls == []
     assert any(v.get("status") == "duplicado" for v in watcher._processed.values()), watcher._processed
+
+
+def test_movie_resube_si_el_remoto_es_este_archivo_con_bytes_de_mas(tmp_path):
+    """Real: "The Seven Deadly Sins" quedó en el servidor como nuestro archivo
+    + 864 KB de otra subida simultánea; el reintento lo dio por "ya existe"
+    (remoto >= local) y se quedó roto. Ahora se sobrescribe entero."""
+    original = tmp_path / "1.mi.pelicula.WEB-DL.2024.mkv"
+    original.write_bytes(b"contenido")
+    upload_calls = []
+    watcher, ftp = _make_watcher(["Mi Pelicula (2024).mkv"], upload_calls, media_type="movie")
+    ftp.get_remote_size.return_value = 20
+    ftp._local_is_prefix_of_remote.return_value = True
+
+    watcher._process(original)
+
+    assert len(upload_calls) == 1
+    assert upload_calls[0]["try_resume"] is False
+
+
+def test_movie_mayor_que_no_empieza_por_este_sigue_omitiendose(tmp_path):
+    original = tmp_path / "1.mi.pelicula.WEB-DL.2024.mkv"
+    original.write_bytes(b"contenido")
+    upload_calls = []
+    watcher, ftp = _make_watcher(["Mi Pelicula (2024).mkv"], upload_calls, media_type="movie")
+    ftp.get_remote_size.return_value = 20
+
+    watcher._process(original)
+
+    assert upload_calls == []
 
 
 def test_tv_skips_upload_when_same_episode_exists_under_different_name(tmp_path):

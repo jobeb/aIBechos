@@ -39,3 +39,9 @@ from core import appdirs as _appdirs
 
 _TEST_DATA_BASE = Path(tempfile.mkdtemp(prefix="aibechos-data-"))
 _appdirs._base_data_dir = lambda: _TEST_DATA_BASE
+
+# Sin la espera real de la relectura de un JSON cortado (ver
+# core/shared_data.read_shared_json): son 2 s por cada test de "corrupto".
+from core import shared_data as _shared_data
+
+_shared_data.PARTIAL_RETRY_DELAY = 0

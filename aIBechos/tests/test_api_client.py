@@ -667,3 +667,35 @@ def test_episode_number_before_the_series_title():
     assert d["title"].startswith("The Mandalorian")
     # Sin nada más que el número sigue sin título (no se inventa uno).
     assert detect_episode("3x03.mkv")["title"] == ""
+
+
+def test_search_multi_titulo_exacto_antes_que_popularidad(monkeypatch):
+    """Real: "Veneno" (serie 2020) salía detrás de "Suave Veneno" (1999,
+    más popular) y el modo automático la identificaba mal."""
+    from core.api_client import TMDBClient
+    client = TMDBClient("x")
+    monkeypatch.setattr(client, "_get", lambda *a, **k: {"results": [
+        {"media_type": "tv", "id": 58531, "name": "Suave Veneno", "original_name": "Suave Veneno", "popularity": 21.4},
+        {"media_type": "tv", "id": 100834, "name": "Veneno", "original_name": "Veneno", "popularity": 8.8},
+        {"media_type": "movie", "id": 1172676, "title": "Veneno", "original_title": "Poison", "popularity": 30.0},
+    ]})
+    ids = [r["id"] for r in client.search_multi("Veneno", prefer_type="tv")]
+    assert ids[:2] == [100834, 58531]   # el tipo preferido sigue mandando sobre el título
+    assert ids[2] == 1172676
+
+
+def test_detect_titulo_con_numero_de_anio_y_anio_real():
+    """"Blade Runner 2049 (2017)" salía anime, episodio 2049, título
+    "Blade Runner"; "El emperador y sus locuras - 2000).(Spanish...)" dejaba
+    "... Locuras 2000)" y TMDB no encontraba nada (real, 19/10)."""
+    from core.api_client import detect_episode
+    d = detect_episode("Blade Runner 2049 (2017).mkv")
+    assert (d["media_type"], d["title"]) == ("movie", "Blade Runner 2049")
+    d = detect_episode("La carrera de la muerte del año 2000 (1975).mkv")
+    assert (d["media_type"], d["title"]) == ("movie", "La Carrera De La Muerte Del Año 2000")
+    d = detect_episode("El emperador y sus locuras - 2000).(Spanish.English.Subs)"
+                       ".BDrip.1080p.x264-AC3.by.axis.mkv")
+    assert (d["media_type"], d["title"]) == ("movie", "El Emperador Y Sus Locuras")
+    # Lo de siempre sigue igual.
+    assert detect_episode("Peli 2019 1080p.mkv")["title"] == "Peli"
+    assert detect_episode("One Piece - 1078.mkv")["episode"] == 1078

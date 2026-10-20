@@ -29,3 +29,14 @@ def test_collect_ignores_non_logs_and_subdirs(tmp_path):
 
 def test_collect_missing_dir_returns_empty(tmp_path):
     assert collect_log_files(tmp_path / "noexiste") == []
+
+
+def test_remove_obsolete_logs_borra_solo_los_que_ya_no_se_escriben(tmp_path):
+    from core.log_export import remove_obsolete_logs
+    _touch(tmp_path, "active_poll.log", "ec_debug.log", "ec_debug.log.1",
+           "app.log", "auto_watcher.log", "config.json")
+    assert remove_obsolete_logs(tmp_path) == [
+        "active_poll.log", "ec_debug.log", "ec_debug.log.1"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [
+        "app.log", "auto_watcher.log", "config.json"]
+    assert remove_obsolete_logs(tmp_path) == []

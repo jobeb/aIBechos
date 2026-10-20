@@ -458,6 +458,7 @@ class FilesCoreMixin:
         self._upload_overwrite_all  = False
         self._upload_skip_all       = False
         self._upload_duplicate_ignore_all = False
+        self._upload_duplicate_replace_all = False
         self._upload_stale_choice = None
         # Refrescar en cada tanda por si han cambiado carpetas en el servidor
         self._series_folder_cache.clear()
@@ -989,7 +990,10 @@ class FilesCoreMixin:
                 # de la comprobación de "ya existe" de arriba se encontró un
                 # duplicado real (el mismo contenido con otro nombre) hay que
                 # preguntar igualmente si se sube o no.
-                if dup and not self._upload_duplicate_ignore_all:
+                if dup and self._upload_duplicate_replace_all:
+                    # "Sustituir todos" ya contestado en esta tanda.
+                    entry._replace_duplicate = f"{remote_dir.rstrip('/')}/{dup}"
+                elif dup and not self._upload_duplicate_ignore_all:
                     prev_status = entry.status
                     entry.status = "esperando_confirmacion"
                     self.after(0, lambda e=entry: self._update_row(e))
@@ -1000,15 +1004,28 @@ class FilesCoreMixin:
                             title="Posible contenido duplicado",
                             message=("Ya hay un archivo distinto en el servidor que parece "
                                      "ser el mismo contenido:"),
-                            overwrite_label="Subir de todas formas",
-                            all_label="Subir todas de todas formas",
+                            overwrite_label="Subir y conservar los dos",
+                            all_label="Subir todas y conservar los dos",
+                            replace_label="Sustituir",
+                            replace_all_label="Sustituir todos",
+                            note=("Sustituir: se sube el nuevo y, solo si la subida "
+                                  "termina bien, se borra el de arriba."),
                             close_result="skip",
                             show_all_button=is_batch)
                         ans[0] = dlg.result
                         e.set()
                     self.after(0, _ask)
                     self._wait_dialog(ev, "duplicate")
-                    if answer[0] == "all":
+                    if answer[0] in ("replace", "replace_all"):
+                        # Se borra DESPUÉS de subir bien (ver
+                        # _finish_duplicate_replacement): con un fallo a
+                        # medias el viejo sigue ahí. Va en la entrada para
+                        # sobrevivir a los reintentos (_duplicate_checked
+                        # impide volver a detectarlo).
+                        entry._replace_duplicate = f"{remote_dir.rstrip('/')}/{dup}"
+                        if answer[0] == "replace_all":
+                            self._upload_duplicate_replace_all = True
+                    elif answer[0] == "all":
                         self._upload_duplicate_ignore_all = True
                     elif answer[0] != "overwrite":   # "skip" (Omitir o cerrado con la X)
                         entry.status = self._unqueue_status(entry, prev_status)
@@ -1143,6 +1160,7 @@ class FilesCoreMixin:
             self.after(0, lambda mi=entry.media_info: self._remove_uploaded_episode_from_missing_list(mi))
             self.after(0, lambda mi=entry.media_info: self._remove_uploaded_movie_from_movies_list(mi))
             self.after(0, self._refresh_ftp_space)
+            self._finish_duplicate_replacement(entry, remote_file)
             self._apply_manual_post_process_action(entry)
         elif msg == "cancelado":
             entry.status = "listo"
@@ -1596,6 +1614,35 @@ class FilesCoreMixin:
                 self._set_status(f"Encolado: {entry.name[:50]}", PENDING_COLOR)
             return
         self._start_ftp_upload([entry])
+
+    def _finish_duplicate_replacement(self, entry, uploaded_remote: str):
+        """Tras subir bien un archivo con "Sustituir" en el diálogo de
+        duplicado: borra el viejo (mismo episodio/película con otro nombre,
+        p.ej. otra extensión .mp4 -> .mkv). Antes solo se podía "Subir de
+        todas formas" y quedaban los dos en el servidor. Si el borrado
+        falla, lo nuevo ya está subido: se avisa para borrarlo a mano."""
+        old = getattr(entry, "_replace_duplicate", None)
+        if not old:
+            return
+        try:
+            del entry._replace_duplicate
+        except AttributeError:
+            pass
+        if old == uploaded_remote:
+            return
+        try:
+            ok_del, msg_del = self._delete_remote_file(old)
+        except Exception as e:
+            ok_del, msg_del = False, str(e)
+        old_name = old.rsplit("/", 1)[-1]
+        if ok_del:
+            _log.info("Sustituido: borrado %s, en servidor %s", old, uploaded_remote)
+            self.after(0, lambda n=old_name: self._set_status(f"Sustituido: borrado {n}", SUCCESS_COLOR))
+        else:
+            _log.warning("Sustitución subida pero no se pudo borrar %s (%s): bórralo a mano",
+                         old, msg_del)
+            self.after(0, lambda n=old_name, m=msg_del: self._set_status(
+                f"Subido, pero no se pudo borrar {n}: {m}", ERROR_COLOR))
 
     def _delete_remote_file(self, remote_path: str) -> tuple:
         """Borra un archivo del servidor con conexión propia -- mismo

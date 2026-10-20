@@ -61,6 +61,11 @@ import uuid
 #: Un claim más viejo que esto se da por muerto y se puede reclamar.
 CLAIM_TTL_SECONDS = 2 * 3600
 
+#: Cada cuánto renueva el dueño "heartbeat_at" de sus descargas que
+#: siguen en su aMule (ver touch_heartbeat). Muy por debajo de
+#: CLAIM_TTL_SECONDS para que un par de ciclos fallidos no la liberen.
+HEARTBEAT_EVERY_SECONDS = 30 * 60
+
 #: Intentos máximos antes de dar una solicitud por fallida.
 MAX_ATTEMPTS = 5
 
@@ -71,6 +76,12 @@ STUCK_AFTER_SECONDS = 7 * 86400
 
 #: Estados finales que prune() borra pasados PRUNE_AFTER_SECONDS.
 FINAL_STATUSES = ("done", "failed", "cancelled")
+
+#: Una "failed" de este equipo se sigue mirando este tiempo por si al
+#: final llega al servidor (real: "Sin piedad" se dio por fallida a las
+#: 08:25 y se subió a las 08:43; la web la enseñaba "Fallida" para
+#: siempre). Dos semanas: muchas "failed" viejas sí estaban subidas.
+RECHECK_FAILED_SECONDS = 14 * 86400
 #: Las que el botón "Descargar ahora mismo" puede lanzar: pendientes, fallidas
 #: y canceladas (estas como solicitud nueva, ver relaunch_cancelled).
 LAUNCHABLE_STATUSES = ("pending", "failed", "cancelled")
@@ -151,6 +162,55 @@ def is_claim_stale(entry: dict, now: float | None = None,
     return age > ttl
 
 
+def can_take_over(entry: dict, now: float | None = None,
+                   ttl: int = CLAIM_TTL_SECONDS) -> bool:
+    """True si OTRO equipo puede quitarle la solicitud a su dueño.
+    Como is_claim_stale, pero una "downloading" cuenta desde su último
+    latido (heartbeat_at, ver touch_heartbeat): mientras el dueño la vea
+    en su aMule, no caduca. Antes caducaba a las 2 h aunque siguiera
+    bajando, y otro PC la volvía a bajar en paralelo (real: "Conserje a
+    su medida", "The Seven Deadly Sins: Prisioneros del cielo" -- la
+    segunda copia llegaba como "ya en el servidor", y en un caso las dos
+    subidas se escribieron a la vez en el mismo archivo). Si el dueño se
+    apaga, deja de latir y a las *ttl* sí se puede reclamar."""
+    if not isinstance(entry, dict):
+        return True
+    if entry.get("status") not in ("claimed", "downloading"):
+        return False
+    try:
+        since = float(entry.get("claimed_at") or 0)
+        if entry.get("status") == "downloading":
+            since = max(since, float(entry.get("heartbeat_at") or 0))
+        age = (now if now is not None else time.time()) - since
+    except (TypeError, ValueError):
+        return True
+    return age > ttl
+
+
+def touch_heartbeat(data: dict, req_id: str, user: str,
+                    now: float | None = None,
+                    every: int = HEARTBEAT_EVERY_SECONDS) -> dict | None:
+    """Dict NUEVO con heartbeat_at renovado si *req_id* es una
+    "downloading" de *user* y el último latido tiene más de *every*;
+    None si no toca (así no se sube el JSON en cada ciclo). Nunca lanza."""
+    try:
+        entry = _entry(data, req_id)
+        if entry is None or entry.get("status") != "downloading"                 or entry.get("claimed_by") != user:
+            return None
+        ts = now if now is not None else time.time()
+        last = max(float(entry.get("claimed_at") or 0),
+                   float(entry.get("heartbeat_at") or 0))
+        if ts - last < every:
+            return None
+        result = dict(data)
+        # updated_at también: merge() se queda con la de updated_at mayor
+        # y, sin él, la copia del servidor (sin latido) lo pisaría.
+        result[req_id] = {**entry, "heartbeat_at": ts, "updated_at": ts}
+        return result
+    except Exception:
+        return None
+
+
 def claim(data: dict, req_id: str, user: str,
           now: float | None = None) -> dict | None:
     """Devuelve un dict NUEVO con *req_id* reclamada por *user*, o None
@@ -164,7 +224,7 @@ def claim(data: dict, req_id: str, user: str,
     ts = now if now is not None else time.time()
     if status == "pending":
         attempts = entry.get("attempts") or 0
-    elif is_claim_stale(entry, now=ts):
+    elif can_take_over(entry, now=ts):
         try:
             attempts = int(entry.get("attempts") or 0) + 1
         except (TypeError, ValueError):
@@ -175,6 +235,7 @@ def claim(data: dict, req_id: str, user: str,
     result[req_id] = {**entry, "status": "claimed",
                       "claimed_by": str(user).strip(),
                       "claimed_at": ts, "attempts": attempts,
+                      "heartbeat_at": 0,
                       "updated_at": ts,
                       "dl_percent": None, "dl_speed": None,
                       "up_percent": None}
@@ -202,6 +263,11 @@ def mark_status(data: dict, req_id: str, status: str, user: str = "",
         updated["last_error"] = str(error)[:500]
     if status == "done":
         updated["completed_at"] = ts
+        # El error de un intento anterior ya no vale: la web lo enseñaba
+        # en rojo debajo de "Lista" (real: 7 terminadas con "descarga
+        # incompleta" de un intento previo).
+        if not error:
+            updated["last_error"] = ""
     result = dict(data)
     result[req_id] = updated
     return result
@@ -363,17 +429,63 @@ def prune(data: dict, now: float | None = None) -> dict:
     return result
 
 
+def failed_to_recheck(data: dict, user: str, now: float | None = None,
+                      within: float = RECHECK_FAILED_SECONDS) -> list:
+    """Ids de las "failed" de *user* (el último que la tuvo) de hace menos
+    de *within*: el worker mira si lo pedido acabó en el servidor y las
+    pasa a "done". Nunca lanza."""
+    ts = now if now is not None else time.time()
+    out = []
+    try:
+        for rid, e in (data or {}).items():
+            if (isinstance(e, dict) and e.get("status") == "failed"
+                    and user and e.get("claimed_by") == user
+                    and ts - float(e.get("updated_at") or 0) < within):
+                out.append(rid)
+    except Exception:
+        pass
+    return out
+
+
+#: Espera antes de reintentar una solicitud que ya falló n veces:
+#: RETRY_BACKOFF_SECONDS * 2^(n-1) (30 min, 1 h, 2 h, 4 h). Sin ella, cada
+#: ciclo (5 min) la volvía a lanzar y los MAX_ATTEMPTS se gastaban en
+#: media hora (real: 9 capítulos de "Los Tipos Malos" fallidos en 40 min
+#: por no tener aún fuentes; con varios equipos, todavía antes).
+RETRY_BACKOFF_SECONDS = 30 * 60
+
+
+def retry_wait(entry: dict) -> float:
+    """Segundos que debe esperar una "pending" con intentos fallidos
+    desde su último cambio. 0 si no ha fallado nunca. Nunca lanza."""
+    try:
+        n = int(entry.get("attempts") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if n <= 0:
+        return 0.0
+    return float(RETRY_BACKOFF_SECONDS * (2 ** min(n - 1, 4)))
+
+
 def pending_for_worker(data: dict, now: float | None = None) -> list:
     """Lista de (req_id, entrada) reclamables por el worker: "pending" o
     claims caducados, ordenadas por requested_at (las más viejas
-    primero)."""
+    primero). Las que ya fallaron esperan su retry_wait."""
     ts = now if now is not None else time.time()
     out = []
     for req_id, entry in (data or {}).items():
         if not isinstance(entry, dict):
             continue
         status = entry.get("status")
-        if status == "pending" or is_claim_stale(entry, now=ts):
+        if status == "pending":
+            try:
+                since = float(entry.get("updated_at") or 0)
+            except (TypeError, ValueError):
+                since = 0.0
+            if ts - since < retry_wait(entry):
+                continue
+            out.append((req_id, entry))
+        elif can_take_over(entry, now=ts):
             out.append((req_id, entry))
     try:
         out.sort(key=lambda kv: float((kv[1] or {}).get("requested_at") or 0))
@@ -666,6 +778,14 @@ def uploaded_request(history: list, entry: dict) -> bool:
             if not isinstance(e, dict) or e.get("status") != "ok":
                 continue
             if matches_upload(entry, e.get("remote") or ""):
+                return True
+            # El nombre ORIGINAL (el de aMule): si la subida se identificó
+            # con otro título (real: "Veneno 1x03" subido como "Suave
+            # Veneno 1x03"), el remoto no casa, pero el archivo bajado para
+            # la solicitud SÍ se subió. Sin esto la solicitud nunca era
+            # done, parecía "perdida" al salir de aMule y se relanzaba
+            # sin fin (bajando otras versiones duplicadas).
+            if e.get("filename") and matches_upload(entry, e.get("filename") or ""):
                 return True
         return False
     except Exception:

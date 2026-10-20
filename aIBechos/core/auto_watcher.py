@@ -44,6 +44,38 @@ def _app_dir() -> Path:
     return app_data_dir()
 
 
+#: Sufijos de descargas a medias: aunque empiecen como un vídeo, no se tocan.
+_PARTIAL_SUFFIXES = (".part", ".partial", ".crdownload", ".download", ".tmp",
+                     ".!qb", ".!ut", ".aria2", ".met", ".temp")
+_SNIFF_MIN_BYTES = 50 * 1024 * 1024
+
+
+def sniff_video_ext(path: Path) -> str | None:
+    """Extensión de vídeo según los primeros bytes (".mkv", ".mp4", ".avi")
+    para archivos SIN extensión de vídeo, o None. Real: aMule cortó el
+    nombre largo de "La sociedad literaria y el pastel de piel de patata
+    (...).BDrip.1080p.x264-A" y se comió el ".mkv": AutoWatcher lo
+    ignoraba como "tipo no reconocido" y la solicitud no acababa nunca.
+    Solo archivos grandes (lo pequeño es .nfo, .txt...). Nunca lanza."""
+    try:
+        name = path.name.lower()
+        if name.endswith(_PARTIAL_SUFFIXES):
+            return None
+        if path.stat().st_size < _SNIFF_MIN_BYTES:
+            return None
+        with open(path, "rb") as f:
+            head = f.read(12)
+    except OSError:
+        return None
+    if head[:4] == bytes.fromhex("1a45dfa3"):
+        return ".mkv"
+    if head[4:8] == b"ftyp":
+        return ".mp4"
+    if head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return ".avi"
+    return None
+
+
 def _processed_db_path() -> Path:
     return _app_dir() / "auto_processed.json"
 
@@ -136,6 +168,9 @@ _PROTECTED_STATUSES = ("subido", "renombrado", "identificado_manual", "subiendo"
 # sobra en los primeros intentos; a partir de ahí insistir no aporta nada.
 # Renombrar el archivo cambia su clave y vuelve a empezar de cero.
 _MAX_RETRY_ATTEMPTS = 3
+#: Base de la espera entre reintentos de un archivo que falló (ver
+#: _should_process): 1 min, 2 min, 4 min.
+_RETRY_SPACING_SECONDS = 60
 
 # Fragmentos (en minúsculas) que delatan "archivo bloqueado por otro
 # proceso" en el mensaje de error de rename_file(), sea cual sea el SO:
@@ -404,6 +439,16 @@ class AutoWatcher:
                     return False
                 _log.info("Reintentando tras 24h pese a intentos agotados (filtro actualizado): %s", name)
             else:
+                # Espera creciente entre reintentos (1, 2, 4 min): antes se
+                # reintentaba en el ciclo siguiente y los 3 intentos se
+                # gastaban en 20 s con la misma búsqueda y el mismo
+                # resultado (real: "El emperador y sus locuras", 3 veces
+                # "sin resultados" en 22 s y luego 24 h parado).
+                ts = float(self._processed[key].get("ts", 0) or 0)
+                wait = _RETRY_SPACING_SECONDS * (2 ** attempts)
+                if ts and (time.time() - ts) < wait:
+                    self._log_skip_once(key, f"{status}, reintento en espera", name)
+                    return False
                 _log.info("Reprocesando (estado anterior=%s, intento %d/%d): %s",
                           status, attempts + 1, _MAX_RETRY_ATTEMPTS, name)
             # La cuenta de intentos NO se borra con la entrada -- se lleva al
@@ -434,6 +479,8 @@ class AutoWatcher:
                 media_items.append(item)
             elif extract_enabled and is_archive_file(path_str):
                 archive_items.append(item)
+            elif self._restore_video_ext(item):
+                pass   # renombrado con su extensión: entra en el próximo ciclo
             else:
                 _log.debug("Ignorando (tipo no reconocido): %s", item.name)
 
@@ -478,6 +525,27 @@ class AutoWatcher:
             threading.Thread(
                 target=self._process_archive, args=(item,), daemon=True
             ).start()
+
+    def _restore_video_ext(self, item: Path) -> bool:
+        """Si *item* es un vídeo con la extensión perdida (ver
+        sniff_video_ext), lo renombra añadiéndola y True. Espera a que
+        el tamaño no cambie; si el destino ya existe, no hace nada."""
+        ext = sniff_video_ext(item)
+        if not ext:
+            return False
+        target = item.with_name(item.name + ext)
+        # El destino antes que _is_stable: esa espera de segundos, en
+        # cada ciclo y para siempre, por un archivo que no se va a tocar.
+        if target.exists() or not self._is_stable(item):
+            return False
+        try:
+            item.rename(target)
+        except OSError as e:
+            _log.warning("No se pudo añadir la extensión %s a %s: %s", ext, item.name, e)
+            return False
+        _log.info("Archivo sin extensión reconocido como vídeo, renombrado: %s", target.name)
+        self.on_event("info", f"Sin extensión, es un vídeo: se le añade {ext} ({target.name})")
+        return True
 
     def _is_stable(self, path: Path) -> bool:
         """Comprueba que el tamaño no cambia en STABLE_WAIT segundos."""
@@ -992,7 +1060,10 @@ class AutoWatcher:
             return
 
         with self._ftp_lock:
-            if not self.ftp.is_connected():
+            # is_alive: por SFTP is_connected() no pregunta al servidor, y
+            # tras horas parada la conexión compartida puede estar muerta
+            # sin saberlo (ver SFTPClient.is_alive).
+            if not (self.ftp.is_connected() and self.ftp.is_alive()):
                 _log.info("Conectando FTP a %s...", host)
                 ok2, msg2 = self.ftp.connect(
                     host,
@@ -1161,10 +1232,21 @@ class AutoWatcher:
                 local_size = Path(new_path).stat().st_size
             except OSError:
                 local_size = 0
+            _overwrite_dirty = False
             if remote_size is not None and _reqpend is not None:
                 # Mismo nombre: el STOR lo sobrescribe (sin reanudar, ver
                 # upload_file try_resume=False), no hay viejo que borrar.
                 _log.info("Sustitución: %s se sobrescribe en el servidor", remote_filename)
+            elif (remote_size is not None and remote_size > local_size
+                    and self.ftp._local_is_prefix_of_remote(remote_file_full, Path(new_path), remote_size)):
+                # Es ESTE archivo con bytes de más al final (dos subidas a
+                # la vez a la misma ruta, o un "el servidor tiene más bytes
+                # de los esperados" anterior): antes el reintento lo daba
+                # por "ya existe" y se quedaba roto. Se sobrescribe entero.
+                _log.warning("El servidor tiene %s con %s bytes de más, se vuelve a subir limpio",
+                             remote_filename, remote_size - local_size)
+                self.on_event("info", f"En el servidor estaba con bytes de más, se resube: {new_name}")
+                _overwrite_dirty = True
             elif remote_size is not None and (
                     remote_size >= local_size
                     or not self.ftp._is_prefix_of_local(remote_file_full, Path(new_path), remote_size)):
@@ -1356,8 +1438,9 @@ class AutoWatcher:
                         # Reanudar el parcial si lo es de verdad (ver
                         # _is_prefix_of_local): tras un reinicio a media
                         # subida se continúa, no se reenvía desde cero.
-                        # Salvo sustitución pedida: ahí se sobrescribe.
-                        try_resume=(_reqpend is None),
+                        # Salvo sustitución pedida o remoto con bytes de
+                        # más: ahí se sobrescribe.
+                        try_resume=(_reqpend is None and not _overwrite_dirty),
                     )
                 finally:
                     with self._skip_lock:

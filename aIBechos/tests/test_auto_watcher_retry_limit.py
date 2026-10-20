@@ -17,6 +17,8 @@ def watcher(tmp_path, monkeypatch):
     auto_processed.json real del usuario."""
     db = tmp_path / "auto_processed.json"
     monkeypatch.setattr(auto_watcher, "_processed_db_path", lambda: db)
+    # Sin la espera entre reintentos (tiene su propio test abajo).
+    monkeypatch.setattr(auto_watcher, "_RETRY_SPACING_SECONDS", 0)
     w = auto_watcher.AutoWatcher.__new__(auto_watcher.AutoWatcher)
     w._processed = {}
     w._in_progress = set()
@@ -104,3 +106,19 @@ def test_discard_marker_is_written_to_the_db(tmp_path, monkeypatch):
     assert w._should_process(canon_path("/x/descartado.mp4"), "descartado.mp4") is False
     # y no debe haber pisado el estado del que ya estaba subido
     assert w._processed[canon_path("/x/ya subido.mp4")]["status"] == "subido"
+
+
+def test_reintento_espera_entre_intentos(watcher, monkeypatch):
+    """Real: "El emperador y sus locuras", 3 veces "sin resultados" en 22 s
+    (misma búsqueda, mismo resultado) y luego 24 h parado."""
+    import time as _time
+    monkeypatch.setattr(watcher, "_save_entry", lambda k, e: None)
+    monkeypatch.setattr(watcher, "_delete_entry", lambda k: None)
+    monkeypatch.setattr(watcher, "_load_db", lambda: {})
+    monkeypatch.setattr(auto_watcher, "_RETRY_SPACING_SECONDS", 60)
+    key = canon_path("C:/x/peli.mp4")
+    assert _cycle(watcher, key) is True          # primer intento: falla
+    assert _cycle(watcher, key) is False         # al momento: espera
+    watcher._processed[key]["ts"] = _time.time() - 61
+    assert _cycle(watcher, key) is True          # pasado 1 min: reintenta
+    assert _cycle(watcher, key) is False         # y ahora espera 2 min

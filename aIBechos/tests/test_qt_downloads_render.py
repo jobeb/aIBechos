@@ -96,3 +96,23 @@ def test_click_del_usuario_si_muestra_la_ficha(qtbot):
     tab.results_view.selectRow(0)
     tab.results_view.selectRow(1)
     assert calls == [0, 1]
+
+
+def test_serie_sin_numeracion_con_is_movie_false_si_tiene_candidato(qtbot):
+    """Real: 🔍 de una serie buscando solo su nombre ("Margo tiene problemas
+    de dinero", is_movie=False explícito) no destacaba ningún resultado: la
+    query sin NxNN se trataba igualmente como película y se excluían todos
+    los capítulos."""
+    tab = DownloadsTab(_Host())
+    qtbot.addWidget(tab)
+    tab.search = lambda *a, **k: None
+    tab.query.setText("Margo tiene problemas de dinero")
+    tab._is_movie = False
+    r = SimpleNamespace(
+        name="Margo Tiene Problemas De Dinero 1x01 Alma Insaciable (Spanish English Subs) "
+             "Webrip 1080P x265-Eac3 By Legan.mkv",
+        size_human="1,35 GB", sources=1, complete=False, number=1)
+    tab._results = [r]
+    assert tab._best() is r
+    tab._is_movie = True   # el ⬇ de Películas sí sigue excluyendo capítulos
+    assert tab._best() is None

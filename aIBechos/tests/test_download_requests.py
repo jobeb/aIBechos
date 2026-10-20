@@ -499,3 +499,57 @@ def test_active_hashes_protect_relaunched_download():
     # Sin hashes guardados (por nombre) tampoco se lleva la en curso.
     assert dr.amule_hashes_to_cancel({"status": "cancelled", "title": "Animales",
                                       "media_type": "movie"}, queue, keep) == []
+
+
+def test_uploaded_request_casa_por_nombre_original():
+    """Real: "Veneno 1x03" (pedido por la web) se identificó como "Suave
+    Veneno" y se subió a otra carpeta: el remoto no casa, pero el nombre
+    original del historial sí, y la solicitud debe darse por cumplida
+    (si no, se relanzaba sin fin bajando versiones duplicadas)."""
+    ep = {"tmdb_id": 100834, "media_type": "tv", "season": 1, "episode": 3,
+          "title": "Veneno", "year": "2020"}
+    hist = [{"status": "ok",
+             "filename": "Veneno 1x03 Acaríciame [WEB-DL A3P 1080p h264 AAC Subs][Spanish][Adrià][GrupoTS].mkv",
+             "remote": "/datos2/series/Suave Veneno/Temporada 01//Suave Veneno 1x03 Episodio 3.mkv"}]
+    assert dr.uploaded_request(hist, ep)
+    assert not dr.uploaded_request(hist, dict(ep, episode=4))
+    # Al revés no: un "Suave Veneno" original no cumple una solicitud de "Veneno".
+    otro = [{"status": "ok", "filename": "Suave Veneno 1x03.mkv",
+             "remote": "/datos2/series/Suave Veneno/Temporada 01//Suave Veneno 1x03 Episodio 3.mkv"}]
+    assert not dr.uploaded_request(otro, ep)
+
+
+def _downloading(claimed_at, heartbeat_at=0, user="Jose"):
+    return {"r1": {"status": "downloading", "claimed_by": user, "claimed_at": claimed_at,
+                   "heartbeat_at": heartbeat_at, "updated_at": claimed_at, "attempts": 0,
+                   "requested_at": 1, "title": "Conserje a su medida", "media_type": "movie"}}
+
+
+def test_descarga_con_latido_no_la_reclama_otro_equipo():
+    """Real: "Conserje a su medida" bajaba en el aMule de Jose más de 2 h y
+    Efren la reclamó y la bajó otra vez; la segunda copia llegó como
+    "ya en el servidor"."""
+    now = 1_000_000.0
+    data = _downloading(claimed_at=now - 5 * 3600, heartbeat_at=now - 10 * 60)
+    assert dr.pending_for_worker(data, now=now) == []
+    assert dr.claim(data, "r1", "Efren", now=now) is None
+
+
+def test_descarga_sin_latido_si_se_puede_reclamar():
+    # El dueño se apagó: sin latido en más de CLAIM_TTL, otro la coge.
+    now = 1_000_000.0
+    data = _downloading(claimed_at=now - 5 * 3600, heartbeat_at=now - 3 * 3600)
+    assert [rid for rid, _ in dr.pending_for_worker(data, now=now)] == ["r1"]
+    nd = dr.claim(data, "r1", "Efren", now=now)
+    assert nd["r1"]["claimed_by"] == "Efren" and nd["r1"]["heartbeat_at"] == 0
+
+
+def test_touch_heartbeat_solo_el_dueno_y_espaciado():
+    now = 1_000_000.0
+    data = _downloading(claimed_at=now - 3600)
+    nd = dr.touch_heartbeat(data, "r1", "Jose", now=now)
+    assert nd["r1"]["heartbeat_at"] == now and nd["r1"]["updated_at"] == now
+    assert dr.touch_heartbeat(nd, "r1", "Jose", now=now + 60) is None      # demasiado pronto
+    assert dr.touch_heartbeat(data, "r1", "Efren", now=now) is None        # no es suya
+    # El latido sobrevive a la fusión con la copia vieja del servidor.
+    assert dr.merge(nd, data)["r1"]["heartbeat_at"] == now

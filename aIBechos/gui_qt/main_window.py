@@ -187,6 +187,14 @@ class MainWindow(QMainWindow):
 
     # ── Arranque (lo equivalente de App.__init__ + sus after(...)) ──
 
+    @staticmethod
+    def _remove_obsolete_logs():
+        from core.appdirs import app_data_dir
+        from core.log_export import remove_obsolete_logs
+        removed = remove_obsolete_logs(app_data_dir())
+        if removed:
+            _log.info("Borrados logs que ya no se usan: %s", ", ".join(removed))
+
     def _startup(self):
         host = self.host
         try:
@@ -198,6 +206,7 @@ class MainWindow(QMainWindow):
         except Exception:
             _log.exception("Qt: limpieza de marcas de subida a medias")
         host.load_genres_async()
+        run_in_thread(self._remove_obsolete_logs)
         self._tab_widgets["files"].refresh_table()
         QTimer.singleShot(3000, self.refresh_ftp_space)
         self._ftp_space_timer.start()

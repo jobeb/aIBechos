@@ -711,3 +711,24 @@ def test_sin_internas_de_paramiko_usa_write_normal():
     mod._write_pipelined(_Simple(), b"abc")
     mod._vaciar_pipeline(_Simple())
     assert escrito == [b"abc"]
+
+
+# ------------------------------------------------- conexión medio muerta --
+
+def test_is_alive_pregunta_al_servidor(cliente):
+    """Tras horas parada, paramiko ve la sesión "activa" aunque el router
+    la haya tirado: is_alive hace un stat de verdad y, si no contesta,
+    cierra para reconectar (real: "No se pudo listar ... para buscar
+    duplicados" con el primer archivo tras un rato sin subidas)."""
+    cliente.sftp.carpetas.add(".")
+    assert cliente.is_alive() is True
+
+    def _colgado(_p):
+        raise TimeoutError("sin respuesta")
+    cliente.sftp.stat = _colgado
+    assert cliente.is_alive() is False
+    assert cliente.sftp is None
+
+
+def test_ftp_is_alive_sin_conexion():
+    assert FTPClient().is_alive() is False

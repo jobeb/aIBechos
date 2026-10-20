@@ -234,7 +234,7 @@ def auto_download(config, ec_lock, query: str, search_type: str | None = None,
                 if best is None:
                     if only_excluded:
                         return False, "solo está el mismo archivo que ya hay en el servidor", "", ""
-                    return False, "sin candidato que cumpla el umbral", "", ""
+                    return False, "no encontrado", "", ""
                 best, block_reason = _judge_or_keep(config, query, best, results, is_movie,
                                                     expected_year, typical_size, max_size, excluded)
                 if best is None:

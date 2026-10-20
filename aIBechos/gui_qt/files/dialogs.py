@@ -3,7 +3,7 @@ Diálogos de la pestaña Archivos en Qt -- mismos textos, botones y valores de
 resultado que los CTkToplevel de gui/app.py, porque la lógica compartida
 (core/app_files_core.py) decide según ese .result:
 
-  OverwriteDialog       "overwrite" | "skip" | "all" | "skip_all"
+  OverwriteDialog       "overwrite" | "skip" | "all" | "skip_all" | "replace" | "replace_all"
   StaleUploadDialog     "delete_upload" | "no_delete" | "delete_upload_all" | "no_delete_all" | None
   SeriesMatchDialog     "yes" | "no" | None
   RemoveEntryDialog     una opción de core.remote_presence | None
@@ -89,16 +89,27 @@ class OverwriteDialog(_ChoiceDialog):
     def __init__(self, parent, filename: str, title="Archivo ya existe",
                  message="El archivo ya existe en el servidor:", overwrite_label="Sobrescribir",
                  all_label="Sobrescribir todos", skip_all_label="Omitir todos", close_result="skip",
-                 show_all_button=True, show_skip_all_button=False):
+                 show_all_button=True, show_skip_all_button=False,
+                 replace_label=None, replace_all_label=None, note=None):
         super().__init__(parent, title, close_result=close_result, width=420)
         self.label(message, size=11)
         self.label(filename, color=theme.PENDING_COLOR, selectable=True)
-        specs = [(overwrite_label, "overwrite", "accent"), ("Omitir", "skip", None)]
+        if note:
+            self.label(note, color=theme.PENDING_COLOR)
+        # *replace_label*: botón "Sustituir" (subir y, si sale bien, borrar
+        # el archivo mostrado) -- solo el diálogo de duplicado lo usa.
+        specs = []
+        if replace_label:
+            specs.append((replace_label, "replace", "accent"))
+        specs += [(overwrite_label, "overwrite", None if replace_label else "accent"),
+                  ("Omitir", "skip", None)]
         if show_all_button:
             specs.append((all_label, "all", "danger"))
         if show_skip_all_button:
             specs.append((skip_all_label, "skip_all", None))
         self.buttons(specs)
+        if show_all_button and replace_all_label:
+            self.buttons([(replace_all_label, "replace_all", "danger")])
 
 
 class StaleUploadDialog(_ChoiceDialog):

@@ -189,7 +189,8 @@ class DownloadRequestsMixin:
         # Índice directo del servidor para las que no tienen fila en
         # memoria/caché (una sola ronda de listados por ciclo).
         wanted = {}
-        for rid in my_ids:
+        recheck_ids = _dr.failed_to_recheck(data, user)
+        for rid in my_ids + recheck_ids:
             entry = data.get(rid) or {}
             if _dr.is_replacement(entry):
                 continue  # ya estaba: la presencia no dice nada (ver check_done)
@@ -229,6 +230,15 @@ class DownloadRequestsMixin:
             if outcome is None and amule_queue is not None and _dr.lost_in_amule(
                     data.get(rid) or {}, amule_queue, local_names):
                 outcome = "lost"
+            if outcome is None and amule_queue is not None:
+                # Sigue en MI aMule (o terminada esperando subida): latido
+                # para que otro equipo no la reclame y la baje otra vez
+                # (ver can_take_over). Sin cola leída no se late: si este
+                # PC no ve su aMule, que pueda cogerla otro.
+                nd = _dr.touch_heartbeat(data, rid, user)
+                if nd is not None:
+                    data = nd
+                    changed = True
             if outcome == "done":
                 nd = _dr.mark_status(data, rid, "done", user=user)
                 if nd is not None:
@@ -246,7 +256,10 @@ class DownloadRequestsMixin:
                     except Exception:
                         pass
             elif outcome == "lost":
-                nd = _dr.release(data, rid, user=user, error="descarga incompleta")
+                _why = ("aMule ya lo había descargado, pero el archivo no está en la carpeta vigilada"
+                        if (data.get(rid) or {}).get("amule_completed")
+                        else "descarga incompleta")
+                nd = _dr.release(data, rid, user=user, error=_why)
                 if nd is not None:
                     data = nd
                     changed = True
@@ -266,6 +279,23 @@ class DownloadRequestsMixin:
                     changed = True
                     if (nd.get(rid) or {}).get("status") == "failed":
                         failed_now += 1
+        # Fallidas recientes que al final llegaron al servidor (subida
+        # tardía, a mano o por otro equipo): "Lista" en la web, no
+        # "Fallida".
+        for rid in recheck_ids:
+            try:
+                outcome = self._download_request_check_done(data.get(rid) or {}, server_index)
+            except Exception:
+                outcome = None
+            if outcome != "done":
+                continue
+            nd = _dr.mark_status(data, rid, "done", user=user)
+            if nd is not None:
+                data = nd
+                changed = True
+                done_now += 1
+                _log.info("Solicitudes: %s estaba fallida pero ya está en el servidor, completada",
+                          _dr.describe(data.get(rid) or {}))
         # Solo ocupan hueco las recientes: una descarga de más de
         # CLAIM_TTL_SECONDS sigue en aMule esperando fuentes (el done
         # llega al subirse) y contarla bloqueaba la cola entera -- caso
@@ -885,9 +915,18 @@ class DownloadRequestsMixin:
                         continue
                 except (TypeError, ValueError):
                     continue
-                return "done" if row.get("in_server") else None
+                if row.get("in_server"):
+                    return "done"
+                break   # el in_server de la caché puede ir atrasado: historial
             if tmdb_id in (server_index or {}).get("movies", set()):
                 return "done"
+            # Subida por ESTE pc aunque las listas aún no lo reflejen
+            # (real: "Sin piedad" subida y la solicitud sin done).
+            try:
+                if _dr.uploaded_request(_dr.load_upload_history(), entry):
+                    return "done"
+            except Exception:
+                pass
             return self._download_request_check_done_stuck(entry)
         row = None
         for r in (self._missing_ep_results or []):
@@ -900,11 +939,23 @@ class DownloadRequestsMixin:
         if row is not None:
             missing = row.get("missing") or {}
             if season is None:
-                return "done" if not missing else None
-            eps = missing.get(season, missing.get(str(season), [])) or []
-            if episode is not None:
-                return "done" if episode not in eps else None
-            return "done" if not eps else None
+                row_done = not missing
+            else:
+                eps = missing.get(season, missing.get(str(season), [])) or []
+                row_done = (episode not in eps) if episode is not None else not eps
+            if row_done:
+                return "done"
+            # La fila puede decir "falta" porque lo subido cayó en OTRA
+            # carpeta (identificado con otro título): el historial local
+            # lo confirma igual (ver uploaded_request, nombre original).
+            try:
+                from core.download_requests import load_upload_history as _luh0
+                from core.download_requests import uploaded_request as _ur0
+                if _ur0(_luh0(), entry):
+                    return "done"
+            except Exception:
+                pass
+            return None
         try:
             complete = self._load_complete_series_from_cache() or []
         except Exception:
@@ -1165,6 +1216,7 @@ class DownloadRequestsMixin:
         downloading; todo falla -> release con el motivo (suelta el claim
         para que otro equipo lo reintente, con intentos acotados)."""
         from core import download_requests as _dr
+        from core.amule_download import ALREADY_COMPLETED_REASON
         from core.amule_search import build_amule_query, build_amule_season_query
         entry = data.get(req_id) or {}
         user = self._download_requests_user()
@@ -1191,6 +1243,7 @@ class DownloadRequestsMixin:
         if not targets:
             return _dr.release(data, req_id, user=user, error="sin objetivos"), False
         ok_any = False
+        already_done = False
         last_error = ""
         hashes = []
         # Sustituir: no vale el archivo que ya hay (sus hashes quedaron
@@ -1222,6 +1275,17 @@ class DownloadRequestsMixin:
                         query, is_movie=False, typical_size=typical, exclude_hashes=old_hashes)
             except Exception as ex:
                 ok, motivo, _h = False, str(ex)[:200], ""
+            if not ok and motivo == ALREADY_COMPLETED_REASON:
+                # aMule ya lo tiene bajado (en Incoming, esperando a
+                # AutoWatcher, o ya subido): no es un fallo. Antes se
+                # soltaba con intento gastado y la web acababa en
+                # "Fallida" algo que se subía minutos después (real: Sin
+                # piedad). Queda "downloading" con su hash: check_done da
+                # el done al subirse y lost_in_amule la suelta si el
+                # archivo ya no está en ningún sitio.
+                _log.info("Solicitudes: %s ya estaba descargada en aMule, se espera a que se suba",
+                          _dr.describe(entry))
+                ok = already_done = True
             if ok:
                 ok_any = True
                 if _h:
@@ -1244,6 +1308,9 @@ class DownloadRequestsMixin:
             if hashes:
                 # Para ver luego si sigue en aMule (ver _dr.lost_in_amule).
                 nd = _dr.set_amule_hashes(nd, req_id, hashes) or nd
+            # Para el motivo si luego se da por perdida (ver el "lost" del
+            # ciclo): no es lo mismo que una descarga desaparecida.
+            nd = {**nd, req_id: {**(nd.get(req_id) or {}), "amule_completed": already_done}}
             if _dr.is_replacement(entry):
                 self._download_request_record_replacement(entry, name, year)
                 nd = _dr.mark_replacement_launched(nd, req_id) or nd

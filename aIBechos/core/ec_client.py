@@ -73,9 +73,12 @@ EC_OP_STRINGS = 0x06
 EC_OP_SEARCH_START = 0x26
 EC_OP_SEARCH_RESULTS = 0x28
 EC_OP_DOWNLOAD_SEARCH_RESULT = 0x2A
-EC_OP_GET_DLOAD_QUEUE = 0x31
-EC_OP_DLOAD_QUEUE = 0x32
-EC_OP_PARTFILE_REMOVE = 0x2B
+# 0x31/0x32 son SERVER_ADD/SERVER_REMOVE ("Servidor no añadido") y 0x2B es
+# IPFILTER_RELOAD (por eso el borrado "siempre funcionaba"): los buenos,
+# comprobados contra aMule 3.0.1 (0x0D responde 0x1F), son estos.
+EC_OP_GET_DLOAD_QUEUE = 0x0D
+EC_OP_DLOAD_QUEUE = 0x1F
+EC_OP_PARTFILE_REMOVE = 0x1D   # EC_OP_PARTFILE_DELETE
 EC_OP_AUTH_SALT = 0x4F
 EC_OP_AUTH_PASSWD = 0x50
 
@@ -92,9 +95,9 @@ EC_TAG_SERVER_VERSION = 0x050B
 EC_TAG_PARTFILE = 0x0300
 EC_TAG_PARTFILE_NAME = 0x0301
 EC_TAG_PARTFILE_SIZE_FULL = 0x0303
-EC_TAG_PARTFILE_SIZE_DONE = 0x0305
-EC_TAG_PARTFILE_SIZE_XFER = 0x0306
-EC_TAG_PARTFILE_SPEED = 0x0302
+EC_TAG_PARTFILE_SIZE_XFER = 0x0304
+EC_TAG_PARTFILE_SIZE_DONE = 0x0306
+EC_TAG_PARTFILE_SPEED = 0x0307   # 0x0302 es PARTMETID
 EC_TAG_PARTFILE_SOURCE_COUNT = 0x030A
 EC_TAG_PARTFILE_SOURCE_COUNT_XFER = 0x030D
 EC_TAG_PARTFILE_STATUS = 0x0308
@@ -193,6 +196,15 @@ def _make_string_tag(name: int, text: str) -> bytes:
 
 def _make_hash16_tag(name: int, raw_hash: bytes) -> bytes:
     return _make_tag(name, EC_TAGTYPE_HASH16, raw_hash)
+
+
+def _ec_status_to_code(ps: int, speed: int) -> int:
+    """PartFileStatus de EC (PS_READY=0 … PS_ALLOCATING=10) a los códigos que
+    ya da el parser de amulecmd (0 esperando, 1 pausado, 2/3 descargando,
+    4 completado, 5 error, 6 verificando), que es lo que pinta Descargas."""
+    if ps == 0:
+        return 2 if speed > 0 else 0
+    return {1: 0, 2: 6, 3: 6, 4: 5, 5: 5, 7: 1, 8: 4, 9: 4, 10: 3}.get(ps, 0)
 
 
 class _Tag:
@@ -824,9 +836,10 @@ class EcClient:
                     sources = 0
                 st_t = t.get_child(EC_TAG_PARTFILE_STATUS)
                 try:
-                    status = st_t.to_int() if st_t else 0
+                    ps = st_t.to_int() if st_t else 0
                 except Exception:
-                    status = 0
+                    ps = 0
+                status = _ec_status_to_code(ps, speed)
                 out.append({
                     "hash_hex": hhex,
                     "name": name,
@@ -889,15 +902,23 @@ class EcClient:
                                         pass
             except Exception:
                 pass
-            return out
         except Exception:
-            return []
+            out = []
+        if tags and not out:
+            # aMule mandó descargas pero no se entendió ninguna: una cola
+            # vacía haría creer a Solicitudes que se perdieron y las
+            # relanzaría, así que mejor lo que diga amulecmd.
+            try:
+                return _get_download_queue_via_amulecmd(self.host, self.port, self.password)
+            except Exception:
+                return []
+        return out
 
     def cancel_download(self, hash_hex: str) -> Tuple[bool, str]:
         """Cancela/elimina una descarga por hash MD4 hex (32 chars). Usa
-        amulecmd como vía principal (fiable en aMule 3.0.1; EC_OP_GET_DLOAD_QUEUE
-        ya falla con 'Servidor no añadido' y EC_OP_PARTFILE_REMOVE devuelve
-        falsos positivos). EC queda como fallback secundario."""
+        amulecmd como vía principal (devuelve 'Operation was successful' de
+        forma fiable). EC (EC_OP_PARTFILE_DELETE) queda como fallback; antes
+        usaba por error el opcode de IPFILTER_RELOAD y daba falsos positivos."""
         if not hash_hex or len(hash_hex) != 32:
             return False, "hash inválido"
         try:

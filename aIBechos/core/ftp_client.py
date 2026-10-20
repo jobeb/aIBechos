@@ -101,6 +101,12 @@ class FTPClient:
             self.ftp = None
             return False
 
+    def is_alive(self) -> bool:
+        """¿Contesta de verdad el servidor? Por FTP is_connected() ya manda
+        un NOOP, así que basta con que haya conexión. SFTP lo redefine
+        (allí is_connected() no pregunta al servidor)."""
+        return self.ftp is not None
+
     def build_remote_path(self, template: str, serie: str, season: int = None, year: str = "", media_type: str = "tv") -> str:
         """
         Construye la ruta remota según la plantilla.
@@ -554,6 +560,32 @@ class FTPClient:
                 return f.read(n) == remote
         except OSError:
             return False
+
+    def _local_is_prefix_of_remote(self, remote_file: str, local: Path, remote_size: int) -> bool:
+        """¿Empieza el remoto (MAYOR que *local*) con *local* entero? Es
+        nuestro archivo con una cola de más pegada (real: dos equipos
+        subiendo a la vez a la misma ruta dejaron "The Seven Deadly Sins"
+        con 864 KB sobrantes). Se comparan el principio y el final de
+        *local* con los mismos bytes del remoto; ante la duda, False."""
+        try:
+            local_size = local.stat().st_size
+        except OSError:
+            return False
+        if local_size <= 0 or remote_size <= local_size:
+            return False
+        n = min(self.RESUME_CHECK_BYTES, local_size)
+        try:
+            with open(local, "rb") as f:
+                head = f.read(n)
+                f.seek(local_size - n)
+                tail = f.read(n)
+        except OSError:
+            return False
+        for offset, want in ((0, head), (local_size - n, tail)):
+            got = self._read_remote_range(remote_file, offset, n)
+            if got is None or got != want:
+                return False
+        return True
 
     def _read_remote_range(self, remote_file: str, offset: int, n: int) -> Optional[bytes]:
         """*n* bytes de *remote_file* desde *offset* (RETR con REST), o None."""

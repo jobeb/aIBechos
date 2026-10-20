@@ -94,6 +94,7 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         self._upload_overwrite_all = False
         self._upload_skip_all = False
         self._upload_duplicate_ignore_all = False
+        self._upload_duplicate_replace_all = False
         self._upload_stale_choice = None
         self._rename_overwrite_all = False
         self._upload_slot_of = {}

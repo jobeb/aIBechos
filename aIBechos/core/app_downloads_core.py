@@ -58,7 +58,8 @@ class DownloadsCoreMixin:
 
     def _status_label_for_download(self, code: int) -> str:
         # Códigos de aMule PartFileStatus (aprox): 0=waiting, 1=paused, 2=downloading, etc.
-        mapping = {0: "Esperando", 1: "Pausado", 2: "Descargando", 3: "Descargando", 4: "Completado", 7: "Detenido"}
+        mapping = {0: "Esperando", 1: "Pausado", 2: "Descargando", 3: "Descargando", 4: "Completado",
+                   5: "Error", 6: "Verificando", 7: "Detenido"}
         return mapping.get(code, str(code) if code else "—")
 
     def _alternative_query_for_download(self, d: dict) -> str:

@@ -51,6 +51,24 @@ def filename(key: str, legacy: bool = False) -> str:
     return f"{prefijo}_{SHARED_DATA_FILES[key]}"
 
 
+#: Espera antes de releer un JSON que llegó cortado (ver read_shared_json).
+PARTIAL_RETRY_DELAY = 2.0
+
+
+def _reread_after_partial(ftp_client, remote_path: str):
+    """Segunda lectura tras PARTIAL_RETRY_DELAY; el JSON ya parseado o
+    None si sigue roto (o no se puede leer). Nunca lanza."""
+    import time
+    try:
+        time.sleep(PARTIAL_RETRY_DELAY)
+        raw = ftp_client.download_bytes(remote_path)
+        if not raw:
+            return None
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+
+
 def read_shared_json(ftp_client, remote_path: str, kind: str = "dict"):
     """Lee un JSON compartido del FTP sin riesgo de borrarlo.
 
@@ -83,13 +101,28 @@ def read_shared_json(ftp_client, remote_path: str, kind: str = "dict"):
             _log.warning("Compartido: %s existe pero no se pudo leer, "
                          "no se toca el remoto", remote_path)
             return None, False
-        return ({} if kind == "dict" else []), True
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except ValueError:
-        _log.warning("Compartido: %s corrupto en el servidor, no se toca el "
-                     "remoto (bórrelo a mano para regenerarlo)", remote_path)
-        return None, False
+        # La web, si su SFTP no pisa con rename, aparta el bueno y pone el
+        # nuevo: un par de milisegundos sin archivo. Darlo por nuevo ahí
+        # haría escribir desde cero; una relectura poco después lo ve.
+        data = _reread_after_partial(ftp_client, remote_path)
+        if data is None:
+            return ({} if kind == "dict" else []), True
+    else:
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            data = None
+    if data is None:
+        # Casi siempre es una lectura a mitad de otra escritura: versiones
+        # viejas de la web de solicitudes subían el JSON encima del bueno
+        # y quien leía en ese instante lo veía cortado (real:
+        # "aIBechos_solicitudes.json corrupto" justo tras pedir desde la
+        # web). Una relectura poco después ya lo ve entero.
+        data = _reread_after_partial(ftp_client, remote_path)
+        if data is None:
+            _log.warning("Compartido: %s corrupto en el servidor, no se toca el "
+                         "remoto (bórrelo a mano para regenerarlo)", remote_path)
+            return None, False
     if kind == "dict" and not isinstance(data, dict):
         _log.warning("Compartido: %s con forma inesperada, no se toca el remoto",
                      remote_path)

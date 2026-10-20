@@ -142,7 +142,8 @@ def test_url_web_es_configuracion_de_servidor():
 
 def test_ciclo_libera_lo_que_ya_no_esta_en_amule(monkeypatch):
     """Una descarga propia que ya no está en aMule ni terminó vuelve a
-    pendiente (y se relanza); si aMule no responde, no se toca."""
+    pendiente (y se relanza tras la espera de reintento, ver
+    retry_wait); si aMule no responde, no se toca."""
     import core.shared_data as sd
     now = time.time()
     data = {"obs": {"tmdb_id": 1339713, "media_type": "movie", "title": "Obsession", "year": "2026",
@@ -154,8 +155,18 @@ def test_ciclo_libera_lo_que_ya_no_esta_en_amule(monkeypatch):
     app._download_requests_notify_web = lambda: None
     app._download_requests_amule_state = lambda needed: ([{"hash_hex": "x", "name": "Otra.mkv"}], [])
     App._download_requests_cycle(app)
-    assert "obs" in launched, "liberada y relanzada en el mismo ciclo"
+    assert pushed[-1]["obs"]["status"] == "pending", "liberada"
+    assert pushed[-1]["obs"]["attempts"] == 1
+    assert launched == [], "no se relanza al momento: espera su retry_wait"
+    # Pasada la espera, sí se relanza.
+    data = {"obs": dict(pushed[-1]["obs"], updated_at=now - dr.retry_wait(pushed[-1]["obs"]) - 1)}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    App._download_requests_cycle(app)
+    assert "obs" in launched
     # aMule sin responder: no se decide nada
+    data = {"obs": dict(data["obs"], status="downloading", claimed_by="Jose",
+                        claimed_at=now - 3 * 86400, attempts=0)}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
     launched.clear(); pushed.clear()
     app._download_requests_amule_state = lambda needed: (None, [])
     App._download_requests_cycle(app)
@@ -322,3 +333,38 @@ def test_sweep_quita_huerfanas_finales(monkeypatch):
     cancelled.clear()
     App._download_requests_sweep_finished(app, data, queue)
     assert cancelled == []
+
+
+def test_ciclo_fallida_reciente_que_ya_esta_pasa_a_done(monkeypatch):
+    """Real: "Sin piedad" se dio por fallida a las 08:25 y se subió a las
+    08:43; la web la siguió enseñando "Fallida"."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {"r1": {"tmdb_id": 1, "media_type": "movie", "title": "Sin piedad",
+                   "status": "failed", "claimed_by": "Jose", "claimed_at": now - 7200,
+                   "requested_at": now - 9000, "updated_at": now - 3600, "attempts": 5,
+                   "last_error": "ya en completados de aMule (no se vuelve a bajar)"},
+            "r2": {"tmdb_id": 2, "media_type": "movie", "title": "Otra",
+                   "status": "failed", "claimed_by": "Efren", "claimed_at": now - 7200,
+                   "requested_at": now - 9000, "updated_at": now - 3600, "attempts": 5}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    app._download_requests_notify_web = lambda: None
+    app._download_request_check_done = lambda entry, idx=None: "done"
+    App._download_requests_cycle(app)
+    assert pushed[-1]["r1"]["status"] == "done"
+    assert pushed[-1]["r1"]["last_error"] == ""
+    assert pushed[-1]["r2"]["status"] == "failed", "las de otro equipo las mira ese equipo"
+
+
+def test_peli_con_fila_atrasada_mira_el_historial(monkeypatch):
+    """La fila de Películas dice que no está (caché vieja) pero este PC la
+    subió: done (real: "Sin piedad")."""
+    app = _fake_app()
+    app._movies_results = [{"tmdb_id": 1, "in_server": False}]
+    monkeypatch.setattr(dr, "load_upload_history", lambda path=None: [])
+    assert App._download_request_check_done(app, dict(MOVIE)) is None
+    monkeypatch.setattr(dr, "load_upload_history",
+                        lambda path=None: [{"status": "ok", "remote": REMOTE, "ts": 1000}])
+    assert App._download_request_check_done(app, dict(MOVIE)) == "done"

@@ -209,3 +209,69 @@ def test_iter_search_wake_event_skips_the_first_wait(monkeypatch):
     first2 = next(it2)
     assert [r.name for r in first2] == ["Serie S01E01 720p.mkv"]
     assert not slept
+
+
+# ── Cola de descargas (EC_OP_GET_DLOAD_QUEUE) ──
+
+def _queue_client(*partfiles):
+    from core.ec_client import EC_OP_DLOAD_QUEUE
+    packet = _make_packet(EC_OP_DLOAD_QUEUE, list(partfiles))
+    client = EcClient("127.0.0.1", 4712, "pw", sock=_FakeSocket(packet))
+    client._connected = True
+    client._send_packet = lambda *a, **k: None
+    return client
+
+
+def test_download_queue_uses_real_aMule_opcodes():
+    """0x31/0x32 eran SERVER_ADD/REMOVE (aMule respondía 'Servidor no
+    añadido' y todo caía a amulecmd, sin tamaño real ni velocidad fiable);
+    0x2B era IPFILTER_RELOAD."""
+    from core import ec_client as E
+    assert (E.EC_OP_GET_DLOAD_QUEUE, E.EC_OP_DLOAD_QUEUE) == (0x0D, 0x1F)
+    assert E.EC_OP_PARTFILE_REMOVE == 0x1D
+    assert (E.EC_TAG_PARTFILE_SIZE_DONE, E.EC_TAG_PARTFILE_SPEED) == (0x0306, 0x0307)
+
+
+def test_download_queue_parses_speed_and_sizes_for_eta():
+    from core.ec_client import EC_TAG_PARTFILE, EC_TAG_PARTFILE_SIZE_DONE, EC_TAG_PARTFILE_SPEED
+    from core.app_downloads_core import DownloadsCoreMixin
+    pf = _make_tag(EC_TAG_PARTFILE, 4, (1).to_bytes(4, "big"), children=[
+        _make_string_tag(EC_TAG_PARTFILE_NAME, "Animales (2026).mkv"),
+        _make_hash16_tag(EC_TAG_PARTFILE_HASH, b"\x12" * 16),
+        _make_int_tag(EC_TAG_PARTFILE_SIZE_FULL, 1000 * 1024 * 1024),
+        _make_int_tag(EC_TAG_PARTFILE_SIZE_DONE, 400 * 1024 * 1024),
+        _make_int_tag(EC_TAG_PARTFILE_SPEED, 1024 * 1024),
+        _make_int_tag(EC_TAG_PARTFILE_SOURCE_COUNT, 12),
+        _make_int_tag(EC_TAG_PARTFILE_STATUS, 0),
+    ])
+    q = _queue_client(pf).get_download_queue()
+    assert len(q) == 1
+    d = q[0]
+    assert d["hash_hex"] == "12" * 16
+    assert d["size_full"] == 1000 * 1024 * 1024
+    assert d["percent"] == pytest.approx(40.0)
+    assert d["speed"] == 1024 * 1024
+    assert d["status"] == 2          # PS_READY con velocidad = descargando
+    assert DownloadsCoreMixin._eta_for_download(None, d) == "10m 0s"
+
+
+def test_download_queue_unparsable_tags_fall_back_to_amulecmd(monkeypatch):
+    """Si aMule manda descargas pero no se entiende ninguna, devolver []
+    haría creer a Solicitudes que se perdieron: se pregunta a amulecmd."""
+    import core.amule_client as ac
+    from core.ec_client import EC_TAG_PARTFILE
+    weird = _make_tag(EC_TAG_PARTFILE, 4, (1).to_bytes(4, "big"), children=[
+        _make_string_tag(EC_TAG_PARTFILE_NAME, "sin hash.mkv")])
+    calls = []
+    monkeypatch.setattr(ac, "_find_amulecmd", lambda *_a: calls.append(1) or "")
+    assert _queue_client(weird).get_download_queue() == []
+    assert calls, "debía intentarse amulecmd"
+
+
+def test_ec_status_maps_to_download_tab_codes():
+    from core.ec_client import _ec_status_to_code
+    assert _ec_status_to_code(0, 0) == 0      # listo sin velocidad: esperando
+    assert _ec_status_to_code(0, 500) == 2    # descargando
+    assert _ec_status_to_code(7, 0) == 1      # pausado
+    assert _ec_status_to_code(9, 0) == 4      # completado
+    assert _ec_status_to_code(3, 0) == 6      # verificando

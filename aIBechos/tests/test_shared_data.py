@@ -111,6 +111,44 @@ def test_archivo_corrupto_existente_no_toca():
     assert is_new is False
 
 
+def test_lectura_cortada_por_otra_escritura_se_relee():
+    """Real: la web sube solicitudes.json encima del bueno y quien lo lee
+    en ese instante lo ve a medias; una relectura ya lo ve entero."""
+    ftp = _FakeFtp({"/datos/a.json": b'{"jose": '})
+    leidas = []
+    original = ftp.download_bytes
+
+    def _download(path):
+        leidas.append(path)
+        if len(leidas) > 1:
+            ftp.blobs[path] = b'{"jose": 1}'
+        return original(path)
+    ftp.download_bytes = _download
+    data, is_new = shared_data.read_shared_json(ftp, "/datos/a.json")
+    assert data == {"jose": 1}
+    assert is_new is False
+    assert len(leidas) == 2
+
+
+def test_hueco_sin_archivo_mientras_la_web_lo_sustituye_se_relee():
+    """La web, si el rename de su SFTP no pisa, aparta el bueno y pone el
+    nuevo: un instante sin archivo. Darlo por nuevo haría escribir desde
+    cero encima de lo que pidió la web."""
+    ftp = _FakeFtp({})
+    leidas = []
+    original = ftp.download_bytes
+
+    def _download(path):
+        leidas.append(path)
+        if len(leidas) > 1:
+            ftp.blobs[path] = b'{"web": 1}'
+        return original(path)
+    ftp.download_bytes = _download
+    data, is_new = shared_data.read_shared_json(ftp, "/datos/a.json")
+    assert data == {"web": 1}
+    assert is_new is False
+
+
 def test_forma_inesperada_no_toca():
     ftp = _FakeFtp({"/datos/a.json": b"[1, 2]"})
     data, is_new = shared_data.read_shared_json(ftp, "/datos/a.json")

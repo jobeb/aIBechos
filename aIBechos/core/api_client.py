@@ -164,13 +164,29 @@ class TMDBClient:
         No FILTRA, solo reordena: si no hay ningún resultado del tipo
         preferido (una serie que TMDB solo tiene como película, o una
         detección equivocada), los del otro tipo siguen ahí detrás en vez
-        de dejar al usuario sin nada que elegir."""
+        de dejar al usuario sin nada que elegir.
+
+        Dentro de cada tipo, un título EXACTO (name/original_name igual a
+        la query, normalizado) va antes que la popularidad: caso real,
+        "Veneno 1x02" (serie de 2020) se identificaba como "Suave Veneno"
+        (1999, más popular), se subía a otra carpeta y la solicitud web de
+        "Veneno" nunca se daba por cumplida (se relanzó durante horas)."""
+        from core.series_match import normalize_series_name
         data = self._get("/search/multi", query=query)
         results = [r for r in data.get("results", []) if r.get("media_type") in ("tv", "movie")]
         preferred = self._TMDB_TYPE.get(prefer_type, "")
+        q_norm = normalize_series_name(query)
+
+        def _exact(r) -> bool:
+            if not q_norm:
+                return False
+            return any(normalize_series_name(r.get(k) or "") == q_norm
+                       for k in ("name", "title", "original_name", "original_title"))
+
         return sorted(
             results,
             key=lambda r: (bool(preferred) and r.get("media_type") == preferred,
+                           _exact(r),
                            r.get("popularity", 0)),
             reverse=True)
 
@@ -523,6 +539,11 @@ JUNK_MARKERS = [
 JUNK_PATTERNS = JUNK_MARKERS + [
     r"\[(.*?)\]",
     r"\((.*?)\)",
+    # Año con el paréntesis a medias (el de antes ya quitó los cerrados):
+    # "El emperador y sus locuras - 2000).(Spanish...)" dejaba el título
+    # "... Locuras 2000)" y TMDB no encontraba nada.
+    r"\b(?:19|20)\d{2}\)",
+    r"\((?:19|20)\d{2}\b",
     r"[.\-_]",   # puntos, guiones y guiones bajos → espacios
     r"\b(by|para)\s+\S+\s*$",   # crédito de subida al final ("... by/para nombre_uploader", una palabra)
 ]
@@ -735,6 +756,14 @@ is_book: el llamador (gui/app.py, vía core.renamer.is_book_file) ya
             else:
                 season, episode = 1, int(groups[0])
                 extra_episodes = []
+                # Un "número" de 4 cifras con pinta de año seguido del año
+                # de verdad entre paréntesis es parte del título, no un
+                # episodio: "Blade Runner 2049 (2017)" salía anime, episodio
+                # 2049, título "Blade Runner" (y lo mismo "... del año 2000
+                # (1975)"). Se sigue probando como película.
+                if (len(groups[0]) == 4 and 1900 <= episode <= 2099
+                        and re.search(r"[\(\[](?:19|20)\d{2}[\)\]]", stem[m.end() - 1:])):
+                    continue
 
             title_raw = stem[:m.start()]
             title = _clean_title(title_raw, extra_junk_terms)
@@ -760,8 +789,11 @@ is_book: el llamador (gui/app.py, vía core.renamer.is_book_file) ya
 
     # Sin patrón → película
     title = _clean_title(stem, extra_junk_terms)
-    # Quitar año del título si aparece al final
-    title = re.sub(r"\s+\d{4}\s*$", "", title).strip()
+    # Quitar año del título si aparece al final -- salvo que el año de
+    # verdad ya viniera entre paréntesis: entonces el número es del
+    # título ("Blade Runner 2049 (2017)" quedaba en "Blade Runner").
+    if not re.search(r"[\(\[](?:19|20)\d{2}[\)\]]", stem):
+        title = re.sub(r"\s+\d{4}\s*$", "", title).strip()
     return {
         "title": title,
         "season": None,

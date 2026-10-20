@@ -165,6 +165,16 @@ class SFTPClient(FTPClient):
                               password=password, timeout=15,
                               allow_agent=False, look_for_keys=False,
                               sock=_socket_con_buffer_grande(host, self.port))
+            # Latido SSH cada 30 s: la conexión compartida de AutoWatcher
+            # pasa horas parada, y el router (NAT) la daba por muerta sin
+            # avisar. paramiko la seguía viendo "activa" y la primera
+            # operación tras el parón se quedaba colgada 30 s y fallaba
+            # (real: "No se pudo listar ... para buscar duplicados" con
+            # cada primer archivo tras un rato sin subir nada).
+            try:
+                self._ssh.get_transport().set_keepalive(30)
+            except Exception:
+                pass
             self.sftp = self._ssh.open_sftp()
             self.sftp.get_channel().settimeout(30)
             return True, f"Conectado a {host} por SFTP"
@@ -314,6 +324,30 @@ class SFTPClient(FTPClient):
             return True
         except Exception:
             return False
+
+    def is_alive(self) -> bool:
+        """Como is_connected(), pero preguntando al servidor (un stat de
+        "." con poco tiempo de espera): una sesión a medio morir sigue
+        "activa" para paramiko hasta que una operación agota su tiempo, y
+        mientras tanto get_remote_size() daría None ("no existe") en vez
+        de "no lo sé". Si no contesta, se cierra para reconectar."""
+        if not self.is_connected():
+            return False
+        canal = None
+        try:
+            canal = self.sftp.get_channel()
+            canal.settimeout(8)
+            self.sftp.stat(".")
+            return True
+        except Exception:
+            self.disconnect()
+            return False
+        finally:
+            try:
+                if canal is not None and self.sftp is not None:
+                    canal.settimeout(30)
+            except Exception:
+                pass
 
     def get_remote_size(self, remote_file: str) -> Optional[int]:
         if self.sftp is None:
