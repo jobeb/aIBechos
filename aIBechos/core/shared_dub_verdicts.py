@@ -29,6 +29,7 @@ import json
 import time
 
 from core.appdirs import app_data_dir
+from core.atomic_write import write_json_atomic
 
 _FILENAME = "shared_dub_verdicts.json"
 
@@ -52,8 +53,7 @@ def load_local_cache() -> dict:
 def save_local_cache(data: dict) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    write_json_atomic(path, data)
 
 
 def set_verdict(data: dict, tmdb_id: int, verdict: dict, checked_by: str,

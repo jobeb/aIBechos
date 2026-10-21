@@ -10,11 +10,14 @@ la lógica avisa con _update_row, sin rehacer la tabla entera.
 
 from __future__ import annotations
 
+import html
+import time
+
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QRect, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate
 
-from core.file_entry import _file_status_text
+from core.file_entry import _file_status_text, entry_details, upload_record
 from core.fmt import fmt_speed
 from gui_qt import theme
 from gui_qt.actions import Action, ActionsRole
@@ -45,6 +48,25 @@ def detected_text(entry) -> str:
     return det.get("title", "") or ""
 
 
+#: Últimos eventos que enseña el tooltip de una fila.
+TOOLTIP_EVENTS = 12
+
+
+def _when(ts) -> str:
+    """"hoy 11:45", "ayer 09:10" o "18/10/2026 22:03"."""
+    try:
+        t = time.localtime(float(ts))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+    now = time.localtime()
+    day = time.strftime("%Y-%m-%d", t)
+    if day == time.strftime("%Y-%m-%d", now):
+        return "hoy " + time.strftime("%H:%M", t)
+    if day == time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400)):
+        return "ayer " + time.strftime("%H:%M", t)
+    return time.strftime("%d/%m/%Y %H:%M", t)
+
+
 class FilesModel(QAbstractTableModel):
     def __init__(self, host, parent=None):
         super().__init__(parent)
@@ -52,6 +74,7 @@ class FilesModel(QAbstractTableModel):
         self._rows: list = []
         self._row_of: dict = {}
         self._dest_cache: dict = {}
+        self._history = ([], None)     # (registros, mtime) de upload_history.json
 
     # ── Datos ──
 
@@ -172,14 +195,8 @@ class FilesModel(QAbstractTableModel):
         if role == Qt.TextAlignmentRole and col in (COL_FAV, COL_LOCK, COL_SPD):
             return int(Qt.AlignCenter)
         if role == Qt.ToolTipRole:
-            if col == COL_NAME:
-                return entry.path
-            if col == COL_STAT and entry.error_msg and entry.status in ("error", "omitido"):
-                return entry.error_msg
-            if col == COL_DEST:
-                return self._dest(entry) or None
-            if col == COL_NN:
-                return entry.new_name or None
+            if col not in (COL_FAV, COL_LOCK, COL_ACTIONS):
+                return self.row_tooltip(entry)
             if col == COL_FAV:
                 if not entry.media_info:
                     return "Identifica el archivo primero para poder añadirlo a favoritos"
@@ -191,6 +208,47 @@ class FilesModel(QAbstractTableModel):
                     return "Solo se puede reservar algo que ya esté identificado y subido."
                 return self.host.ctx.reservation_tooltip(entry.media_info.media_type, entry.media_info.tmdb_id)
         return None
+
+    # ── Tooltip de la fila: qué es, en qué estado está y por qué ──
+
+    def _upload_record(self, entry):
+        if entry.status != "subido":
+            return None
+        try:
+            path = self.host._history_path()
+            mtime = path.stat().st_mtime if path.exists() else None
+            if mtime != self._history[1]:
+                self._history = (self.host._load_history(), mtime)
+            return upload_record(self._history[0], entry)
+        except Exception:
+            return None
+
+    def row_tooltip(self, entry) -> str:
+        try:
+            size = self.host._file_size_text(entry)
+        except Exception:
+            size = ""
+        d = entry_details(entry, dest=self._dest(entry), size_text=size, record=self._upload_record(entry))
+        esc = html.escape
+        color = STATUS_COLORS.get(entry.status, theme.PENDING_COLOR)
+        parts = [f"<b>{esc(d['title'])}</b>",
+                 f"<p style='margin:4px 0'><b style='color:{color}'>{esc(d['status'])}</b>"
+                 + (f" — {esc(d['status_help'])}" if d["status_help"] else "") + "</p>"]
+        if d["reason"]:
+            parts.append(f"<p style='margin:0 0 4px 0'><b>Motivo:</b> {esc(d['reason'])}</p>")
+        rows = "".join(
+            f"<tr><td style='color:{theme.PENDING_COLOR}; padding-right:8px'>{esc(label)}</td>"
+            f"<td>{esc(_when(value) if isinstance(value, (int, float)) else str(value))}</td></tr>"
+            for label, value in d["rows"])
+        parts.append(f"<table cellspacing='0' cellpadding='1'>{rows}</table>")
+        events = d["events"][-TOOLTIP_EVENTS:]
+        if events:
+            lines = "".join(
+                f"<tr><td style='color:{theme.PENDING_COLOR}; padding-right:8px'>{esc(_when(ts))}</td>"
+                f"<td>{esc(text)}</td></tr>" for ts, text in events)
+            parts.append(f"<p style='margin:6px 0 2px 0'><b>Qué ha pasado</b></p>"
+                         f"<table cellspacing='0' cellpadding='1'>{lines}</table>")
+        return "<qt>" + "".join(parts) + "</qt>"
 
     def _actions(self, entry) -> list:
         uploading = entry.status in ("subiendo",)

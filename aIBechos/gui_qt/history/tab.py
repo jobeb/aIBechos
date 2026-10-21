@@ -18,13 +18,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog, QHBoxLayout, QHeaderView,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog, QHBoxLayout,
                                QLabel, QLineEdit, QMessageBox, QMenu, QPushButton, QTableView, QVBoxLayout,
                                QWidget)
 
 from core.download_requests import LAUNCHABLE_STATUSES
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNING_COLOR
 from gui_qt import theme
+from gui_qt.columns import fill_columns
 from gui_qt.actions import Action, ActionsDelegate, ActionsRole
 from gui_qt.dialogs import confirm
 
@@ -185,9 +186,7 @@ class HistoryTab(QWidget):
         self.view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._context_menu)
         hdr = self.view.horizontalHeader()
-        hdr.setSectionResizeMode(QHeaderView.Interactive)
-        hdr.setSectionResizeMode(H_FILE, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(H_DEST, QHeaderView.Stretch)
+        fill_columns(self.view, H_FILE, H_DEST, key="history")
         for c, w in ((H_DATE, 125), (H_KIND, 75), (H_WHO, 110), (H_SIZE, 75), (H_STATE, 90), (H_ACT, 40)):
             hdr.resizeSection(c, w)
         root.addWidget(self.view, 1)

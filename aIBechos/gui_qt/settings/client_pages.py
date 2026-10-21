@@ -8,12 +8,13 @@ import os
 import re
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QHeaderView, QLineEdit,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QLineEdit,
                                QPushButton, QSlider, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from core.appdirs import is_linux, is_macos, is_windows
 from core.transfer import PROTOCOL_LABELS, TOOLTIP_CONEXIONES_POR_ARCHIVO
 from gui_qt import theme
+from gui_qt.columns import fill_columns
 from gui_qt.bridge import run_in_thread, ui
 from gui_qt.settings.widgets import Page, desc_label, float_spin, hbox, int_or, set_status, status_label
 
@@ -216,8 +217,7 @@ class WatchSyncConfigPage(Page):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         hh = self.table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.Stretch)
+        fill_columns(self.table, 0, 1, key="watch_sync_users")
         hh.resizeSection(2, 40)
         c.row(None, self.table)
         self.plex_combo, self.jf_combo = QComboBox(), QComboBox()

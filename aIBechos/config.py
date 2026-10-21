@@ -8,6 +8,7 @@ from pathlib import Path
 import keyring
 
 from core.appdirs import APP_NAME, LEGACY_APP_NAME, app_data_dir
+from core.atomic_write import write_json_atomic
 
 # Claves que se guardan en el almacén de credenciales del sistema (keyring)
 # en vez de en config.json en texto plano. El nombre de la clave en config
@@ -76,6 +77,13 @@ DEFAULTS = {
     # maximizada -- ver _save_window_state/_apply_window_state en gui_qt/main_window.py.
     "window_geometry": "",
     "window_maximized": False,
+    # Anchos de columna arrastrados a mano, por tabla:
+    # {tabla: {"widths": [...], "viewport": ancho de la tabla}} (ver gui_qt/columns.py).
+    "column_widths": {},
+    # Reparto de los paneles divididos {panel: [px, ...]} y pestaña abierta
+    # {"main"/"info": clave} (ver gui_qt/ui_state.py).
+    "splitter_sizes": {},
+    "last_tabs": {},
     # Al pulsar el aspa de cerrar, minimizar a la bandeja del sistema en vez
     # de salir (la app sigue vigilando/subiendo en segundo plano). Salir del
     # todo sigue disponible desde el menú de la bandeja ("Salir").
@@ -549,9 +557,9 @@ class Config:
         self.save()
 
     def save(self):
-        path = config_path()
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+        # Atómico: un cierre brusco a mitad de guardado dejaba config.json a
+        # medias y se perdía toda la configuración.
+        write_json_atomic(config_path(), self.to_dict())
 
     def to_dict(self) -> dict:
         """Copia de la configuración actual, sin ninguna credencial en texto

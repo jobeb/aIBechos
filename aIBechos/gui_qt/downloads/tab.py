@@ -17,7 +17,7 @@ import time
 import requests
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QHBoxLayout, QHeaderView,
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QMenu, QPushButton, QScrollArea, QSplitter, QTableView,
                                QVBoxLayout, QWidget)
 
@@ -27,6 +27,8 @@ from core.download_quality import best_result, explain_score
 from core.fmt import fmt_size, fmt_transfer, parse_size_human
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNING_COLOR
 from gui_qt import theme
+from gui_qt.ui_state import remember_splitter
+from gui_qt.columns import fill_columns
 from gui_qt.actions import Action, ActionsDelegate, ActionsRole
 from gui_qt.bridge import run_in_thread, ui
 from gui_qt.files.model import ProgressDelegate, ProgressRole
@@ -57,6 +59,7 @@ def _key(r) -> str:
 R_NAME, R_SIZE, R_SOURCES, R_TYPE, R_ACT = range(5)
 R_HEADERS = ["Nombre de archivo", "Tamaño", "Fuentes", "Tipo", ""]
 R_SORT = {R_NAME: "name", R_SIZE: "size", R_SOURCES: "sources", R_TYPE: "tipo"}
+SORT_TABLE_ID = "descargas_resultados"   # en config "table_sort"
 
 
 class ResultsModel(QAbstractTableModel):
@@ -201,6 +204,9 @@ class DownloadsTab(QWidget):
         self._results: list = []
         self._selected_key = None
         self._sort_key, self._sort_asc = None, True
+        saved = (self.config.get("table_sort", {}) or {}).get(SORT_TABLE_ID)
+        if isinstance(saved, dict) and saved.get("key") in R_SORT.values():
+            self._sort_key, self._sort_asc = saved["key"], bool(saved.get("asc", True))
         self._expected_year = None
         self._is_movie = False
         self._query_for_year = None
@@ -257,11 +263,12 @@ class DownloadsTab(QWidget):
         self.rmodel.tooltip_fn = self._result_tooltip
         self.results_view = self._table(self.rmodel, R_ACT, 44)
         rh = self.results_view.horizontalHeader()
-        rh.setSectionResizeMode(R_NAME, QHeaderView.Stretch)
+        fill_columns(self.results_view, R_NAME, key="downloads_results")
         for c, w in ((R_SIZE, 90), (R_SOURCES, 70), (R_TYPE, 80)):
             rh.resizeSection(c, w)
         rh.setSectionsClickable(True)
         rh.sectionClicked.connect(self._on_results_header)
+        self._update_results_sort_indicator()
         self.results_view.selectionModel().currentRowChanged.connect(self._on_result_current)
         self.rdelegate.actionTriggered.connect(self._on_result_action)
 
@@ -271,6 +278,7 @@ class DownloadsTab(QWidget):
         upper.addWidget(self.detail)
         upper.setStretchFactor(0, 1)
         upper.setSizes([1000, 280])
+        remember_splitter(upper, "downloads")
 
         lower = QWidget()
         ll = QVBoxLayout(lower)
@@ -289,7 +297,7 @@ class DownloadsTab(QWidget):
         self.active_view = self._table(self.amodel, A_ACT, 104, attr="adelegate")
         self.active_view.setItemDelegateForColumn(A_PROG, ProgressDelegate(self.active_view))
         ah = self.active_view.horizontalHeader()
-        ah.setSectionResizeMode(A_NAME, QHeaderView.Stretch)
+        fill_columns(self.active_view, A_NAME, key="downloads_active")
         for c, w in ((A_SIZE, 85), (A_DONE, 85), (A_PCT, 60), (A_PROG, 100), (A_SPEED, 85), (A_SRC, 60),
                      (A_ETA, 80), (A_STATUS, 100)):
             ah.resizeSection(c, w)
@@ -300,6 +308,7 @@ class DownloadsTab(QWidget):
         vsplit.addWidget(upper)
         vsplit.addWidget(lower)
         vsplit.setSizes([520, 260])
+        remember_splitter(vsplit, "downloads_active")
         root.addWidget(vsplit, 1)
         self._wire_menus()
 
@@ -592,10 +601,19 @@ class DownloadsTab(QWidget):
             self._sort_asc = not self._sort_asc
         else:
             self._sort_key, self._sort_asc = key, True
-        self.results_view.horizontalHeader().setSortIndicator(
-            col, Qt.AscendingOrder if self._sort_asc else Qt.DescendingOrder)
-        self.results_view.horizontalHeader().setSortIndicatorShown(True)
+        all_saved = dict(self.config.get("table_sort", {}) or {})
+        all_saved[SORT_TABLE_ID] = {"key": self._sort_key, "asc": self._sort_asc}
+        self.config.set("table_sort", all_saved)
+        self.config.save()
+        self._update_results_sort_indicator()
         self._render()
+
+    def _update_results_sort_indicator(self):
+        hdr = self.results_view.horizontalHeader()
+        col = next((c for c, k in R_SORT.items() if k == self._sort_key), None)
+        hdr.setSortIndicatorShown(col is not None)
+        if col is not None:
+            hdr.setSortIndicator(col, Qt.AscendingOrder if self._sort_asc else Qt.DescendingOrder)
 
     def _result_tooltip(self, res) -> str:
         q = self.query.text()

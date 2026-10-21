@@ -28,6 +28,7 @@ from core.recommended_rows import (apply_filters, build_params, fetch_row, filte
                                    rows_for)
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNING_COLOR
 from gui_qt import theme
+from gui_qt.ui_state import remember_splitter
 from gui_qt.bridge import run_in_thread, ui
 from gui_qt.movies.cards import CARD_H, CARD_W, CardDelegate, CardRole
 
@@ -220,6 +221,7 @@ class MoviesTab(QWidget):
         split.addWidget(self.detail)
         split.setStretchFactor(0, 1)
         split.setSizes([1000, 270])
+        remember_splitter(split, "movies")
         root.addWidget(split, 1)
 
     def _build_detail(self):

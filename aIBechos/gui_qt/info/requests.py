@@ -13,11 +13,12 @@ import threading
 
 from PySide6.QtCore import QModelIndex, Qt, QTimer
 from PySide6.QtGui import QAction, QGuiApplication
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QLabel, QLineEdit,
                                QMenu, QPushButton, QTableView, QVBoxLayout, QWidget)
 
 from core.download_requests import LAUNCHABLE_STATUSES
 from core.status_colors import PENDING_COLOR, SUCCESS_COLOR
+from gui_qt.columns import fill_columns
 from gui_qt.actions import ActionsDelegate
 from gui_qt.dialogs import confirm
 from gui_qt.history.tab import H_ACT, H_DEST, H_FILE, HistoryModel
@@ -75,9 +76,7 @@ class WebRequestsTab(QWidget):
         self.view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._context_menu)
         hdr = self.view.horizontalHeader()
-        hdr.setSectionResizeMode(QHeaderView.Interactive)
-        hdr.setSectionResizeMode(H_FILE, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(H_DEST, QHeaderView.Stretch)
+        fill_columns(self.view, H_FILE, H_DEST, key="web_requests")
         hdr.resizeSection(H_ACT, 116)
         root.addWidget(self.view, 1)
         self.empty = QLabel("")

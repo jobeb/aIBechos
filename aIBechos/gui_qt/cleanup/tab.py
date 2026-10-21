@@ -18,7 +18,7 @@ import time
 from PySide6.QtCore import QAbstractItemModel, QModelIndex, Qt
 from PySide6.QtGui import QAction, QBrush, QColor, QFont, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFrame, QHBoxLayout,
-                               QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox, QMenu,
+                               QInputDialog, QLabel, QLineEdit, QMessageBox, QMenu,
                                QProgressBar, QPushButton, QScrollArea, QSplitter, QTreeView, QVBoxLayout,
                                QWidget)
 
@@ -26,6 +26,8 @@ from core.fmt import fmt_size
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, WARNING_COLOR
 from core.trending import explain_trending_score, format_trending_score, trending_score
 from gui_qt import theme
+from gui_qt.ui_state import remember_splitter
+from gui_qt.columns import fill_columns
 from gui_qt.actions import Action, ActionsDelegate, ActionsRole
 from gui_qt.bridge import run_in_thread, ui
 from gui_qt.ficha import TmdbFicha
@@ -273,10 +275,8 @@ class CleanupTab(QWidget):
         self.view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._context_menu)
         hdr = self.view.header()
-        hdr.setStretchLastSection(False)
-        hdr.setSectionResizeMode(C_NAME, QHeaderView.Stretch)
+        fill_columns(self.view, C_NAME, key="cleanup")
         for c, w in ((C_SIZE, 85), (C_TREND, 80), (C_FAV, 28), (C_LOCK, 28), (C_ACT, 104)):
-            hdr.setSectionResizeMode(c, QHeaderView.Interactive)
             hdr.resizeSection(c, w)
         hdr.setSectionsClickable(True)
         hdr.sectionClicked.connect(self._on_header)
@@ -292,6 +292,7 @@ class CleanupTab(QWidget):
         split.addWidget(self.ficha)
         split.setStretchFactor(1, 1)
         split.setSizes([260, 800, 270])
+        remember_splitter(split, "cleanup")
         root.addWidget(split, 1)
 
     def _build_filters(self):

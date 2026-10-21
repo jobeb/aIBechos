@@ -9,6 +9,7 @@ import json
 import re
 
 from core.appdirs import app_data_dir
+from core.atomic_write import write_json_atomic
 
 _FILENAME = "learned_junk_terms.json"
 _cache: list[str] | None = None
@@ -40,8 +41,7 @@ def load_learned_terms() -> list[str]:
 def _save(terms: list[str]) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(terms, f, ensure_ascii=False, indent=2)
+    write_json_atomic(path, terms)
 
 
 def add_learned_terms(new_tokens: list[str]) -> list[str]:

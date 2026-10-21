@@ -16,7 +16,7 @@ import time
 
 from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer
 from PySide6.QtGui import QAction, QGuiApplication
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QLabel,
                                QLineEdit, QMenu, QProgressBar, QPushButton, QSplitter, QTreeView,
                                QVBoxLayout, QWidget)
 
@@ -25,6 +25,8 @@ from core.amule_download import auto_download, typical_size_for_query, typical_s
 from core.amule_search import build_amule_query
 from core.applog import get_logger
 from gui_qt import theme
+from gui_qt.ui_state import remember_splitter
+from gui_qt.columns import fill_columns
 from gui_qt.bridge import run_in_thread, ui
 from gui_qt.dialogs import AmuleTemplateDialog, DubHiddenDialog, confirm
 from gui_qt.actions import Action, ActionsDelegate
@@ -182,11 +184,9 @@ class MissingEpisodesTab(QWidget):
         self.delegate.actionTriggered.connect(self._on_action)
         self.view.setItemDelegateForColumn(COL_ACTIONS, self.delegate)
         hdr = self.view.header()
-        hdr.setStretchLastSection(False)
-        hdr.setSectionResizeMode(COL_NAME, QHeaderView.Stretch)
+        fill_columns(self.view, COL_NAME, key="missing_episodes")
         for col, w in ((COL_FAV, 30), (COL_LOCK, 30), (COL_PREMIERE, 90), (COL_SUMMARY, 200),
                        (COL_TRENDING, 80), (COL_ACTIONS, 230)):
-            hdr.setSectionResizeMode(col, QHeaderView.Interactive)
             hdr.resizeSection(col, w)
         hdr.setSortIndicatorShown(True)
         hdr.setSectionsClickable(True)
@@ -203,6 +203,7 @@ class MissingEpisodesTab(QWidget):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         splitter.setSizes([900, 260])
+        remember_splitter(splitter, "missing_episodes")
         root.addWidget(splitter, 1)
 
     def _wire_context(self):

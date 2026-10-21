@@ -15,10 +15,11 @@ import time
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QMenu, QPushButton,
+from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QLabel, QMenu, QPushButton,
                                QTableView, QVBoxLayout, QWidget)
 
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNING_COLOR
+from gui_qt.columns import fill_columns
 from gui_qt.bridge import run_in_thread, ui
 from gui_qt.dialogs import confirm
 
@@ -57,7 +58,7 @@ class _Table(QAbstractTableModel):
         return None
 
 
-def _view(model, stretch_col):
+def _view(model, stretch_col, key):
     v = QTableView()
     v.setModel(model)
     v.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -65,7 +66,7 @@ def _view(model, stretch_col):
     v.setShowGrid(False)
     v.verticalHeader().hide()
     v.verticalHeader().setDefaultSectionSize(24)
-    v.horizontalHeader().setSectionResizeMode(stretch_col, QHeaderView.Stretch)
+    fill_columns(v, stretch_col, key=key)
     return v
 
 
@@ -119,7 +120,7 @@ class WatchSyncTab(QWidget):
         self.pmodel = _Table(["Título", "T/E", "Se marcará en"], lambda a: (
             a.item.name, f"{a.item.season}x{a.item.episode:02d}" if a.item.media_type == "episode" else "",
             a.target.capitalize()))
-        pview = _view(self.pmodel, 0)
+        pview = _view(self.pmodel, 0, "watch_sync_preview")
         pview.horizontalHeader().resizeSection(1, 60)
         pview.horizontalHeader().resizeSection(2, 120)
         pv.addWidget(pview, 1)
@@ -162,7 +163,7 @@ class WatchSyncTab(QWidget):
         self.hmodel = _Table(["Fecha", "Persona", "Título", "T/E", "Marcado en", "Estado"], hist_row,
                              lambda e, c: (SUCCESS_COLOR if e.get("status", "ok") == "ok" else ERROR_COLOR)
                              if c == 5 else None)
-        hview = _view(self.hmodel, 2)
+        hview = _view(self.hmodel, 2, "watch_sync_history")
         hview.setContextMenuPolicy(Qt.CustomContextMenu)
         hview.customContextMenuRequested.connect(lambda pos, v=hview: self._context_menu_history(v, pos))
         for c, w in ((0, 125), (1, 110), (3, 60), (4, 100), (5, 80)):

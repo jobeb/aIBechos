@@ -41,6 +41,7 @@ campos personales del resto al subir/bajar."""
 import json
 
 from core.appdirs import app_data_dir
+from core.atomic_write import write_json_atomic
 
 _FILENAME = "missing_episodes_cache.json"
 _cache: dict | None = None
@@ -74,8 +75,7 @@ def save_cache(cache: dict) -> None:
     _cache = cache
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
+    write_json_atomic(path, cache)
 
 
 def remove_missing_episode_from_cache(cache: dict, tmdb_id: int, season: int, episode: int) -> bool:

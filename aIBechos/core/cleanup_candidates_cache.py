@@ -25,6 +25,7 @@ import json
 from dataclasses import asdict
 
 from core.appdirs import app_data_dir
+from core.atomic_write import write_json_atomic
 
 _FILENAME = "cleanup_candidates_cache.json"
 
@@ -73,8 +74,7 @@ def save_cache(items: list, last_scan_ts: float, scanned_by: str = "") -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {"items": _items_to_json_list(items), "last_scan_ts": last_scan_ts, "scanned_by": scanned_by}
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    write_json_atomic(path, data)
 
 
 def wrap_for_remote(items: list, last_scan_ts: float, scanned_by: str) -> dict:

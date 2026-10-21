@@ -64,7 +64,9 @@ aIBechos/
 │   ├── auto_watcher.py   # AutoWatcher — recursive folder polling thread; identifies video AND books/comics, optionally auto-extracts archives (see "auto_extract_archives" setting)
 │   ├── missing_ep_rows.py   # "Episodios que faltan": rows from cache, filters (ignored/AI/dub/complete), sort, texts — pure (no Qt)
 │   ├── missing_ep_scan.py   # MissingEpScanMixin — the Jellyfin/Plex × TMDB × FTP scan, single-series rescan and Spanish-dub source checks; inherited by QtAppCore and the Episodios tab's scan service
-│   ├── app_files_core.py    # FilesCoreMixin — ALL non-UI logic of the Archivos tab (add/extract, identify, rename, upload queue, history, auto_processed DB, AutoWatcher events, session) inherited by QtAppCore
+│   ├── app_files_core.py    # FilesCoreMixin — ALL non-UI logic of the Archivos tab, inherited by QtAppCore; itself the list part (add/extract, AutoWatcher events, auto_processed DB, history, session, remove/play) plus:
+│   ├── app_files_upload.py  #   FilesUploadMixin — upload queue, FTP/SFTP upload of each file, server folder/category resolution
+│   ├── app_files_identify.py #  FilesIdentifyMixin — identification (TMDB/books/comics + AI), assign results, rename
 │   ├── app_shared_sync.py   # SharedSyncMixin — shared-folder paths and upload/category/slim/activity stats pushes
 │   ├── file_entry.py        # FileEntry + session (de)serialization + status labels
 │   ├── app_auto_complete.py # AutoCompleteMixin — ⚡ auto-complete of series (toggle with shared ownership, 30-min pass, retries/backoff, unstuck, force search)

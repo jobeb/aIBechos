@@ -3,14 +3,57 @@ Una entrada de la lista de Archivos (FileEntry) y su (de)serialización para
 session.json. Sin interfaz (la usa gui_qt/).
 """
 
+import time as _time
 from pathlib import Path
 
 from core.api_client import detect_episode
 from core.fmt import fmt_size as _fmt_size
 from core.renamer import get_extension, is_book_file, is_comic_file
 
+#: Eventos que se guardan por archivo (los más recientes).
+EVENT_LIMIT = 40
+
+
+def _info_label(info) -> str:
+    """"Título (año) 1x02" de un MediaInfo, para el registro y el tooltip."""
+    if info is None:
+        return ""
+    g = lambda k: getattr(info, k, None)
+    label = str(g("title") or "")
+    if g("year"):
+        label += f" ({g('year')})"
+    season, episode = g("season"), g("episode")
+    if isinstance(season, int) and isinstance(episode, int):
+        label += f" {season}x{episode:02d}"
+    elif episode is not None and g("media_type") == "libro":
+        label += f" #{episode}"
+    return label
+
+
+def _info_key(info):
+    if info is None:
+        return None
+    return tuple(getattr(info, k, None) for k in ("media_type", "tmdb_id", "title", "season", "episode"))         + (id(info) if not hasattr(info, "title") else 0,)
+
+
+def detected_label(det) -> str:
+    det = det or {}
+    if det.get("season"):
+        return f"{det.get('title', '')} S{det.get('season', 0):02d}E{det.get('episode', 0) or 0:02d}"
+    if det.get("episode") and det.get("type") == "libro":
+        return f"{det.get('title', '')} #{det.get('episode')}"
+    return det.get("title", "") or ""
+
+
 class FileEntry:
+    """Además de sus datos, cada entrada apunta con la hora lo que le pasa
+    (self.events: [ts, tipo, valor, motivo]): añadido, detección, cambios de
+    estado (con el motivo de error_msg), identificación y nombre nuevo. Lo
+    hacen solos los setters de abajo, así ninguno de los muchos sitios que
+    cambian el estado tiene que acordarse; lo usa el tooltip de Archivos."""
+
     def __init__(self, path):
+        self.events = []
         # Normalizar separadores (str(Path(...)) usa "\" en Windows) — sin
         # esto, la MISMA ruta con "/" y con "\" se trata como dos archivos
         # distintos en cualquier comparación por igualdad de texto (duplica
@@ -44,6 +87,89 @@ class FileEntry:
         self._last_known_size_text = ""   # ver App._file_size_text -- último tamaño leído con éxito
         self._last_known_size_bytes = None   # ver App._update_status_bar -- caché para no re-stat()ear todo self.files en cada fila actualizada
         self.is_slim = False   # viene de un adelgazamiento (ver evento "slim" del watcher): la fila muestra "Adelgazando"
+        now = _time.time()
+        self.events = [[now, "added", "", ""], [now, "detected", detected_label(self.detected), ""]]
+
+    # ── Registro de eventos (ver docstring de la clase) ──
+
+    def _log(self, kind: str, value: str = "", detail: str = "") -> None:
+        try:
+            self.events.append([_time.time(), kind, value, detail])
+            if len(self.events) > EVENT_LIMIT:
+                del self.events[:len(self.events) - EVENT_LIMIT]
+        except Exception:
+            pass
+
+    @property
+    def status(self):
+        return self._status
+
+    @status.setter
+    def status(self, value):
+        old = getattr(self, "_status", None)
+        self._status = value
+        if old is not None and value != old:
+            detail = ""
+            last = self.events[-1] if self.events else None
+            # Motivo puesto justo antes del estado (algunos sitios lo hacen
+            # en ese orden): pasa a ser el motivo de este cambio.
+            if last and last[1] == "note" and _time.time() - last[0] < 2:
+                detail = last[2]
+                self.events.pop()
+            self._log("status", value, detail)
+
+    @property
+    def error_msg(self):
+        return self._error_msg
+
+    @error_msg.setter
+    def error_msg(self, value):
+        old = getattr(self, "_error_msg", None)
+        self._error_msg = value
+        if old is None or not value or value == old:
+            return
+        last = self.events[-1] if self.events else None
+        if last and last[1] == "status" and not last[3] and _time.time() - last[0] < 2:
+            last[3] = value
+        else:
+            self._log("note", value)
+
+    @property
+    def media_info(self):
+        return self._media_info
+
+    @media_info.setter
+    def media_info(self, value):
+        old = getattr(self, "_media_info", "unset")
+        self._media_info = value
+        if old == "unset" or _info_key(value) == _info_key(old):
+            return
+        if value is None:
+            self._log("unidentified")
+        else:
+            self._log("identified", _info_label(value))
+
+    @property
+    def new_name(self):
+        return self._new_name
+
+    @new_name.setter
+    def new_name(self, value):
+        old = getattr(self, "_new_name", None)
+        self._new_name = value
+        if old is not None and value and value != old:
+            self._log("new_name", value)
+
+    @property
+    def detected(self):
+        return self._detected
+
+    @detected.setter
+    def detected(self, value):
+        old = getattr(self, "_detected", None)
+        self._detected = value
+        if old is not None and value != old:
+            self._log("detected", detected_label(value))
 
     @property
     def path_key(self) -> str:
@@ -94,6 +220,7 @@ class FileEntry:
             "last_known_size_bytes": self._last_known_size_bytes,
             "ftp_progress": ftp_progress,
             "is_slim": bool(getattr(self, "is_slim", False)),
+            "events": [list(e) for e in self.events[-EVENT_LIMIT:]],
         }
 
     @classmethod
@@ -140,6 +267,14 @@ class FileEntry:
                 overview       = mi.get("overview", ""),
                 genre_ids      = mi.get("genre_ids", []),
             )
+        # El registro guardado sustituye al que han ido apuntando los setters
+        # al reconstruir la entrada (con la hora de ahora, no la real). Una
+        # sesión de antes de este campo se queda sin registro: mejor nada que
+        # fechas inventadas.
+        events = d.get("events")
+        entry.events = [list(e) for e in events if isinstance(e, (list, tuple)) and len(e) == 4
+                        and isinstance(e[0], (int, float))][-EVENT_LIMIT:] \
+            if isinstance(events, list) else []
         return entry
 
 
@@ -234,3 +369,153 @@ def _file_status_text(entry) -> str:
         return _status_label(entry.status)
     except Exception:
         return ""
+
+
+# ── Tooltip de Archivos: qué es, en qué estado está y por qué ──
+
+#: Qué significa cada estado, para quien no sabe qué hace la app por dentro.
+STATUS_HELP = {
+    "pendiente": "Aún no está identificado: selecciónalo y busca el título, o espera a la búsqueda automática.",
+    "buscando": "Buscando el título (TMDB, OpenLibrary/Google Books o ComicVine).",
+    "listo": "Identificado y con nombre nuevo: listo para renombrar y subir.",
+    "renombrado": "Renombrado en tu disco; falta subirlo al servidor.",
+    "en_cola": "Esperando turno para subir (hay otras subidas delante, o se reanudará donde se quedó).",
+    "subiendo": "Subiéndose al servidor ahora mismo.",
+    "subido": "Subido al servidor.",
+    "auto": "Lo está procesando el modo automático (carpeta vigilada).",
+    "omitido": "No se ha subido: el modo automático lo ha saltado.",
+    "error": "Algo ha fallado y no se ha terminado.",
+    "esperando_confirmacion": "Hay un aviso esperando tu respuesta (por ejemplo, si sobrescribir un archivo "
+                              "que ya está en el servidor).",
+}
+
+
+def event_text(kind: str, value: str = "", detail: str = "") -> str:
+    if kind == "added":
+        return "Añadido a la lista"
+    if kind == "detected":
+        return f"Detectado del nombre: {value}" if value else "Sin título reconocible en el nombre"
+    if kind == "status":
+        text = _status_label(value) if value else ""
+        if detail and detail.lower().startswith(text.lower()):
+            return detail          # el motivo ya empieza por el estado
+        return f"{text}: {detail}" if detail else text
+    if kind == "identified":
+        return f"Identificado como {value}"
+    if kind == "unidentified":
+        return "Identificación quitada"
+    if kind == "new_name":
+        return f"Nuevo nombre: {value}"
+    return value or detail
+
+
+def upload_record(history: list, entry):
+    """El último registro de subida correcta de *entry* en upload_history.json
+    (por ruta local o por nombre original), o None. Para las entradas de
+    antes del registro de eventos, que no saben cuándo se subieron."""
+    path = getattr(entry, "path", "")
+    name = getattr(entry, "name", "")
+    for rec in reversed(history or []):
+        if not isinstance(rec, dict) or rec.get("status") != "ok":
+            continue
+        if (path and rec.get("local_path") == path) or (name and rec.get("filename") == name):
+            return rec
+    return None
+
+
+def _last_event(entry, kind, value=None):
+    for e in reversed(getattr(entry, "events", None) or []):
+        if e[1] == kind and (value is None or e[2] == value):
+            return e
+    return None
+
+
+def entry_details(entry, dest: str = "", size_text: str = "", record=None) -> dict:
+    """Lo que enseña el tooltip de una fila de Archivos (sin formato):
+    {"title", "status", "status_help", "reason", "rows": [(etiqueta, valor)],
+     "events": [(ts, texto)]}. *record*: ver upload_record."""
+    status = getattr(entry, "status", "") or ""
+    reason = getattr(entry, "error_msg", "") or ""
+    rows = [("Archivo", getattr(entry, "path", ""))]
+    if size_text:
+        rows.append(("Peso", size_text))
+    det = detected_label(getattr(entry, "detected", None))
+    rows.append(("Detectado del nombre", det or "—"))
+    info = getattr(entry, "media_info", None)
+    if info is not None:
+        label = _info_label(info)
+        kind = getattr(info, "media_type", "")
+        genres = getattr(info, "genre_ids", None) or []
+        source = ("cómic" if "comic" in genres else "libro") if kind == "libro" else \
+            {"tv": "serie · TMDB", "movie": "película · TMDB"}.get(kind, kind)
+        conf = getattr(entry, "confidence", 0) or 0
+        extra = f" · confianza {conf}%" if conf else ""
+        rows.append(("Identificado como", f"{label} ({source}{extra})" if source else label + extra))
+        ev = _last_event(entry, "identified")
+        if ev:
+            rows.append(("Identificado el", ev[0]))
+    else:
+        rows.append(("Identificado como", "sin identificar"))
+    if getattr(entry, "new_name", ""):
+        rows.append(("Nuevo nombre", entry.new_name))
+    if dest:
+        rows.append(("Destino", dest))
+    if status == "subido":
+        ev = _last_event(entry, "status", "subido")
+        when = ev[0] if ev else (record or {}).get("ts")
+        if when:
+            rows.append(("Subido el", when))
+        if record:
+            if record.get("remote"):
+                rows.append(("En el servidor", record["remote"]))
+            if record.get("person"):
+                rows.append(("Subido por", record["person"]))
+    added = _last_event(entry, "added")
+    if added:
+        rows.append(("Añadido el", added[0]))
+    events = [(e[0], event_text(e[1], e[2], e[3])) for e in (getattr(entry, "events", None) or [])]
+    return {
+        "title": getattr(entry, "new_name", "") or getattr(entry, "name", ""),
+        "status": _file_status_text(entry),
+        "status_help": STATUS_HELP.get(status, ""),
+        "reason": reason if status in ("error", "omitido", "auto", "esperando_confirmacion") else "",
+        "rows": rows,
+        "events": events,
+    }
+
+
+# ── Filtro de la lista de Archivos ──
+
+#: Grupos del desplegable de estado -> estados internos (None = todos).
+FILTER_GROUPS = {
+    "todos": None,
+    "pendientes": {"pendiente", "buscando", "listo", "renombrado", "esperando_confirmacion"},
+    "en_curso": {"en_cola", "subiendo", "auto"},
+    "subidos": {"subido"},
+    "errores": {"error"},
+    "omitidos": {"omitido"},
+}
+
+
+def _fold(text) -> str:
+    import unicodedata
+    text = unicodedata.normalize("NFKD", str(text or "").lower())
+    return "".join(c for c in text if not unicodedata.combining(c))
+
+
+def entry_matches(entry, text: str = "", group: str = "todos") -> bool:
+    """¿Se ve *entry* con el filtro? *text*: todas sus palabras deben estar
+    en el nombre, el nombre nuevo, lo detectado, el título identificado o el
+    estado (sin distinguir mayúsculas ni acentos). *group*: FILTER_GROUPS."""
+    wanted = FILTER_GROUPS.get(group)
+    if wanted is not None and getattr(entry, "status", "") not in wanted:
+        return False
+    words = _fold(text).split()
+    if not words:
+        return True
+    info = getattr(entry, "media_info", None)
+    hay = _fold(" ".join([
+        getattr(entry, "name", ""), getattr(entry, "new_name", "") or "",
+        detected_label(getattr(entry, "detected", None)),
+        _info_label(info) if info is not None else "", _file_status_text(entry)]))
+    return all(w in hay for w in words)

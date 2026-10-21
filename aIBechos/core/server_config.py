@@ -215,11 +215,10 @@ def load_last_synced_snapshot() -> dict:
 
 
 def save_last_synced_snapshot(data: dict) -> None:
-    import json
     path = _last_synced_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    from core.atomic_write import write_json_atomic
+    write_json_atomic(path, data)
 
 
 def diff_local_changes(get_fn, last_synced: dict) -> set:

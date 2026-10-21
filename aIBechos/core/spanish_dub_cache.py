@@ -69,6 +69,7 @@ core/missing_episodes.is_ep_dub_confirmed).
 import json
 
 from core.appdirs import app_data_dir
+from core.atomic_write import write_json_atomic
 
 _FILENAME = "spanish_dub_cache.json"
 _cache: dict | None = None
@@ -114,8 +115,7 @@ def save_cache(cache: dict) -> None:
     _cache = cache
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
+    write_json_atomic(path, cache)
 
 
 def _reset_cache_for_tests() -> None:

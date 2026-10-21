@@ -14,14 +14,18 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelection, QItemSelectionModel, QModelIndex, Qt
-from PySide6.QtGui import QAction, QGuiApplication
-from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
-                               QMenu, QPushButton, QSplitter, QTableView, QVBoxLayout, QWidget)
+from PySide6.QtGui import QAction, QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QLabel,
+                               QLineEdit, QMenu, QPushButton, QSplitter, QTableView, QVBoxLayout,
+                               QWidget)
 
+from core.file_entry import entry_matches
 from core.fmt import fmt_size, fmt_speed
 from core.renamer import is_archive_file, is_book_file, is_video_file
 from core.status_colors import SUCCESS_COLOR, WARNING_COLOR
 from gui_qt import theme
+from gui_qt.ui_state import remember_splitter
+from gui_qt.columns import fill_columns
 from gui_qt.actions import ActionsDelegate
 from gui_qt.dialogs import AmuleTemplateDialog
 from gui_qt.files.detail_panel import FilesDetailPanel
@@ -78,6 +82,7 @@ class FilesTab(QWidget):
         self.ctx = host.ctx
         self._syncing_selection = False
         self._build_ui()
+        self._setup_shortcuts()
         host.view = self
         self.refresh_table()
         self.update_assign_button_label()
@@ -92,17 +97,18 @@ class FilesTab(QWidget):
         head = QHBoxLayout()
         add_files = QPushButton("+ Archivos")
         add_files.setProperty("accent", True)
-        add_files.setToolTip("Añadir archivos sueltos a la lista. Los .zip, .7z, .rar y .tar se "
-                             "descomprimen solos, incluidos los anidados.")
+        add_files.setToolTip("Añadir archivos sueltos a la lista (Ctrl+O). Los .zip, .7z, .rar y .tar "
+                             "se descomprimen solos, incluidos los anidados.")
         add_files.clicked.connect(self.add_files)
         add_folder = QPushButton("+ Carpeta")
-        add_folder.setToolTip("Añadir una carpeta entera, con sus subcarpetas. Los comprimidos que "
+        add_folder.setToolTip("Añadir una carpeta entera, con sus subcarpetas (Ctrl+Mayús+O). Los comprimidos que "
                               "encuentre se descomprimen solos. Si detecta 2 o más libros/cómics pregunta "
                               "si son de la misma colección, para identificarlos de una sola búsqueda.")
         add_folder.clicked.connect(self.add_folder)
         self.select_all_btn = QPushButton("Seleccionar todos")
-        self.select_all_btn.setToolTip("Selecciona todos los archivos de la lista, para asignarles el mismo "
-                                       "resultado de búsqueda de una vez ('Asignar a la selección').")
+        self.select_all_btn.setToolTip("Selecciona todos los archivos de la lista (los que deja ver el filtro), "
+                                       "para asignarles el mismo resultado de búsqueda de una vez "
+                                       "('Asignar a la selección'). Ctrl+A.")
         self.select_all_btn.clicked.connect(self.toggle_select_all)
         for b in (add_files, add_folder, self.select_all_btn):
             head.addWidget(b)
@@ -118,11 +124,30 @@ class FilesTab(QWidget):
         self.upload_btn = QPushButton("Subir todo")
         self.upload_btn.setProperty("accent", True)
         self.upload_btn.setToolTip("Subir al servidor todos los archivos de la lista, cada uno a la carpeta "
-                                   "de su columna \"Destino\".")
+                                   "de su columna \"Destino\". Ctrl+U sube solo lo seleccionado.")
         self.upload_btn.clicked.connect(lambda: self.host._on_header_upload_clicked())
         head.addWidget(self.clear_btn)
         head.addWidget(self.upload_btn)
         root.addLayout(head)
+
+        # Filtro: solo cambia qué filas se ven (no toca la lista ni el orden).
+        filt = QHBoxLayout()
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Filtrar por nombre, serie o estado…  (Ctrl+F)")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.setToolTip("Enseña solo los archivos que contienen todas estas palabras en el "
+                                    "nombre, el nombre nuevo, lo detectado, el título o el estado. "
+                                    "Esc lo borra.")
+        self.filter_edit.textChanged.connect(lambda _t: self.apply_filter())
+        self.filter_status = QComboBox()
+        for label, key in (("Todos los estados", "todos"), ("Pendientes", "pendientes"),
+                           ("Subiendo o en cola", "en_curso"), ("Subidos", "subidos"),
+                           ("Con error", "errores"), ("Omitidos", "omitidos")):
+            self.filter_status.addItem(label, key)
+        self.filter_status.currentIndexChanged.connect(lambda _i: self.apply_filter())
+        filt.addWidget(self.filter_edit, 1)
+        filt.addWidget(self.filter_status)
+        root.addLayout(filt)
 
         self.model = FilesModel(self.host, self)
         self.table = _FilesTable(self.add_paths)
@@ -144,11 +169,9 @@ class FilesTab(QWidget):
         self.table.setItemDelegateForColumn(COL_ACTIONS, self.actions_delegate)
         self.table.setItemDelegateForColumn(COL_BAR, ProgressDelegate(self.table))
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(QHeaderView.Interactive)
         # Nombre original y Nuevo nombre se reparten el sitio sobrante; el
-        # resto tiene ancho fijo de partida (arrastrable).
-        hdr.setSectionResizeMode(COL_NAME, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(COL_NN, QHeaderView.Stretch)
+        # resto tiene ancho fijo de partida. Todas arrastrables.
+        fill_columns(self.table, COL_NAME, COL_NN, key="files")
         for col, w in ((COL_DET, 140), (COL_DEST, 150), (COL_STAT, 78), (COL_BAR, 90),
                        (COL_SPD, 64), (COL_SIZE, 64), (COL_FAV, 28), (COL_LOCK, 28), (COL_ACTIONS, 100)):
             hdr.resizeSection(col, w)
@@ -175,6 +198,7 @@ class FilesTab(QWidget):
         splitter.addWidget(self.detail)
         splitter.setStretchFactor(0, 1)
         splitter.setSizes([1000, 290])
+        remember_splitter(splitter, "files")
         root.addWidget(splitter, 1)
 
         self.summary_lbl = QLabel()
@@ -188,8 +212,77 @@ class FilesTab(QWidget):
         empty = not self.host.files
         self.table.setVisible(not empty)
         self.empty_lbl.setVisible(empty)
+        self.apply_filter(update_status=False)
         self._sync_view_selection_from_host()
         self.update_status_bar()
+
+    # ── Filtro ──
+
+    def filter_active(self) -> bool:
+        return bool(self.filter_edit.text().strip()) or self.filter_status.currentData() != "todos"
+
+    def _row_visible(self, entry) -> bool:
+        return entry_matches(entry, self.filter_edit.text(), self.filter_status.currentData() or "todos")
+
+    def apply_filter(self, update_status: bool = True):
+        for row in range(self.model.rowCount()):
+            entry = self.model.entry_at(row)
+            self.table.setRowHidden(row, entry is not None and not self._row_visible(entry))
+        if update_status:
+            self.update_status_bar()
+
+    def visible_entries(self) -> list:
+        return [e for r in range(self.model.rowCount())
+                if not self.table.isRowHidden(r) and (e := self.model.entry_at(r)) is not None]
+
+    # ── Atajos de teclado ──
+
+    def _setup_shortcuts(self):
+        def key(seq, fn, widget=None):
+            sc = QShortcut(QKeySequence(seq), widget or self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(fn)
+            return sc
+
+        key("Ctrl+O", self.add_files)
+        key("Ctrl+Shift+O", self.add_folder)
+        key(QKeySequence.Find, self._focus_filter)
+        key("Ctrl+B", self._focus_search)
+        key("Ctrl+U", self._upload_selection)
+        key(QKeySequence.SelectAll, self._select_all, self.table)
+        key(QKeySequence.Delete, self._remove_selection, self.table)
+        key("Esc", lambda: self.filter_edit.clear(), self.filter_edit)
+
+    def _focus_filter(self):
+        self.filter_edit.setFocus()
+        self.filter_edit.selectAll()
+
+    def _focus_search(self):
+        q = getattr(self.detail, "query", None)
+        if q is not None:
+            q.setFocus()
+            q.selectAll()
+
+    def _select_all(self):
+        if len(self.host._current_selection()) != len(self.visible_entries()):
+            self.toggle_select_all()
+
+    def _upload_selection(self):
+        sel = self.host._current_selection()
+        if len(sel) > 1:
+            self.host._upload_selected_ftp()
+        elif sel:
+            self.host._upload_one(sel[0])
+
+    def _remove_selection(self):
+        sel = self.host._current_selection()
+        if len(sel) == 1:
+            self.host._remove_entry(sel[0])
+        elif sel:
+            # _remove_entry pregunta por cada archivo (borrar del disco o del
+            # servidor): con varios serían varios diálogos seguidos.
+            self.host._set_status("Supr quita los archivos de uno en uno: selecciona solo uno.",
+                                  theme.WARNING_COLOR)
 
     def update_row(self, entry):
         if not self.model.update_entry(entry):
@@ -197,6 +290,11 @@ class FilesTab(QWidget):
             if entry in self.host.files:
                 self.refresh_table()
                 return
+        elif self.filter_active():
+            # Con el filtro puesto, un cambio de estado puede meterla o sacarla.
+            row = self.model.row_of(entry)
+            if row >= 0:
+                self.table.setRowHidden(row, not self._row_visible(entry))
         if entry is self.host._selected_entry:
             self.detail.show_entry(entry)
         self.update_status_bar()
@@ -246,6 +344,8 @@ class FilesTab(QWidget):
                   "renombrado": "renombrados", "en_cola": "en cola para subir", "subiendo": "subiendo",
                   "subido": "subidos", "error": "con error", "auto": "en automático", "omitido": "omitidos"}
         parts = [f"{n} archivo{'s' if n != 1 else ''}", fmt_size(total)]
+        if self.filter_active():
+            parts.insert(0, f"Filtro: se ven {len(self.visible_entries())} de {n}")
         breakdown = " · ".join(f"{c} {labels.get(st, st)}" for st, c in counts.items() if c)
         if breakdown:
             parts.append(breakdown)
@@ -322,7 +422,7 @@ class FilesTab(QWidget):
             self._syncing_selection = False
 
     def toggle_select_all(self):
-        files = self.host.files
+        files = self.visible_entries()
         if not files:
             return
         if len(self.host._current_selection()) == len(files):

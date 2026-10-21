@@ -18,13 +18,14 @@ import sys
 import time
 
 from PySide6.QtCore import QPoint, QRect, QTimer
-from PySide6.QtGui import QAction, QGuiApplication, QIcon
+from PySide6.QtGui import QAction, QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox,
                                QPushButton, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
 
 from core.applog import get_logger
 from core.status_colors import SUCCESS_COLOR, WARNING_COLOR
 from core.version import __version__
+from gui_qt import columns, ui_state
 from gui_qt.bridge import run_in_thread, ui
 from gui_qt.context import AppContext
 from gui_qt.core_host import QtAppCore
@@ -62,6 +63,8 @@ class MainWindow(QMainWindow):
         self.ctx = ctx
         self._quitting = False
         self.host = QtAppCore(ctx)
+        # Anchos de columna recordados (gui_qt/columns.py): antes de las pestañas.
+        columns.set_store(ctx.config)
         self.host.window = self
         self.setWindowTitle(f"aIBechos v{__version__}")
         icon_file = resource_path("LogoaIBechos.ico" if sys.platform == "win32" else "IconoSinFondo.png")
@@ -106,6 +109,7 @@ class MainWindow(QMainWindow):
             self._tab_widgets[key] = w
             self.tabs.addTab(w, title)
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._setup_shortcuts()
         outer.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
 
@@ -127,6 +131,10 @@ class MainWindow(QMainWindow):
 
         self._setup_tray()
         self._startup()
+        # Abrir en la pestaña de la última vez, con la ventana ya completa (su
+        # on_shown puede usar la barra de estado). Se guarda en
+        # _on_tab_changed, ya pasada la confirmación de salir de Configuración.
+        ui_state.remember_tab(self.tabs, "main", [k for k, _t in TABS], track=False)
         if start_minimized and self.tray is not None:
             self.hide()
         elif self.host.config_data.get("window_maximized", False):
@@ -154,6 +162,8 @@ class MainWindow(QMainWindow):
         cfg = self.host.config_data
         cfg.set("window_geometry", f"{g.width()}x{g.height()}+{g.x()}+{g.y()}")
         cfg.set("window_maximized", self.isMaximized())
+        columns.flush_pending()
+        ui_state.flush_pending()
 
     # ── Cabecera ──
 
@@ -324,6 +334,22 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText(text)
         self.status_lbl.setStyleSheet(f"color: {color};")
 
+    def _setup_shortcuts(self):
+        """Ctrl+1…Ctrl+7: ir a cada pestaña (el número de su posición, que se
+        apunta en su tooltip). F5: volver a traer los datos de la pestaña
+        abierta (lo mismo que hace al entrar en ella)."""
+        for i in range(min(self.tabs.count(), 9)):
+            sc = QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self)
+            sc.activated.connect(lambda i=i: self.tabs.setCurrentIndex(i))
+            self.tabs.setTabToolTip(i, f"Ctrl+{i + 1}")
+        QShortcut(QKeySequence.Refresh, self).activated.connect(self.refresh_current_tab)
+
+    def refresh_current_tab(self):
+        w = self.tabs.currentWidget()
+        if hasattr(w, "on_shown"):
+            w.on_shown()
+            self.host._set_status("Pestaña actualizada", SUCCESS_COLOR)
+
     def _on_tab_changed(self, i: int):
         prev = getattr(self, "_current_tab", None)
         if prev is not None and hasattr(prev, "confirm_leave") and self.tabs.widget(i) is not prev:
@@ -337,6 +363,8 @@ class MainWindow(QMainWindow):
             prev.on_hidden()
         w = self.tabs.widget(i)
         self._current_tab = w
+        if 0 <= i < len(TABS):
+            ui_state.save_tab("main", TABS[i][0])
         if hasattr(w, "on_shown"):
             w.on_shown()
 

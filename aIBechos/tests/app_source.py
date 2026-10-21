@@ -7,6 +7,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 APP_FILES = [
     _ROOT / "core" / "app_files_core.py",
+    _ROOT / "core" / "app_files_upload.py",
+    _ROOT / "core" / "app_files_identify.py",
     _ROOT / "core" / "app_shared_sync.py",
     _ROOT / "core" / "missing_ep_scan.py",
     _ROOT / "core" / "file_entry.py",

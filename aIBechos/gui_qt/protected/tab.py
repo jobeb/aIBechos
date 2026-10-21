@@ -8,12 +8,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QLabel,
                                QMenu, QSplitter, QTableView, QVBoxLayout, QWidget)
 
 from core.fmt import fmt_size
 from core.status_colors import PENDING_COLOR
 from gui_qt import theme
+from gui_qt.ui_state import remember_splitter
+from gui_qt.columns import fill_columns
 from gui_qt.actions import Action, ActionsDelegate, ActionsRole
 from gui_qt.ficha import TmdbFicha
 
@@ -111,7 +113,7 @@ class ProtectedTab(QWidget):
         self.view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._context_menu)
         hdr = self.view.horizontalHeader()
-        hdr.setSectionResizeMode(P_NAME, QHeaderView.Stretch)
+        fill_columns(self.view, P_NAME, key="protected")
         for c, w in ((P_ICON, 30), (P_SIZE, 90), (P_OWNER, 130), (P_ACT, 44)):
             hdr.resizeSection(c, w)
         self.view.selectionModel().currentRowChanged.connect(lambda cur, _p: self._show(cur.row()))
@@ -121,6 +123,7 @@ class ProtectedTab(QWidget):
         split.addWidget(self.ficha)
         split.setStretchFactor(0, 1)
         split.setSizes([900, 270])
+        remember_splitter(split, "protected")
         root.addWidget(split, 1)
 
         host.protected_view = self

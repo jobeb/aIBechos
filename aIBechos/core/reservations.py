@@ -24,6 +24,7 @@ import json
 from typing import Optional
 
 from core.appdirs import app_data_dir
+from core.atomic_write import write_json_atomic
 
 _FILENAME = "reservations.json"
 
@@ -53,8 +54,7 @@ def load_local_cache() -> dict:
 def save_local_cache(data: dict) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    write_json_atomic(path, data)
 
 
 def add_reservation(data: dict, media_type: str, tmdb_id: int, name: str,

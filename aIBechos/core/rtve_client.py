@@ -43,6 +43,7 @@ from collections import deque
 import requests
 
 from core.applog import get_logger
+from core.atomic_write import write_json_atomic
 
 _log = get_logger("aIBechos.rtve", "ai_fallback.log")
 
@@ -356,8 +357,7 @@ class RTVEClient:
         payload = {"checked_at": time.time(), "items": items}
         path = self._index_file()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
+        write_json_atomic(path, payload, indent=None)
         self._index = items
         _log.info("rtve: índice de programas refrescado (%d entradas)",
                   len(items))

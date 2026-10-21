@@ -11,6 +11,7 @@ la IA con la misma serie.
 import json
 
 from core.appdirs import app_data_dir
+from core.atomic_write import write_json_atomic
 
 _FILENAME = "learned_comic_titles.json"
 _cache: dict[str, str] | None = None
@@ -48,8 +49,7 @@ def load_comic_title_cache() -> dict[str, str]:
 def _save(cache: dict[str, str]) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
+    write_json_atomic(path, cache)
 
 
 def get_cached_translation(local_title: str) -> str | None:

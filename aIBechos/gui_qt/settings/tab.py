@@ -42,6 +42,11 @@ def _normalized(key: str, value):
     if key.startswith("custom_links_") and isinstance(value, list):
         return [{"name": (l or {}).get("name", ""), "url_template": (l or {}).get("url_template", ""),
                  "background": bool((l or {}).get("background", False))} for l in value]
+    if key == "ftp_categories" and isinstance(value, dict):
+        # La página siempre devuelve los tres tipos; la migración de
+        # instalaciones nuevas (y configuraciones de servidor antiguas) solo
+        # traen tv/movie: un tipo ausente es lo mismo que sin categorías.
+        return {t: value.get(t) or [] for t in {"tv", "movie", "libro", *value}}
     return value
 
 

@@ -31,6 +31,7 @@ import time
 import unicodedata
 
 from core.appdirs import app_data_dir
+from core.atomic_write import write_json_atomic
 
 _FILENAME = "upload_stats.json"
 
@@ -65,8 +66,7 @@ def load_local_cache() -> dict:
 def save_local_cache(data: dict) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    write_json_atomic(path, data)
 
 
 def add_upload(data: dict, person: str, size_bytes: int, ts: float = None) -> dict:

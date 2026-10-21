@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 
+from gui_qt import ui_state
+
 # Imports ESTÁTICOS a propósito (nada de importlib con strings): PyInstaller
 # solo empaqueta lo que ve en el análisis estático; con importación
 # dinámica la app funcionaba desde fuente pero el instalado moría con
@@ -44,6 +46,7 @@ class InfoTab(QWidget):
             QVBoxLayout(holder).setContentsMargins(0, 0, 0, 0)
             holder.setProperty("page_key", key)
             self.tabs.addTab(holder, title)
+        ui_state.remember_tab(self.tabs, "info", [k for _t, k, _c in SPECS])
         self.tabs.currentChanged.connect(lambda _i: self.ensure_current())
         root.addWidget(self.tabs, 1)
         host.info_view = self

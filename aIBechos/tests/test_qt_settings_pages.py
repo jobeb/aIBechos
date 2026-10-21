@@ -89,6 +89,26 @@ def test_recien_abierto_no_hay_cambios(qtbot):
         assert not changed, f"{type(p).__name__}: {changed}"
 
 
+def test_categorias_sin_libro_no_cuentan_como_cambio(qtbot):
+    """Real: la migración de una instalación nueva crea solo tv/movie y, al
+    salir de Configuración sin tocar nada, avisaba de cambios sin guardar."""
+    from gui_qt.settings.tab import SERVER_PAGES, _normalized
+    from config import DEFAULTS
+    cats = {"tv": [{"id": "a", "name": "Series", "genre_ids": [], "root": "/s", "template": "{serie}/"}],
+            "movie": []}
+    host = _Host({**DEFAULTS, **SAMPLE, "ftp_categories": cats})
+    for _t, _k, cls in SERVER_PAGES:
+        p = cls(host)
+        qtbot.addWidget(p)
+        v = p.collect().get("ftp_categories")
+        if v is not None:
+            assert _normalized("ftp_categories", cats) == _normalized("ftp_categories", v)
+            # Y un cambio de verdad se sigue detectando.
+            assert _normalized("ftp_categories", {**cats, "libro": [{"id": "b"}]})                 != _normalized("ftp_categories", v)
+            return
+    raise AssertionError("ninguna página devuelve ftp_categories")
+
+
 def test_protocolo_y_limites(qtbot):
     from gui_qt.settings.client_pages import FtpPage, GeneralPage
     host = _Host({**SAMPLE, "poll_interval": 1, "unstuck_max_retries": 99})

@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-MIXIN_FILES = ["core/app_files_core.py", "core/app_shared_sync.py", "core/missing_ep_scan.py",
+MIXIN_FILES = ["core/app_files_core.py", "core/app_files_upload.py", "core/app_files_identify.py",
+               "core/app_shared_sync.py", "core/missing_ep_scan.py",
                "core/app_auto_complete.py", "core/app_download_requests.py",
                "core/app_downloads_core.py", "core/app_movies_core.py",
                "core/app_history_core.py", "core/app_cleanup_core.py",
