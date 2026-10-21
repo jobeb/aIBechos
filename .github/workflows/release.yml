@@ -166,15 +166,14 @@ jobs:
             ## aIBechos ${{ github.ref_name }}
 
             ### Novedades
-            - Solicitudes web: los reintentos se espacian (30 min, 1 h, 2 h, 4 h) en vez de gastar los 5 intentos en media hora; la web dice cuándo será el siguiente.
-            - Solicitudes que aMule ya tenía descargadas ya no se dan por fallidas, y las fallidas que sí llegaron a subirse se marcan como listas.
-            - Ya no se omiten capítulos "porque ya estaban en el servidor" cuando lo que había era una subida a medias propia: se sobrescribe.
-            - Sustituir un duplicado con otra extensión (mp4 → mkv) borra el antiguo; botones "Sustituir" y "Sustituir todos".
-            - La conexión SFTP ya no se queda muerta tras un rato parada (fallaba el primer archivo después).
-            - AutoWatcher: espera entre reintentos (1, 2 y 4 min) y recupera la extensión de vídeos que llegan sin ella.
-            - Detección: "Blade Runner 2049 (2017)" ya no sale como anime; años con el paréntesis a medias se limpian del título; TMDB prefiere el título exacto (Veneno ≠ Suave Veneno).
-            - solicitudes.json: relectura si llega a medias en vez de darlo por corrupto.
-            - Se borran solos los logs antiguos que ya no se usan (active_poll.log, ec_debug.log).
+            - Archivos: al pasar el ratón por una fila se ve qué es y qué le ha pasado: cuándo se añadió, qué se detectó, cómo se identificó (y con qué confianza), el destino, cuándo y quién lo subió, y por qué está en su estado (por ejemplo, omitido porque ya estaba en el servidor).
+            - Archivos: filtro por texto y por estado (Ctrl+F), y atajos de teclado: Ctrl+O añadir archivos, Ctrl+Mayús+O carpeta, Ctrl+A seleccionar, Ctrl+U subir la selección, Supr quitar, Ctrl+B buscar título.
+            - Ctrl+1…Ctrl+7 cambian de pestaña y F5 vuelve a traer los datos de la pestaña abierta.
+            - Las columnas de todas las tablas se pueden arrastrar (antes "Nombre original" y otras no) y sus anchos se recuerdan.
+            - Botón derecho en la cabecera de una tabla: restablecer los anchos y mostrar u ocultar columnas.
+            - Se recuerdan el reparto de los paneles laterales, la pestaña abierta y el orden de los resultados de Descargas.
+            - La configuración y el resto de datos se guardan de forma segura: un cierre brusco ya no puede dejarlos a medias.
+            - Configuración ya no avisa de "cambios sin guardar" en una instalación nueva sin haber tocado nada.
 
             ### Instalación
             - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).
