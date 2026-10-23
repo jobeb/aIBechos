@@ -1467,7 +1467,7 @@ class AutoWatcher:
             # 241 no sabían dónde había quedado el archivo -- justo el dato
             # que hace falta para poder ofrecer "borrar también del servidor".
             self.on_file_event(new_path, "uploaded", new_name=new_name, size=local_size,
-                                 remote_full=f"{remote_path}/{remote_filename}",
+                                 remote_full=f"{remote_path.rstrip('/')}/{remote_filename}",
                                  is_slim=(_slimpend is not None))
             _mark_both("subido", new_name=new_name)
             if _slimpend is not None and not _slim_heavy_gone:

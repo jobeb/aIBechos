@@ -153,3 +153,24 @@ def test_filtro_por_grupo_de_estado(tmp_path):
     todos = set().union(*(g for g in FILTER_GROUPS.values() if g))
     from core.file_entry import STATUS_HELP
     assert set(STATUS_HELP) <= todos
+
+
+def test_el_motivo_de_omitido_sobrevive_al_reinicio(tmp_path):
+    e = FileEntry(str(tmp_path / "a.mkv"))
+    e.status = "omitido"
+    e.error_msg = "Confianza insuficiente (60% < 80%)"
+    r = FileEntry.from_dict(e.to_dict())
+    assert r.error_msg == "Confianza insuficiente (60% < 80%)"
+    assert entry_details(r)["reason"] == "Confianza insuficiente (60% < 80%)"
+    assert r.events == e.events               # restaurar el motivo no apunta nada
+
+
+def test_sesion_sin_motivo_lo_saca_del_registro(tmp_path):
+    e = FileEntry(str(tmp_path / "a.mkv"))
+    e.status = "omitido"
+    e.error_msg = "Ya existe en el servidor: a.mkv"
+    d = e.to_dict()
+    d.pop("error_msg")                        # sesión de antes de guardarlo
+    assert entry_details(FileEntry.from_dict(d))["reason"] == "Ya existe en el servidor: a.mkv"
+    d["events"] = []
+    assert "No consta" in entry_details(FileEntry.from_dict(d))["reason"]

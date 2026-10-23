@@ -129,6 +129,7 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         self._download_requests_worker = None
         self._download_requests_hasty = False
         self._download_requests_sweep_ts = 0.0
+        self._download_requests_waiting_ts = 0.0
         self._fallback_missing_rows = None
         self._fallback_missing_ts = 0.0
 

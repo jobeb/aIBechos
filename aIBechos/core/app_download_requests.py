@@ -171,6 +171,8 @@ class DownloadRequestsMixin:
         if carry:
             data = _dr.merge(data, carry)
         data = _dr.prune(data)
+        if _dr.has_waiting(data):
+            self._download_requests_waiting_check_web()
         my_ids = [rid for rid, e in data.items()
                   if isinstance(e, dict) and e.get("claimed_by") == user
                   and e.get("status") in ("claimed", "downloading")]
@@ -486,7 +488,9 @@ class DownloadRequestsMixin:
             if relaunched is None:
                 return "No se pudo repetir la solicitud"
             req_id, data = relaunched
-        elif status == "failed":
+        elif status in ("failed", "waiting"):
+            # Presolicitada: "Descargar ahora mismo" no espera a que la web
+            # la dé por disponible.
             entry = {**entry, "status": "pending", "claimed_by": "", "claimed_at": 0,
                      "attempts": 0, "last_error": ""}
             data = dict(data)
@@ -533,8 +537,7 @@ class DownloadRequestsMixin:
             if not isinstance(data, dict):
                 return False
             entry = data.get(req_id)
-            if not isinstance(entry, dict) or entry.get("status") not in (
-                    "pending", "claimed", "downloading"):
+            if not isinstance(entry, dict) or entry.get("status") not in _dr.ACTIVE_STATUSES:
                 return False
             nd = _dr.mark_status(data, req_id, "cancelled", user=user)
             if nd is None:
@@ -856,20 +859,41 @@ class DownloadRequestsMixin:
         relee la cola y manda la notificación push a quien lo pidió (ver
         api/index.php notify_check). En un hilo y sin reintentos: si
         falla, la web lo detecta igual al usarse. Nunca lanza."""
+        self._download_requests_ping_web("notify_check")
+
+    #: Cada cuánto, como mucho, se pide a la web que revise las
+    #: presolicitadas (ella además se limita a una vez por hora).
+    _WAITING_CHECK_EVERY = 30 * 60
+
+    def _download_requests_waiting_check_web(self):
+        """Pide a la web que mire si alguna presolicitada ("waiting") ya
+        se puede conseguir y la pase a "pending" (api/index.php
+        waiting_check: la disponibilidad -- plataformas, cines, doblaje --
+        solo la sabe calcular la web). Así entran en la cola aunque nadie
+        abra la web. Como mucho cada _WAITING_CHECK_EVERY."""
+        now = _time.time()
+        if now - self._download_requests_waiting_ts < self._WAITING_CHECK_EVERY:
+            return
+        self._download_requests_waiting_ts = now
+        self._download_requests_ping_web("waiting_check")
+
+    def _download_requests_ping_web(self, action: str):
+        """GET a api/index.php?action=*action* de la web de solicitudes
+        (sin sesión), en un hilo y sin reintentos. Nunca lanza."""
         base = (self.config_data.get("solicitudes_web_url", "") or "").strip()
         if not base:
             return
 
         def _go():
             import urllib.request
-            url = base.rstrip("/") + "/api/index.php?action=notify_check"
+            url = base.rstrip("/") + "/api/index.php?action=" + action
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": "aIBechos"})
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    _log.info("Solicitudes: aviso a la web (%s): %s", resp.status,
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    _log.info("Solicitudes: %s en la web (%s): %s", action, resp.status,
                               resp.read(200).decode("utf-8", "replace"))
             except Exception as e:
-                _log.warning("Solicitudes: no se pudo avisar a la web (%s): %s", url, e)
+                _log.warning("Solicitudes: no se pudo llamar a la web (%s): %s", url, e)
         threading.Thread(target=_go, daemon=True).start()
 
     def _download_request_check_done(self, entry: dict, server_index: dict | None = None) -> str | None:

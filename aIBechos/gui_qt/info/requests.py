@@ -16,14 +16,12 @@ from PySide6.QtGui import QAction, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QLabel, QLineEdit,
                                QMenu, QPushButton, QTableView, QVBoxLayout, QWidget)
 
-from core.download_requests import LAUNCHABLE_STATUSES
+from core.download_requests import ACTIVE_STATUSES as _ACTIVE, LAUNCHABLE_STATUSES
 from core.status_colors import PENDING_COLOR, SUCCESS_COLOR
 from gui_qt.columns import fill_columns
 from gui_qt.actions import ActionsDelegate
 from gui_qt.dialogs import confirm
 from gui_qt.history.tab import H_ACT, H_DEST, H_FILE, HistoryModel
-
-_ACTIVE = ("pending", "claimed", "downloading")
 
 
 class WebRequestsTab(QWidget):

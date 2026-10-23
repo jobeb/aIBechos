@@ -704,6 +704,8 @@ class FilesUploadMixin:
                     self._upload_skip_all = True
                     entry.status = self._unqueue_status(entry, prev_status)
                     self.after(0, lambda e=entry: self._update_row(e))
+                    self._save_skip_history(entry, remote_file, local_size,
+                                            "Ya existía en el servidor (omitido a mano)")
                     return True, "omitido"
                 elif answer[0] == "skip":
                     # Omitir o cerrar el diálogo (por defecto también "skip"):
@@ -711,6 +713,8 @@ class FilesUploadMixin:
                     # cola -- es un "ahora no", reintentable más adelante.
                     entry.status = self._unqueue_status(entry, prev_status)
                     self.after(0, lambda e=entry: self._update_row(e))
+                    self._save_skip_history(entry, remote_file, local_size,
+                                            "Ya existía en el servidor (omitido a mano)")
                     return True, "omitido"
                 else:   # "overwrite"
                     force_overwrite = True
@@ -721,6 +725,8 @@ class FilesUploadMixin:
                 # "Omitir todos" ya contestado en otro archivo de esta tanda:
                 # se omite sin preguntar (igual que "skip", es un "ahora no"
                 # reintentable, no una exclusión permanente).
+                self._save_skip_history(entry, remote_file, local_size,
+                                        "Ya existía en el servidor (\"Omitir todos\")")
                 return True, "omitido"
             else:
                 # El archivo con el nombre exacto NO está completo: si además
@@ -767,6 +773,8 @@ class FilesUploadMixin:
                     elif answer[0] != "overwrite":   # "skip" (Omitir o cerrado con la X)
                         entry.status = self._unqueue_status(entry, prev_status)
                         self.after(0, lambda e=entry: self._update_row(e))
+                        self._save_skip_history(entry, remote_file, local_size,
+                                                f"Ya había otro archivo con el mismo contenido: {dup}")
                         return True, "omitido"
 
                 if stalled and not self._upload_overwrite_all:
@@ -802,6 +810,8 @@ class FilesUploadMixin:
                     else:   # "skip" (Omitir o cerrado con la X)
                         entry.status = self._unqueue_status(entry, prev_status)
                         self.after(0, lambda e=entry: self._update_row(e))
+                        self._save_skip_history(entry, remote_file, local_size,
+                                                "La subida no avanzaba en el servidor (omitida a mano)")
                         return True, "omitido"
                 elif stalled and self._upload_overwrite_all:
                     force_overwrite = True
@@ -902,10 +912,13 @@ class FilesUploadMixin:
         elif msg == "cancelado":
             entry.status = "listo"
             self._ftp_row_set(entry, "Cancelado", entry.ftp_progress, 0)
+            self._save_skip_history(entry, remote_file, local_size, "Subida cancelada a mano",
+                                    status="cancelado")
             _log.info("Subida: cancelada por el usuario %r", remote_filename)
         elif msg == "saltado":
             entry.status = "listo"
             self._ftp_row_set(entry, "Saltado", 0, 0)
+            self._save_skip_history(entry, remote_file, local_size, "Saltada a mano durante la subida")
             _log.info("Subida: saltada %r", remote_filename)
         elif msg == "disco_lleno":
             entry.status    = "error"
@@ -941,6 +954,17 @@ class FilesUploadMixin:
 
         self.after(0, lambda e=entry: self._update_row(e))
         return ok or msg in ("omitido", "saltado", "sin_info"), msg
+
+    def _save_skip_history(self, entry, remote_file: str, size, reason: str,
+                           status: str = "omitido"):
+        """Apunta en el Historial una subida que no se hizo (omitida o
+        cancelada), con su motivo -- antes solo constaban las correctas y
+        los errores."""
+        try:
+            self._save_history_entry(entry.name, remote_file, status, size or 0,
+                                     error_msg=reason, local_path=entry.path)
+        except Exception:
+            _log.warning("Historial: no se pudo apuntar %r como %s", entry.name, status, exc_info=True)
 
     def _apply_manual_action_to_path(self, path: Path):
         """Aplica "manual_action" (Ajustes: mantener/mover a "procesados"/

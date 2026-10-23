@@ -202,6 +202,9 @@ class FileEntry:
             "path":       self.path,
             "new_name":   self.new_name,
             "status":     status,
+            # El motivo de "error"/"omitido": sin guardarlo, tras reiniciar
+            # el tooltip solo podía decir que se omitió, no por qué.
+            "error_msg":  self.error_msg if status in ("error", "omitido") else "",
             "confidence": self.confidence,
             "media_info": _mediainfo_to_dict(self.media_info) if self.media_info else None,
             "remote_dir_override": self.remote_dir_override,
@@ -229,6 +232,7 @@ class FileEntry:
         entry.new_name   = d.get("new_name", "")
         entry.status     = d.get("status", "pendiente")
         entry.confidence = d.get("confidence", 0)
+        entry.error_msg  = d.get("error_msg", "") or ""
         entry.is_slim    = bool(d.get("is_slim", False))
         entry.remote_dir_override = d.get("remote_dir_override")
         # Restaura la elección manual de _set_book_comic_type si difiere de
@@ -383,7 +387,7 @@ STATUS_HELP = {
     "subiendo": "Subiéndose al servidor ahora mismo.",
     "subido": "Subido al servidor.",
     "auto": "Lo está procesando el modo automático (carpeta vigilada).",
-    "omitido": "No se ha subido: el modo automático lo ha saltado.",
+    "omitido": "No se ha subido: se ha saltado (abajo, el motivo).",
     "error": "Algo ha fallado y no se ha terminado.",
     "esperando_confirmacion": "Hay un aviso esperando tu respuesta (por ejemplo, si sobrescribir un archivo "
                               "que ya está en el servidor).",
@@ -430,12 +434,26 @@ def _last_event(entry, kind, value=None):
     return None
 
 
+def _status_reason(entry, status: str) -> str:
+    """Por qué está en *status*: error_msg o, si no lo hay (sesiones de
+    antes de guardarlo), el motivo apuntado en su último cambio a ese
+    estado en el registro de eventos."""
+    reason = getattr(entry, "error_msg", "") or ""
+    if not reason:
+        ev = _last_event(entry, "status", status)
+        reason = (ev[3] if ev else "") or ""
+    if not reason and status == "omitido":
+        reason = ("No consta (se omitió antes de que la app guardara el motivo); "
+                  "mira el registro del modo automático o vuelve a procesarlo.")
+    return reason
+
+
 def entry_details(entry, dest: str = "", size_text: str = "", record=None) -> dict:
     """Lo que enseña el tooltip de una fila de Archivos (sin formato):
     {"title", "status", "status_help", "reason", "rows": [(etiqueta, valor)],
      "events": [(ts, texto)]}. *record*: ver upload_record."""
     status = getattr(entry, "status", "") or ""
-    reason = getattr(entry, "error_msg", "") or ""
+    reason = _status_reason(entry, status) if status in ("error", "omitido")         else getattr(entry, "error_msg", "") or ""
     rows = [("Archivo", getattr(entry, "path", ""))]
     if size_text:
         rows.append(("Peso", size_text))

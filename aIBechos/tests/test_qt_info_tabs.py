@@ -212,3 +212,21 @@ def test_vistas_con_menu_contextual(qtbot):
     for key in ("history", "requests", "protected"):
         page = info.pages[key]
         assert page.view.contextMenuPolicy() == Qt.CustomContextMenu, key
+
+
+def test_historial_omitidos_y_cancelados_con_motivo(qtbot):
+    from PySide6.QtCore import Qt
+    from gui_qt.history.tab import H_DEST, H_STATE, HistoryModel
+    m = HistoryModel()
+    m.set_rows([
+        {"filename": "a.mkv", "status": "ok", "remote": "/datos2/series/Girls/Temporada 05//Girls 5x04.mkv"},
+        {"filename": "b.mkv", "status": "omitido", "remote": "/series/b.mkv",
+         "error_msg": "Ya existía en el servidor (omitido a mano)"},
+        {"filename": "c.mkv", "status": "cancelado", "remote": "", "error_msg": "Subida cancelada a mano"},
+    ])
+    assert m.data(m.index(0, H_DEST)) == "/datos2/series/Girls/Temporada 05/Girls 5x04.mkv"
+    assert m.data(m.index(1, H_DEST)) == "Ya existía en el servidor (omitido a mano)"
+    assert m.data(m.index(1, H_STATE)) == "Omitido"
+    assert m.data(m.index(2, H_STATE)) == "Cancelado"
+    assert m.data(m.index(1, 7), ActionsRole)[0].enabled          # con ruta: reintentable
+    assert not m.data(m.index(2, 7), ActionsRole)[0].enabled      # sin ruta: no

@@ -141,3 +141,12 @@ def test_wait_dialog_con_timeout():
     ev = threading.Event()
     ev.set()
     assert FilesCoreMixin._wait_dialog(ev, "x", timeout=5) is True
+
+
+def test_now_presolicitada_no_espera_a_la_web(monkeypatch):
+    import core.shared_data as sd
+    data = {"r1": _req("waiting", waiting_reason="cines")}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    msg = App._download_now_request(_host(data, launched, pushed), "r1")
+    assert launched == ["r1"] and msg.startswith("Lanzada:")

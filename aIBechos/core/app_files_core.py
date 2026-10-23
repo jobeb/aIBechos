@@ -35,6 +35,7 @@ que la interfaz Qt llama y Tk no necesita.
 
 import json
 import os
+import re as _re
 import subprocess
 import threading
 import time as _time
@@ -257,6 +258,16 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                 entry.status    = "omitido"
                 entry.new_name  = new_name or entry.new_name
                 entry.error_msg = reason or ""
+                # Al Historial también, con su motivo (antes solo constaban
+                # las subidas correctas y los errores).
+                try:
+                    _size = Path(path).stat().st_size
+                except OSError:
+                    _size = entry._last_known_size_bytes or 0
+                self._save_history_entry(
+                    entry.name, "",
+                    "cancelado" if (reason or "").startswith("Subida cancelada") else "omitido",
+                    _size, error_msg=reason or "Omitido por el modo automático", local_path=path)
                 self._update_row(entry)
                 if self._selected_entry is entry:
                     self._update_detail(entry)
@@ -559,7 +570,8 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
         entry = {
             "ts":        _time.time(),
             "filename":  filename,
-            "remote":    remote,
+            # "//" de carpetas que ya acababan en "/" (Temporada 05//x.mkv)
+            "remote":    _re.sub(r"/{2,}", "/", remote or ""),
             "status":    status,
             "size":      size,
             "error_msg": error_msg,

@@ -84,11 +84,18 @@ FINAL_STATUSES = ("done", "failed", "cancelled")
 RECHECK_FAILED_SECONDS = 14 * 86400
 #: Las que el botón "Descargar ahora mismo" puede lanzar: pendientes, fallidas
 #: y canceladas (estas como solicitud nueva, ver relaunch_cancelled).
-LAUNCHABLE_STATUSES = ("pending", "failed", "cancelled")
+LAUNCHABLE_STATUSES = ("waiting", "pending", "failed", "cancelled")
 PRUNE_AFTER_SECONDS = 30 * 86400
 
 _VALID_MEDIA_TYPES = ("tv", "movie")
-_VALID_STATUSES = ("pending", "claimed", "downloading", "done", "failed", "cancelled")
+#: "waiting" = presolicitada desde la web: una peli que aún no se puede
+#: conseguir (sin estrenar o solo en cines). Ningún equipo la reclama; la
+#: web la pasa a "pending" cuando ya hay de dónde descargarla (ver
+#: sol_waiting_check en solicitudes-web/api/lib.php).
+_VALID_STATUSES = ("waiting", "pending", "claimed", "downloading", "done", "failed", "cancelled")
+
+#: Solicitudes en curso (cancelables).
+ACTIVE_STATUSES = ("waiting", "pending", "claimed", "downloading")
 
 
 def new_request_id() -> str:
@@ -465,6 +472,12 @@ def retry_wait(entry: dict) -> float:
     if n <= 0:
         return 0.0
     return float(RETRY_BACKOFF_SECONDS * (2 ** min(n - 1, 4)))
+
+
+def has_waiting(data: dict) -> bool:
+    """¿Hay alguna presolicitada ("waiting") en la cola?"""
+    return any(isinstance(e, dict) and e.get("status") == "waiting"
+               for e in (data or {}).values())
 
 
 def pending_for_worker(data: dict, now: float | None = None) -> list:
@@ -937,7 +950,7 @@ def lost_in_amule(entry: dict, queue: list, local_names, now: float | None = Non
         return False
 
 
-STATUS_ES = {"pending": "Pendiente", "claimed": "Reclamada", "downloading": "Descargando",
+STATUS_ES = {"waiting": "Presolicitada", "pending": "Pendiente", "claimed": "Reclamada", "downloading": "Descargando",
              "done": "Lista", "failed": "Fallida", "cancelled": "Cancelada"}
 
 

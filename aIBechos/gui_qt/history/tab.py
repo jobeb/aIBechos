@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import threading
 import zipfile
 from pathlib import Path
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog, QHBoxL
                                QLabel, QLineEdit, QMessageBox, QMenu, QPushButton, QTableView, QVBoxLayout,
                                QWidget)
 
-from core.download_requests import LAUNCHABLE_STATUSES
+from core.download_requests import ACTIVE_STATUSES, LAUNCHABLE_STATUSES
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNING_COLOR
 from gui_qt import theme
 from gui_qt.columns import fill_columns
@@ -31,6 +32,10 @@ from gui_qt.dialogs import confirm
 
 H_DATE, H_FILE, H_KIND, H_WHO, H_DEST, H_SIZE, H_STATE, H_ACT = range(8)
 HEADERS = ["Fecha", "Archivo", "Tipo", "Cliente", "Destino FTP / motivo", "Tamaño", "Estado", ""]
+#: Subidas que no se hicieron: en "Destino FTP / motivo" va el motivo.
+NOT_UPLOADED = ("error", "omitido", "cancelado")
+STATE_COLORS = {"ok": SUCCESS_COLOR, "error": ERROR_COLOR, "omitido": WARNING_COLOR,
+                "cancelado": WARNING_COLOR}
 REQ_COLORS = {"done": SUCCESS_COLOR, "failed": ERROR_COLOR, "downloading": WARNING_COLOR,
               "claimed": WARNING_COLOR}
 
@@ -77,7 +82,7 @@ class HistoryModel(QAbstractTableModel):
         st = e.get("status", "ok")
         is_req, is_del = kind == "solicitud", kind == "borrado"
         error_msg = e.get("error_msg", "")
-        showing_error = st == "error" and bool(error_msg) and not is_del and not is_req
+        showing_error = st in NOT_UPLOADED and bool(error_msg) and not is_del and not is_req
         if role in (Qt.DisplayRole, Qt.ToolTipRole):
             if col == H_DATE:
                 try:
@@ -95,7 +100,10 @@ class HistoryModel(QAbstractTableModel):
                     return e.get("detail", "")
                 if is_del:
                     return e.get("reason", "")
-                return error_msg if showing_error else e.get("remote", "")
+                if showing_error:
+                    return error_msg
+                # Registros de antes de corregirlo: "Temporada 05//x.mkv"
+                return re.sub(r"/{2,}", "/", e.get("remote", "") or "")
             if col == H_SIZE:
                 return "—" if is_req else _size(e.get("size", 0))
             if col == H_STATE:
@@ -103,13 +111,15 @@ class HistoryModel(QAbstractTableModel):
         elif role == Qt.ForegroundRole:
             if col == H_STATE:
                 c = REQ_COLORS.get(st, PENDING_COLOR) if is_req else \
-                    {"ok": SUCCESS_COLOR, "error": ERROR_COLOR}.get(st, PENDING_COLOR)
+                    STATE_COLORS.get(st, PENDING_COLOR)
                 return QBrush(QColor(c))
-            if col == H_DEST and (showing_error or (is_req and st == "failed")):
+            if col == H_DEST and showing_error:
+                return QBrush(QColor(STATE_COLORS[st]))
+            if col == H_DEST and is_req and st == "failed":
                 return QBrush(QColor(ERROR_COLOR))
         elif role == ActionsRole and col == H_ACT:
             if is_req:
-                can_cancel = st in ("pending", "claimed", "downloading")
+                can_cancel = st in ACTIVE_STATUSES
                 can_launch = st in LAUNCHABLE_STATUSES
                 return [Action("search", "🔍", theme.ICON_AMULE,
                                "Buscar a mano en Descargas lo pedido por esta solicitud."),
@@ -123,10 +133,10 @@ class HistoryModel(QAbstractTableModel):
                                "Cancelar esta solicitud (libera la cola y quita su descarga de aMule)."
                                if can_cancel else "Solo se puede cancelar una solicitud activa.",
                                enabled=can_cancel)]
-            can_retry = st == "error" and not is_del and not is_req
+            can_retry = st in NOT_UPLOADED and not is_del and not is_req and "/" in e.get("remote", "")
             return [Action("retry", "🔄", theme.ICON_DL_IDLE,
                            "Volver a intentar esta subida con el mismo archivo local." if can_retry else
-                           "Solo se puede reintentar una subida que falló (un borrado no).",
+                           "Solo se puede reintentar una subida que no se hizo (un borrado no).",
                            enabled=can_retry)]
         return None
 
@@ -261,7 +271,7 @@ class HistoryTab(QWidget):
             menu.addAction(a)
 
         if kind != "solicitud":
-            can_retry = st == "error" and kind != "borrado"
+            can_retry = st in NOT_UPLOADED and kind != "borrado" and "/" in e.get("remote", "")
             add("🔄 Reintentar subida", lambda: self._on_action(
                 self.model.index(row, 0), "retry"), can_retry)
             menu.addSeparator()

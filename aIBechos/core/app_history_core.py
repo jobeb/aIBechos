@@ -764,7 +764,8 @@ class HistoryCoreMixin:
         elif kind == "borrado":
             haystack = (entry.get("name", ""), entry.get("reason", ""), entry.get("person", ""))
         else:
-            haystack = (entry.get("filename", ""), entry.get("remote", ""), entry.get("person", ""))
+            haystack = (entry.get("filename", ""), entry.get("remote", ""), entry.get("person", ""),
+                        entry.get("error_msg", ""), entry.get("status", ""))
         return any(query in (field or "").lower() for field in haystack)
 
     def _retry_history_upload_worker(self, local_path: str, remote_dir: str, remote_filename: str):
