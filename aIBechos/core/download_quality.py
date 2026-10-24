@@ -28,7 +28,7 @@ import re
 from collections import Counter
 
 from core.amule_client import AmuleSearchResult
-from core.series_match import normalize_series_name, series_similarity
+from core.series_match import series_similarity
 
 
 _LANG_RE = re.compile(r"\b(?:spa|spanish|español|espanol|castellano|latino|dual)\b",
@@ -994,21 +994,12 @@ def _same_series_title(query: str, name: str) -> bool:
         return True
     q = re.sub(r"\[[^\]]*\]", " ", q)
     n = re.sub(r"\[[^\]]*\]", " ", n)
-    # Alias corto del usuario (ej. "Slime" para "That Time I Got Reincarnated as a Slime"):
-    # series_similarity estricto 0.90 falla porque "Slime" solo es sufijo, no prefijo.
-    # Si la versión normalizada corta está contenida en la larga, aceptar.
-    # PERO títulos de 1 palabra corta/genérica ("From", "It", "Us"...) jamás
-    # usan este atajo: "from" está contenido en "mike judge presents tales
-    # from the tour bus" y se descargaba la serie equivocada (real: From 2x02
-    # -> Tales From the Tour Bus 2x02). Esos exigen coincidencia exacta o
-    # similarity estricta >=0.90. Se exige min(len)>=5 para el substring.
-    qn = normalize_series_name(q)
-    nn = normalize_series_name(n)
-    if len(qn) >= 3 and len(nn) >= 3 and (qn in nn or nn in qn):
-        if min(len(qn), len(nn)) >= 5:
-            return True
-        # Corto: solo vale si además son casi idénticos (el strict de abajo
-        # lo decidirá); no se acepta por substring.
+    # Nunca por estar contenido uno en otro: "Girls" NO es "Good Girls
+    # Revolt", "Such Brave Girls" ni "Las chicas Gilmore (Gilmore Girls)"
+    # (real: una solicitud de Girls bajó las tres). Un nombre corto para
+    # una serie se pone con su template de aMule ("Slime
+    # {temporada}x{episodio}"): la consulta ya lo lleva y aquí se exige
+    # que case con él.
     return series_similarity(q, n, strict=True, allow_annotation=True) >= 0.90
 
 

@@ -709,23 +709,33 @@ def test_user_lists_invalid_entries_ignored():
 
 # ---- Misma serie, no solo misma numeración (real: "Lucky" eligió "Lucky Luke") ----
 
-def test_un_nombre_corto_contenido_en_otro_se_acepta():
-    """DECISIÓN CONSCIENTE del usuario (2026-08-31), con su contrapartida.
-
-    Para poder pedir series por un alias corto ("Slime" en vez de "That Time I
-    Got Reincarnated as a Slime"), _same_series_title acepta un nombre
-    normalizado contenido en el otro. El precio es que vuelve a colar el caso
-    que este test vigilaba: pedir "Lucky" acepta "Lucky Luke", que es OTRA
-    serie con la misma numeración.
-
-    Afecta también al autocompletado AUTOMÁTICO (_auto_complete_pass ->
-    _auto_amule_download_series -> best_result), no solo a la búsqueda manual,
-    así que una serie de nombre corto puede completarse sola con capítulos de
-    otra. Se deja así a petición expresa; si algún día molesta, la salida es
-    una lista de alias explícita en vez de aceptar cualquier subcadena."""
+def test_un_nombre_contenido_en_otro_no_es_la_misma_serie():
+    """Estar contenido no basta: "Lucky" no es "Lucky Luke" y "Girls" no es
+    "Good Girls Revolt", "Such Brave Girls" ni "Las chicas Gilmore
+    (Gilmore Girls)" (real: una solicitud de Girls bajó las tres). Un
+    nombre corto se pone con el template de aMule de la serie."""
     luke = _r(1, "Lucky Luke 1x01 El solitario (Spanish French Subs) WEB-DL 1080p x264-EAC3.mkv",
               size="1200 MB", sources=15, complete=True)
-    assert score_download(luke, "Lucky 1x01") > 0.0
+    assert score_download(luke, "Lucky 1x01") == 0.0
+    for name in ("Good girls revolt 1x10 El periodista [HDit][Spanish-English][grupots].avi",
+                 "Such.Brave.Girls.1x10.(Spanish.Subs).WEB-DL.1080p.x264-AAC.mkv",
+                 "Las.Chicas.Gilmore.(Gilmore.Girls).-.1x10.-.Lorelai.(Spa-Eng).HD.1080p.mkv"):
+        assert score_download(_r(1, name, size="800 MB", sources=10, complete=True),
+                              "Girls 1x10") == 0.0, name
+    ok = _r(2, "Girls.1x10.Lo.que.sea.(Spanish.English.Subs).WEB-DL.1080p.x264-EAC3.mkv",
+            size="800 MB", sources=10, complete=True)
+    assert score_download(ok, "Girls 1x10") > 0.0
+
+
+def test_template_corto_exige_coincidir_con_el_template():
+    """Con template "Slime {temporada}x{episodio}" la consulta es "Slime
+    4x10": vale el archivo que se llama así, no el título largo que lo
+    contiene."""
+    largo = _r(1, "Tensei Shitara Slime Datta Ken 4x10 Castellano 1080p.mkv",
+               size="500 MB", sources=10, complete=True)
+    corto = _r(2, "Slime 4x10 Castellano 1080p.mkv", size="500 MB", sources=10, complete=True)
+    assert score_download(largo, "Slime 4x10") == 0.0
+    assert score_download(corto, "Slime 4x10") > 0.0
 
 
 def test_same_series_with_annotation_still_matches():
@@ -746,27 +756,23 @@ def test_bracket_group_prefix_does_not_break_series_match():
     assert score_download(r, "Resident Alien 4x04") > 0.0
 
 
-def test_entre_dos_candidatos_manda_la_calidad():
-    """Contrapartida de aceptar nombres contenidos (ver el test de arriba): con
-    "Lucky 1x01" pedido, "Lucky Luke" ya no queda descartado por ser otra
-    serie, así que gana el de mejor calidad y más fuentes aunque no sea la
-    serie pedida. Queda escrito para que se vea el efecto real de la decisión,
-    no como comportamiento deseable."""
+def test_entre_dos_candidatos_gana_la_serie_pedida():
+    """Aunque "Lucky Luke 1x01" tenga mejor calidad y más fuentes, se pidió
+    "Lucky 1x01": gana el de la serie pedida."""
     luke = _r(1, "Lucky Luke 1x01 El solitario (Spanish French Subs) WEB-DL 1080p x264-EAC3.mkv",
               size="1200 MB", sources=15, complete=True)
     real = _r(2, "Lucky 1x01 720p WEB-DL x264 Castellano.mkv",
               size="600 MB", sources=3, complete=False)
     best = best_result([luke, real], "Lucky 1x01")
     assert best is not None
-    assert best.number == 1
+    assert best.number == 2
 
 
 def test_titulo_corto_generico_no_acepta_substring():
     """Real: buscando "From 2x02" se descargó "Mike Judge Presents Tales From
     the Tour Bus 2x02..." porque "from" está contenido en el título largo.
-    Los títulos cuya parte corta tiene <5 chars exigen coincidencia exacta o
-    similarity estricta, nunca substring. El alias largo ("Slime") sigue
-    aceptado (ver test_un_nombre_corto_contenido_en_otro_se_acepta)."""
+    Ningún título se acepta por estar contenido en otro (ver
+    test_un_nombre_contenido_en_otro_no_es_la_misma_serie)."""
     tour = _r(1, "Mike Judge Presents Tales From the Tour Bus 2x02 Rick James (Parte uno) [HDiT 720p h264 AC3 5.1 subs][spanish-english][grupots].mkv",
               size="800 MB", sources=20, complete=True)
     assert score_download(tour, "From 2x02") == 0.0
