@@ -49,8 +49,10 @@ def test_lanzamiento_normal_no_marca_completado():
 
 
 def test_fallo_de_verdad_sigue_soltando():
+    # Peli vieja: una reciente vuelve a presolicitada (ver
+    # test_download_requests_waiting.py).
     nd, ok = App._download_request_launch(
-        _app((False, "no encontrado", "")), {"r1": _entry()}, "r1")
+        _app((False, "no encontrado", "")), {"r1": _entry(year="2010")}, "r1")
     assert ok is False
     assert nd["r1"]["status"] == "failed"
     assert nd["r1"]["last_error"] == "no encontrado"

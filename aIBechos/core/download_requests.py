@@ -280,6 +280,39 @@ def mark_status(data: dict, req_id: str, status: str, user: str = "",
     return result
 
 
+#: Peli reciente que aún no está en aMule (real: "Hot Wheels: El ataque
+#: del T-Rex", en Netflix desde hacía 12 días, fallida por "sin
+#: candidato"): en vez de "failed" vuelve a presolicitada ("waiting",
+#: waiting_reason "sin_fuentes") y la web la devuelve a la cola pasado
+#: retry_at (ver sol_waiting_check). Se deja de esperar a los
+#: SOURCES_GIVE_UP_SECONDS de la primera vez.
+SOURCES_RETRY_SECONDS = 2 * 86400
+SOURCES_GIVE_UP_SECONDS = 60 * 86400
+#: Errores de "aún no hay de dónde": lo demás (descarga incompleta, fallo
+#: de aMule) es otro problema y sí acaba en "failed".
+_NO_SOURCES_HINTS = ("no encontrado", "sin candidato", "sin resultados")
+
+
+def should_wait_for_sources(entry: dict, error: str = "", now: float | None = None) -> bool:
+    """¿Esta solicitud agotada debe seguir esperando fuentes en vez de
+    fallar? Solo pelis de este año o el anterior, sin encontrar nada, y
+    sin pasar de SOURCES_GIVE_UP_SECONDS esperando. Nunca lanza."""
+    try:
+        if entry.get("media_type") != "movie" or entry.get("replace"):
+            return False
+        why = str(error or entry.get("last_error") or "").lower()
+        if not any(h in why for h in _NO_SOURCES_HINTS):
+            return False
+        ts = now if now is not None else time.time()
+        year = int(str(entry.get("year") or "0")[:4])
+        if year < time.localtime(ts).tm_year - 1:
+            return False
+        since = float(entry.get("waiting_since") or 0)
+        return not since or ts - since < SOURCES_GIVE_UP_SECONDS
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def release(data: dict, req_id: str, user: str = "", error: str = "",
             now: float | None = None) -> dict | None:
     """Devuelve un dict NUEVO con *req_id* devuelta a "pending" (claim
@@ -298,6 +331,15 @@ def release(data: dict, req_id: str, user: str = "", error: str = "",
     except (TypeError, ValueError):
         attempts = 1
     result = dict(data)
+    if attempts >= MAX_ATTEMPTS and should_wait_for_sources(entry, error, ts):
+        result[req_id] = {**entry, "status": "waiting", "waiting_reason": "sin_fuentes",
+                          "waiting_since": entry.get("waiting_since") or ts,
+                          "retry_at": ts + SOURCES_RETRY_SECONDS,
+                          "claimed_by": "", "claimed_at": 0, "attempts": 0,
+                          "updated_at": ts,
+                          "dl_percent": None, "dl_speed": None, "up_percent": None,
+                          "last_error": str(error or entry.get("last_error") or "")[:500]}
+        return result
     if attempts >= MAX_ATTEMPTS:
         result[req_id] = {**entry, "status": "failed", "attempts": attempts,
                           "updated_at": ts,
