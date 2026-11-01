@@ -58,7 +58,7 @@ def _maybe_add_castellano(q: str, prefers: bool) -> str:
     return q
 
 
-def build_amule_query(series_name: str, season: int, episode: int,
+def _build_amule_query_raw(series_name: str, season: int, episode: int,
                       year: str = "", templates: dict | None = None,
                       prefers_castellano: bool = False) -> str:
     """
@@ -134,7 +134,7 @@ def build_amule_query(series_name: str, season: int, episode: int,
     return q if q else f"{series_name} {season}x{episode:02d}" if season is not None else series_name
 
 
-def build_amule_season_query(series_name: str, season: int,
+def _build_amule_season_query_raw(series_name: str, season: int,
                              templates: dict | None = None,
                              prefers_castellano: bool = False) -> str:
     """Query para 'toda la temporada' (botón 3x). Reusa template base sin episodio."""
@@ -194,3 +194,41 @@ def build_amule_season_query(series_name: str, season: int,
         return _maybe_add_castellano(q, prefers_castellano)
     except Exception:
         return _maybe_add_castellano(f"{series_name} {season}x", prefers_castellano)
+
+
+def search_title(name: str) -> str:
+    """Título para buscar en aMule sin lo que va entre paréntesis o
+    corchetes AL FINAL: en TMDB suele ser el título original o el año
+    (real: "Incontrolable (I Swear)", "El juego de la sospecha (Cluedo)")
+    y Kad exige TODAS las palabras, así que dejaba fuera los archivos
+    buenos. Lo del principio es parte del título ("(500) días juntos").
+    Si no queda nada, el nombre tal cual."""
+    clean = re.sub(r"(\s*[(\[][^()\[\]]*[)\]])+\s*$", "", name or "")
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean or (name or "").strip()
+
+
+def _for_amule(query: str, series_name: str) -> str:
+    # El nombre ya formateado se cambia por search_title (la plantilla
+    # se busca con el nombre TMDB completo, por eso no se limpia antes) y
+    # lo que quede de ()[]{} fuera: rompe el parser de aMule ("syntax
+    # error / Undefined search expression").
+    if series_name and series_name in query:
+        query = query.replace(series_name, search_title(series_name))
+    return sanitize_search_query(query)
+
+
+def build_amule_query(series_name: str, season: int, episode: int,
+                      year: str = "", templates: dict | None = None,
+                      prefers_castellano: bool = False) -> str:
+    """Ver _build_amule_query_raw; el resultado pasa por _for_amule."""
+    return _for_amule(_build_amule_query_raw(series_name, season, episode, year,
+                                             templates, prefers_castellano), series_name)
+
+
+def build_amule_season_query(series_name: str, season: int,
+                             templates: dict | None = None,
+                             prefers_castellano: bool = False) -> str:
+    """Ver _build_amule_season_query_raw; el resultado pasa por _for_amule."""
+    return _for_amule(_build_amule_season_query_raw(series_name, season, templates,
+                                                    prefers_castellano), series_name)

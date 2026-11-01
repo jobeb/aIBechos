@@ -476,6 +476,10 @@ class EcClient:
         stype = _SEARCH_TYPE_MAP.get(search_type.lower())
         if stype is None:
             raise EcSearchResultError(f"tipo de búsqueda aMule no válido: {search_type!r}")
+        # ()[]{} rompen el parser de aMule ("syntax error / Undefined
+        # search expression"), venga la búsqueda de donde venga.
+        from core.amule_search import sanitize_search_query
+        query = sanitize_search_query(query)
         search_tagtype, search_data = _pack_int(stype)
         search_tag = _make_tag(
             EC_TAG_SEARCH_TYPE, search_tagtype, search_data,
