@@ -97,8 +97,7 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         self._upload_duplicate_replace_all = False
         self._upload_stale_choice = None
         self._rename_overwrite_all = False
-        self._upload_slot_of = {}
-        self._upload_skip_events = []
+        self._upload_skip_of = {}
         self._upload_confirm_lock = threading.Lock()
         self._upload_slots = UploadSlotManager(cfg)
 

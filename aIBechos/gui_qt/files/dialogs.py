@@ -188,14 +188,14 @@ class ConfirmRemovalDialog(_ChoiceDialog):
 
 
 class ClearDialog(_ChoiceDialog):
-    def __init__(self, parent, pendientes: int):
+    def __init__(self, parent, pendientes: int, cancel_label: str = "Limpiar todo y cancelar"):
         super().__init__(parent, "Limpiar lista", close_result=None, width=420)
         plural = "s" if pendientes != 1 else ""
         self.label("Hay una subida FTP en progreso.", bold=True)
         self.label(f"Aún queda{'n' if pendientes != 1 else ''} {pendientes} archivo{plural} por subir. "
                    "¿Qué quieres hacer?", color=theme.PENDING_COLOR)
         self.buttons([("Limpiar solo subidos", "solo_subidos", None),
-                      ("Limpiar todo y cancelar", "todo", "danger")])
+                      (cancel_label, "todo", "danger")])
 
 
 class SameSeriesDialog(_ChoiceDialog):

@@ -916,11 +916,7 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
         # Si estaba subiendo, cancelar primero para no borrar un archivo a medio subir bloqueado
         try:
             if entry in getattr(self, "_upload_queue", []):
-                self._queue_skip_entry(entry)
-                try:
-                    self._upload_queue.remove(entry)
-                except ValueError:
-                    pass
+                self._drop_from_upload([entry])
                 _time.sleep(0.4)
         except Exception:
             pass
@@ -947,14 +943,10 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
         a detectar, dispara el evento "start" y la fila reaparece sola, con
         lo que quitarla se vuelve imposible (visto de verdad con una
         película que TMDB no tiene: volvía cada pocos segundos)."""
-        # Si estaba en cola o subiendo, sacarlo de la cola y cancelar su subida
+        # Si estaba en cola o subiendo, sacarlo de la tanda y cancelar su subida
         try:
             if entry in getattr(self, "_upload_queue", []):
-                try:
-                    self._upload_queue.remove(entry)
-                except ValueError:
-                    pass
-            self._queue_skip_entry(entry)
+                self._drop_from_upload([entry])
         except Exception:
             pass
         self._discard_from_auto_watcher(entry)
@@ -1203,9 +1195,9 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
             if is_uploading:
                 self._set_status(f"Cancelando subida y borrando: {entry.new_name or entry.name}", PENDING_COLOR)
                 def _bg_local():
-                    self._queue_skip_entry(entry)
+                    self._drop_from_upload([entry])
                     # La subida puede ser del modo automático y no de la
-                    # cola manual: _queue_skip_entry no la ve, y seguía
+                    # cola manual: _drop_from_upload no la ve, y seguía
                     # subiendo sin fila hasta el final (real: La Odisea).
                     watcher = getattr(self, "_watcher", None)
                     if watcher is not None and local_path:
@@ -1214,10 +1206,6 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                         except Exception:
                             _log.warning("No se pudo cancelar la subida automática de %s",
                                          local_path, exc_info=True)
-                    try:
-                        self._upload_queue.remove(entry)
-                    except ValueError:
-                        pass
                     for _ in range(10):
                         try:
                             if local_path and Path(local_path).exists():

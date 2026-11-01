@@ -317,19 +317,15 @@ class FilesIdentifyMixin:
                 # (botón "Renombrar"), así que aquí sí tiene sentido
                 # preguntar en vez de fallar sin más, a diferencia del modo
                 # automático desatendido.
-                answer = [None]
-                ev = threading.Event()
-                def _ask(fn=entry.new_name, ans=answer, e=ev):
-                    dlg = self._make_overwrite_dialog(fn, title="El archivo ya existe en local",
-                        message="Ya existe un archivo con ese nombre en la misma carpeta:")
-                    ans[0] = dlg.result
-                    e.set()
-                self.after(0, _ask)
-                self._wait_dialog(ev, "rename-local")
-                if answer[0] == "all":
+                res = self._ask_gui(
+                    lambda fn=entry.new_name: self._make_overwrite_dialog(
+                        fn, title="El archivo ya existe en local",
+                        message="Ya existe un archivo con ese nombre en la misma carpeta:"),
+                    "rename-local")
+                if res == "all":
                     self._rename_overwrite_all = True
                     ok, msg = rename_file(entry.path, entry.new_name, force_overwrite=True)
-                elif answer[0] == "overwrite":
+                elif res == "overwrite":
                     ok, msg = rename_file(entry.path, entry.new_name, force_overwrite=True)
                 else:   # "skip" (o cerrado sin elegir)
                     entry.status    = "omitido"

@@ -6,6 +6,7 @@ carpeta de la serie ya existente). Mixin de FilesCoreMixin (ver
 core/app_files_core.py, que documenta los ganchos de interfaz que usa).
 """
 
+import contextlib
 import threading
 import time as _time
 from pathlib import Path
@@ -34,17 +35,36 @@ class FilesUploadMixin:
             return "listo" if getattr(entry, "media_info", None) else "pendiente"
         return prev_status
 
-    @staticmethod
-    def _wait_dialog(ev: threading.Event, what: str, timeout: float = 30.0) -> bool:
-        """Espera la respuesta de un diálogo de la GUI sin colgarse
-        eternamente si esta no llega (hilo GUI atascado, factoría que
-        devuelve None...): True si contestó. Con False el llamador aplica
-        su valor seguro (lo mismo que cerrar con la X)."""
-        ok = ev.wait(timeout)
-        if not ok:
-            _log.warning("Diálogo %s sin respuesta en %ds: se suelta como cerrado",
-                         what, int(timeout))
-        return ok
+    def _ask_gui(self, make, what: str, cancel_event=None):
+        """Abre en el hilo de la GUI el diálogo que construye *make()* y
+        espera su .result desde un hilo de trabajo. None = cerrado con la
+        X, fábrica fallida o *cancel_event* activado mientras esperaba (el
+        llamador aplica su valor seguro).
+
+        Sin plazo a propósito: con 30 s, un diálogo sin contestar se daba
+        por "Omitir", el hilo soltaba _upload_confirm_lock y el siguiente
+        abría otro encima del primero (real: varias ventanas de "El
+        archivo ya existe" apiladas, y "Sobrescribir todos" en una vieja
+        no hacía nada). Lo que protegía el plazo -- una fábrica que falla
+        y nunca avisa -- lo cubre el finally."""
+        answer = [None]
+        ev = threading.Event()
+
+        def _ask():
+            try:
+                dlg = make()
+                answer[0] = getattr(dlg, "result", None)
+            except Exception:
+                _log.exception("Diálogo %s: error al mostrarlo, se toma como cerrado", what)
+            finally:
+                ev.set()
+
+        self.after(0, _ask)
+        while not ev.wait(1.0):
+            if cancel_event is not None and cancel_event.is_set():
+                _log.info("Diálogo %s: subida cancelada mientras esperaba respuesta", what)
+                return None
+        return answer[0]
 
     def _get_free_space_with_jellyfin_fallback(self, ftp_conn, root: str):
         """Espacio libre (bytes) para *root* usando el FTP; si el servidor no
@@ -203,6 +223,7 @@ class FilesUploadMixin:
         # Resetear columnas FTP de los archivos en cola — pero si ya trae progreso
         # guardado (reanudado tras cerrar a medias), conservarlo para no fluctuar 0%↔45%
         for entry in entries:
+            entry._upload_dropped = False
             if not getattr(entry, "ftp_progress", 0):
                 entry.ftp_progress = 0.0
             entry.ftp_speed    = 0.0
@@ -224,14 +245,37 @@ class FilesUploadMixin:
         self._set_status("Deteniendo subida...", WARNING_COLOR)
 
     def _queue_skip_entry(self, entry):
-        """Salta la subida del archivo dado señalando su skip_event."""
+        """Salta la subida del archivo dado señalando SU skip_event (uno por
+        archivo: con uno por "slot" repartido en rueda, dos subidas a la
+        vez podían compartirlo y saltar una cortaba también la otra)."""
         if not self._upload_running:
             return
-        slot_of     = getattr(self, "_upload_slot_of",     {})
-        skip_events = getattr(self, "_upload_skip_events", [])
-        slot = slot_of.get(id(entry))
-        if slot is not None and slot < len(skip_events):
-            skip_events[slot].set()
+        ev = getattr(self, "_upload_skip_of", {}).get(id(entry))
+        if ev is not None:
+            ev.set()
+
+    def _upload_pending_among(self, entries) -> list:
+        """De *entries*, las que la tanda manual en marcha aún tiene por
+        subir (en cola, esperando un diálogo o subiendo). Lo que no está
+        en la tanda -- sin identificar, ya subido, del modo automático --
+        se puede quitar de la lista sin preguntar nada."""
+        if not self._upload_running:
+            return []
+        queued = {id(e) for e in (self._upload_queue or [])}
+        return [e for e in entries if id(e) in queued
+                and not getattr(e, "_upload_dropped", False)
+                and e.status in ("en_cola", "esperando_confirmacion", "subiendo")]
+
+    def _drop_from_upload(self, entries):
+        """Saca de la tanda en marcha solo estos archivos (quitados de la
+        lista): el que se está subiendo se salta y el que espera turno se
+        omite al llegarle (ver process en _queue_worker). No se tocan ni
+        _upload_cancel (cortaría toda la tanda) ni _upload_queue: el worker
+        la recorre por índice y quitar un elemento ya pasado hacía que el
+        siguiente no se subiera nunca."""
+        for e in entries:
+            e._upload_dropped = True
+            self._queue_skip_entry(e)
 
     def _category_for(self, info):
         """Elige la categoría FTP (nombre/géneros/rutas/plantilla) que le
@@ -402,15 +446,10 @@ class FilesUploadMixin:
                             if entry is not None:
                                 entry.status = "esperando_confirmacion"
                                 self.after(0, lambda e=entry: self._update_row(e))
-                            answer = [None]
-                            ev = threading.Event()
-                            def _ask(d=desired, c=candidate, ans=answer, e=ev):
-                                dlg = self._make_series_match_dialog(d, c)
-                                ans[0] = dlg.result
-                                e.set()
-                            self.after(0, _ask)
-                            self._wait_dialog(ev, "series-match")
-                            if answer[0] == "yes":
+                            res = self._ask_gui(
+                                lambda d=desired, c=candidate: self._make_series_match_dialog(d, c),
+                                "series-match", self._upload_cancel)
+                            if res == "yes":
                                 chosen = candidate
 
             self._series_folder_cache[info.tmdb_id] = chosen
@@ -446,6 +485,43 @@ class FilesUploadMixin:
         except Exception:
             pass
         return False
+
+    def _resolve_stale_remote(self, entry, remote_file: str, stale_remote: str, is_batch: bool):
+        """Resto de una subida anterior con otro nombre (*stale_remote*):
+        borrarlo o no según lo ya contestado "(todos)" en la tanda o
+        preguntando. None = seguir con la subida; (ok, msg) = terminar
+        aquí. Se llama con _upload_confirm_lock cogido."""
+        if not stale_remote:
+            return None
+        choice = getattr(self, "_upload_stale_choice", None)
+        if choice == "no_delete":
+            entry._stale_checked = True
+            return None
+        if choice == "delete":
+            res = "delete_upload"
+        else:
+            res = self._ask_gui(
+                lambda d=remote_file, s=stale_remote: self._make_stale_upload_dialog(
+                    d, s, show_all_buttons=is_batch),
+                "stale-upload", self._upload_cancel)
+        entry._stale_checked = True   # no volver a preguntar en reintentos de esta tanda
+        if res in ("no_delete", "no_delete_all"):
+            if res == "no_delete_all":
+                self._upload_stale_choice = "no_delete"
+            return None
+        if res not in ("delete_upload", "delete_upload_all"):
+            # "Cancelar la subida", X o algo inesperado: no se sube este
+            self._ftp_row_set(entry, "Saltado", 0, 0)
+            self.after(0, lambda e=entry: self._update_row(e))
+            return False, "saltado"
+        if res == "delete_upload_all":
+            self._upload_stale_choice = "delete"
+        try:
+            ok_del, _msg_del = self._delete_remote_file(stale_remote)
+            _log.info("Resto de subida antiguo borrado: %s -> %s", stale_remote, ok_del)
+        except Exception as e:
+            _log.warning("No se pudo borrar el resto de subida antiguo %s: %s", stale_remote, e)
+        return None
 
     def _upload_entry_with(self, entry, ftp_conn, speed_kbs, skip_ev):
         """Sube un único archivo usando la conexión ftp_conn dada. Devuelve (ok, msg)."""
@@ -571,54 +647,15 @@ class FilesUploadMixin:
 
         stale_remote = ("" if getattr(entry, "_stale_checked", False) else
                         self._stale_remote_from_history(entry.path, entry.name, remote_file))
-        if stale_remote:
-            # Si ya se eligió "para todos" en esta tanda, aplicar sin preguntar
-            if getattr(self, "_upload_stale_choice", None) == "delete":
-                try:
-                    ok_del, _msg_del = self._delete_remote_file(stale_remote)
-                    _log.info("Resto de subida antiguo borrado (todos): %s -> %s",
-                              stale_remote, ok_del)
-                except Exception as e:
-                    _log.warning("No se pudo borrar el resto de subida antiguo %s: %s",
-                                 stale_remote, e)
-                entry._stale_checked = True
-            elif getattr(self, "_upload_stale_choice", None) == "no_delete":
-                entry._stale_checked = True
-            else:
-                answer = [None]
-                ev = threading.Event()
-                def _ask_stale(d=remote_file, s=stale_remote, ans=answer, e=ev):
-                    dlg = self._make_stale_upload_dialog(d, s, show_all_buttons=is_batch)
-                    ans[0] = dlg.result
-                    e.set()
-                self.after(0, _ask_stale)
-                self._wait_dialog(ev, "stale-upload")
-                entry._stale_checked = True   # no volver a preguntar en reintentos de esta tanda
-                if answer[0] is None:
-                    # Cancelar esta subida
-                    self._ftp_row_set(entry, "Saltado", 0, 0)
-                    self.after(0, lambda e=entry: self._update_row(e))
-                    return False, "saltado"
-                if answer[0] in ("delete_upload", "delete_upload_all"):
-                    if answer[0] == "delete_upload_all":
-                        self._upload_stale_choice = "delete"
-                    try:
-                        ok_del, _msg_del = self._delete_remote_file(stale_remote)
-                        _log.info("Resto de subida antiguo borrado: %s -> %s",
-                                  stale_remote, ok_del)
-                    except Exception as e:
-                        _log.warning("No se pudo borrar el resto de subida antiguo %s: %s",
-                                     stale_remote, e)
-                elif answer[0] in ("no_delete", "no_delete_all"):
-                    if answer[0] == "no_delete_all":
-                        self._upload_stale_choice = "no_delete"
-                    # no borrar, continuar
-                    pass
-                else:
-                    # Cancelar esta subida por si el diálogo devolvió algo inesperado
-                    self._ftp_row_set(entry, "Saltado", 0, 0)
-                    self.after(0, lambda e=entry: self._update_row(e))
-                    return False, "saltado"
+        # Bajo _upload_confirm_lock como el de sobrescribir: varios workers
+        # a la vez abrían cada uno su diálogo, y "(todos)" contestado en
+        # uno no alcanzaba a los ya en pantalla.
+        with self._upload_confirm_lock if stale_remote else contextlib.nullcontext():
+            if stale_remote and getattr(entry, "_upload_dropped", False):
+                return False, "saltado"
+            stale_result = self._resolve_stale_remote(entry, remote_file, stale_remote, is_batch)
+        if stale_result is not None:
+            return stale_result
 
         try:
             local_size = Path(entry.path).stat().st_size
@@ -675,6 +712,10 @@ class FilesUploadMixin:
         # elif de abajo sin volver a preguntar. Vale igual para "Omitir
         # todos" (_upload_skip_all): una sola respuesta resuelve la tanda.
         with self._upload_confirm_lock:
+            if getattr(entry, "_upload_dropped", False):
+                # Quitado de la lista mientras esperaba su turno de diálogo
+                # (ver _drop_from_upload): ni preguntar ni subir.
+                return False, "saltado"
             if already_exists and not self._upload_overwrite_all and not self._upload_skip_all:
                 # Estado visible en la columna "Estado": si no se distingue de
                 # "En cola" es fácil no darse cuenta de que hay un diálogo
@@ -684,15 +725,10 @@ class FilesUploadMixin:
                 prev_status = entry.status
                 entry.status = "esperando_confirmacion"
                 self.after(0, lambda e=entry: self._update_row(e))
-                answer = [None]
-                ev = threading.Event()
-                def _ask(rf=remote_file, ans=answer, e=ev):
-                    dlg = self._make_overwrite_dialog(rf, show_all_button=is_batch,
-                                           show_skip_all_button=is_batch)
-                    ans[0] = dlg.result
-                    e.set()
-                self.after(0, _ask)
-                self._wait_dialog(ev, "overwrite")
+                answer = [self._ask_gui(
+                    lambda rf=remote_file: self._make_overwrite_dialog(
+                        rf, show_all_button=is_batch, show_skip_all_button=is_batch),
+                    "overwrite", self._upload_cancel)]
                 if answer[0] is None:
                     answer[0] = "skip"   # como cerrar con la X: jamás sobreescribir por defecto
                 if answer[0] == "all":
@@ -740,10 +776,8 @@ class FilesUploadMixin:
                     prev_status = entry.status
                     entry.status = "esperando_confirmacion"
                     self.after(0, lambda e=entry: self._update_row(e))
-                    answer = [None]
-                    ev = threading.Event()
-                    def _ask(d=dup, ans=answer, e=ev):
-                        dlg = self._make_overwrite_dialog(d,
+                    answer = [self._ask_gui(
+                        lambda d=dup: self._make_overwrite_dialog(d,
                             title="Posible contenido duplicado",
                             message=("Ya hay un archivo distinto en el servidor que parece "
                                      "ser el mismo contenido:"),
@@ -754,11 +788,8 @@ class FilesUploadMixin:
                             note=("Sustituir: se sube el nuevo y, solo si la subida "
                                   "termina bien, se borra el de arriba."),
                             close_result="skip",
-                            show_all_button=is_batch)
-                        ans[0] = dlg.result
-                        e.set()
-                    self.after(0, _ask)
-                    self._wait_dialog(ev, "duplicate")
+                            show_all_button=is_batch),
+                        "duplicate", self._upload_cancel)]
                     if answer[0] in ("replace", "replace_all"):
                         # Se borra DESPUÉS de subir bien (ver
                         # _finish_duplicate_replacement): con un fallo a
@@ -786,10 +817,8 @@ class FilesUploadMixin:
                     prev_status = entry.status
                     entry.status = "esperando_confirmacion"
                     self.after(0, lambda e=entry: self._update_row(e))
-                    answer = [None]
-                    ev = threading.Event()
-                    def _ask(rf=remote_file, ans=answer, e=ev, rs=remote_size, ls=local_size):
-                        dlg = self._make_overwrite_dialog(rf,
+                    answer = [self._ask_gui(
+                        lambda rf=remote_file, rs=remote_size, ls=local_size: self._make_overwrite_dialog(rf,
                             title="La subida no avanza",
                             message=(f"Este archivo lleva al menos un intento sin avanzar en "
                                      f"el servidor (sigue en {_fmt_size(rs)} de {_fmt_size(ls)}). "
@@ -797,11 +826,8 @@ class FilesUploadMixin:
                             overwrite_label="Empezar de cero",
                             all_label="Empezar de cero (todos)",
                             close_result="skip",
-                            show_all_button=is_batch)
-                        ans[0] = dlg.result
-                        e.set()
-                    self.after(0, _ask)
-                    self._wait_dialog(ev, "stalled")
+                            show_all_button=is_batch),
+                        "stalled", self._upload_cancel)]
                     if answer[0] == "all":
                         self._upload_overwrite_all = True
                         force_overwrite = True
@@ -1087,8 +1113,7 @@ class FilesUploadMixin:
             self._upload_running = False
             self._upload_batch_size = 0
             self._upload_queue = []
-            self._upload_slot_of = {}
-            self._upload_skip_events = []
+            self._upload_skip_of = {}
             return
 
         if len(pool) < parallel:
@@ -1108,36 +1133,30 @@ class FilesUploadMixin:
         for c in pool:
             conn_q.put(c)
 
-        # Un skip_event por slot de conexión — guardados en self para que
+        # Un skip_event por archivo -- guardados en self para que
         # _queue_skip_entry pueda acceder desde el hilo principal
-        self._upload_skip_events = [threading.Event() for _ in pool]
-        self._upload_slot_of = {}  # id(entry) → slot index
-        skip_events = self._upload_skip_events
-        slot_of     = self._upload_slot_of
-
-        _slot_lock = threading.Lock()
-        _slot_counter = [0]
-        _nslots = len(pool)
-
-        def _next_slot():
-            with _slot_lock:
-                s = _slot_counter[0] % _nslots
-                _slot_counter[0] += 1
-                return s
+        self._upload_skip_of = {}  # id(entry) → Event
+        skip_of = self._upload_skip_of
 
         max_retries = max(0, int(self.config_data.get("ftp_retries", 3)))
 
+        def _dropped(entry):
+            if not getattr(entry, "_upload_dropped", False):
+                return False
+            if entry.status in ("en_cola", "esperando_confirmacion", "subiendo"):
+                entry.status = self._unqueue_status(entry, entry.status)
+            return True
+
         def process(entry):
-            if self._upload_cancel.is_set():
+            if self._upload_cancel.is_set() or _dropped(entry):
                 return
-            slot = _next_slot()
-            slot_of[id(entry)] = slot
+            skip_ev = skip_of.setdefault(id(entry), threading.Event())
             ftp_conn = conn_q.get()
             with _active_lock:
                 _active_uploads[0] += 1   # ver get_speed_kbs: reparte el límite entre las ACTIVAS
             try:
                 for attempt in range(max_retries + 1):
-                    if self._upload_cancel.is_set():
+                    if self._upload_cancel.is_set() or _dropped(entry):
                         break
                     # Reconectar si la conexión se cayó
                     if not ftp_conn.is_connected():
@@ -1149,8 +1168,8 @@ class FilesUploadMixin:
                                 continue
                             break
                     ok, msg = self._upload_entry_with(
-                        entry, ftp_conn, get_speed_kbs, skip_events[slot])
-                    skip_events[slot].clear()
+                        entry, ftp_conn, get_speed_kbs, skip_ev)
+                    skip_ev.clear()
                     # No reintentar si cancelado/saltado/omitido, éxito o error de configuración
                     if ok or msg in ("cancelado", "saltado", "omitido", "sin_info",
                                       "sin_categoria", "sin_ruta", "archivo_no_encontrado"):
@@ -1162,6 +1181,7 @@ class FilesUploadMixin:
                             self._ftp_row_set(e, f"Reintento {a}/{m}…", e.ftp_progress, 0))
                         _time.sleep(wait)
             finally:
+                skip_of.pop(id(entry), None)
                 with _active_lock:
                     _active_uploads[0] -= 1
                 conn_q.put(ftp_conn)
@@ -1213,7 +1233,8 @@ class FilesUploadMixin:
                     # marcha -- esto hace lo mismo automáticamente).
                     in_queue = {id(e) for e in self._upload_queue}
                     stragglers = [e for e in self.files if id(e) not in in_queue
-                                  and e.status in ("listo", "renombrado") and e.media_info]
+                                  and e.status in ("listo", "renombrado") and e.media_info
+                                  and not getattr(e, "_upload_dropped", False)]
                     if stragglers:
                         for e in stragglers:
                             e.ftp_progress = 0.0
@@ -1259,8 +1280,7 @@ class FilesUploadMixin:
         self._upload_current_remote = ""
         self._upload_batch_size     = 0
         self._upload_queue          = []
-        self._upload_slot_of        = {}
-        self._upload_skip_events    = []
+        self._upload_skip_of        = {}
         cancelled = self._upload_cancel.is_set()
         self.after(0, lambda: self._set_status(
             "Subida cancelada" if cancelled else "Subida completada",
@@ -1270,7 +1290,8 @@ class FilesUploadMixin:
     def _upload_one(self, entry):
         """Añade el archivo a la cola. Si hay subida activa lo encola; si no, la inicia."""
         if self._upload_running:
-            if entry not in self._upload_queue:
+            if entry not in self._upload_queue or getattr(entry, "_upload_dropped", False):
+                entry._upload_dropped = False
                 self._reserve_manual_entries([entry])
                 self._upload_queue.append(entry)
                 self._upload_batch_size = len(self._upload_queue)
@@ -1338,7 +1359,9 @@ class FilesUploadMixin:
         if self._upload_running:
             added = 0
             for e in entries:
-                if e not in self._upload_queue and e.status in ("listo", "renombrado"):
+                if ((e not in self._upload_queue or getattr(e, "_upload_dropped", False))
+                        and e.status in ("listo", "renombrado")):
+                    e._upload_dropped = False
                     self._reserve_manual_entries([e])
                     self._upload_queue.append(e)
                     self._upload_batch_size = len(self._upload_queue)

@@ -134,15 +134,6 @@ def test_launch_con_carrera_no_canta_exito():
     assert (nd, ok) == (None, False)
 
 
-def test_wait_dialog_con_timeout():
-    import threading
-    from core.app_files_core import FilesCoreMixin
-    assert FilesCoreMixin._wait_dialog(threading.Event(), "x", timeout=0.05) is False
-    ev = threading.Event()
-    ev.set()
-    assert FilesCoreMixin._wait_dialog(ev, "x", timeout=5) is True
-
-
 def test_now_presolicitada_no_espera_a_la_web(monkeypatch):
     import core.shared_data as sd
     data = {"r1": _req("waiting", waiting_reason="cines")}

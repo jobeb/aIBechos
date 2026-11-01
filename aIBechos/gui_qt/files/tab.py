@@ -475,26 +475,27 @@ class FilesTab(QWidget):
         else:
             self._clear_all()
 
-    def _ask_clear(self, pendientes: int):
-        return ClearDialog.ask(self.window(), pendientes).result
+    def _ask_clear(self, pendientes: int, cancel_label: str):
+        return ClearDialog.ask(self.window(), pendientes, cancel_label).result
 
     def _clear_all(self):
+        # Solo se pregunta si la tanda manual aún tiene algo por subir de
+        # esta lista (ver _upload_pending_among); el modo automático no
+        # trabaja sobre la lista, quitar filas no le afecta.
         host = self.host
-        if host._upload_running or host.watcher_running():
-            pendientes = [e for e in host.files if e.status != "subido"]
-            if pendientes:
-                res = self._ask_clear(len(pendientes))
-                if res == "solo_subidos":
-                    host.files = [e for e in host.files if e.status != "subido"]
-                elif res == "todo":
-                    if host._upload_running:
-                        host._upload_cancel.set()
-                    host.files.clear()
-                else:
-                    return
-                host._clear_detail()
-                self.refresh_table()
+        pendientes = host._upload_pending_among(host.files)
+        if pendientes:
+            res = self._ask_clear(len(pendientes), "Limpiar todo y cancelar")
+            if res == "solo_subidos":
+                host.files = [e for e in host.files if e.status != "subido"]
+            elif res == "todo":
+                host._upload_cancel.set()
+                host.files.clear()
+            else:
                 return
+            host._clear_detail()
+            self.refresh_table()
+            return
         host.files.clear()
         host._clear_detail()
         self.refresh_table()
@@ -502,14 +503,15 @@ class FilesTab(QWidget):
     def _clear_selected(self, sel: list):
         host = self.host
         sel_ids = {id(e) for e in sel}
-        pendientes = [e for e in sel if e.status != "subido"]
-        if (host._upload_running or host.watcher_running()) and pendientes:
-            res = self._ask_clear(len(pendientes))
+        pendientes = host._upload_pending_among(sel)
+        if pendientes:
+            res = self._ask_clear(len(pendientes), "Quitar y cancelar su subida")
             if res == "solo_subidos":
                 sel_ids = {id(e) for e in sel if e.status == "subido"}
             elif res == "todo":
-                if host._upload_running:
-                    host._upload_cancel.set()
+                # Solo los seleccionados: _upload_cancel cortaba la tanda
+                # entera, también lo no seleccionado.
+                host._drop_from_upload(pendientes)
             else:
                 return
         host.files = [e for e in host.files if id(e) not in sel_ids]
