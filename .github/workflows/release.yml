@@ -166,10 +166,11 @@ jobs:
             ## aIBechos ${{ github.ref_name }}
 
             ### Novedades
-            - Solicitudes web: se pueden presolicitar películas que aún no han salido o que solo están en cines; en cuanto están en una plataforma pasan solas a la cola y se descargan (aviso en el móvil). Desde Info → Solicitudes web se pueden lanzar ya o cancelar.
-            - Archivos: el tooltip dice por qué se omitió un archivo (también después de reiniciar la app).
-            - Historial: también salen los archivos omitidos y cancelados, con el motivo en "Destino FTP / motivo", y se pueden reintentar.
-            - Las rutas del historial ya no salen con "//".
+            - Archivos: al subir varios archivos, si algunos chocan con lo que ya hay en el servidor (ya subidos, otra versión del mismo capítulo o película, restos de una subida anterior) se pregunta una sola vez qué hacer con todos: Sustituir todo, Subir sin borrar nada, Omitir estos o Preguntar uno a uno.
+            - Archivos: los diálogos de la subida ya no se apilan ni se dan por "Omitir" solos a los 30 segundos; quitar o saltar un archivo de una subida en marcha ya no para ni desordena el resto.
+            - Solicitudes web: aMule ya no pierde descargas en curso porque la misma solicitud fallara en otro equipo.
+            - Solicitudes web: si aMule no está abierto no se cogen solicitudes y se avisa; una película reciente sin fuentes vuelve a presolicitada en vez de darse por fallida.
+            - Búsquedas en aMule: títulos con paréntesis o comillas tipográficas («», “”, ¡¿) ya no dan error ni se quedan sin resultados, y una serie ya no acepta otra solo por contener su nombre (p. ej. "Girls").
 
             ### Instalación
             - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).
