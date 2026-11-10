@@ -308,7 +308,16 @@ class DownloadRequestsMixin:
                      and e.get("status") in ("claimed", "downloading")
                      and not _dr.is_claim_stale(e))
         claimed_now = []
-        for rid, _entry in _dr.pending_for_worker(data):
+        candidates = _dr.pending_for_worker(data) if active < max(1, max_active) else []
+        if candidates and not self._download_requests_amule_reachable():
+            # Sin aMule no se reclama nada: lo cogería este PC para
+            # soltarlo luego con intento gastado, y la web acababa en
+            # "Fallida" algo que ningún equipo había buscado.
+            _log.info("Solicitudes: aMule no responde en este equipo, no se reclaman "
+                      "%d pendiente(s)", len(candidates))
+            self._download_requests_warn_amule_down(len(candidates))
+            candidates = []
+        for rid, _entry in candidates:
             if active >= max(1, max_active):
                 break
             if (_entry.get("claimed_by") == user
@@ -331,13 +340,26 @@ class DownloadRequestsMixin:
             else:
                 self._download_requests_carry = _dr.merge(
                     getattr(self, "_download_requests_carry", None) or {}, data)
+        amule_down = False
         for rid in list(claimed_now) + [rid for rid in my_ids
                                         if isinstance(data.get(rid), dict)
                                         and data.get(rid).get("status") == "claimed"]:
             entry = data.get(rid) or {}
             if entry.get("claimed_by") != user or entry.get("status") != "claimed":
                 continue
+            if amule_down:
+                # aMule se cayó a mitad de ciclo: el resto se suelta sin
+                # buscar (y sin gastar intento) para que lo coja otro.
+                nd = _dr.unclaim(data, rid, user=user, error=_dr.AMULE_UNAVAILABLE)
+                if nd is not None:
+                    data = nd
+                    changed = True
+                continue
             nd, _launched = self._download_request_launch(data, rid)
+            if (nd is not None and not _launched
+                    and (nd.get(rid) or {}).get("status") == "pending"
+                    and (nd.get(rid) or {}).get("last_error") == _dr.AMULE_UNAVAILABLE):
+                amule_down = True
             if nd is not None:
                 data = nd
                 changed = True
@@ -605,6 +627,60 @@ class DownloadRequestsMixin:
         except Exception:
             return "", ""
 
+    #: Cada cuánto se repite el aviso de "aMule cerrado con solicitudes".
+    _AMULE_WARN_EVERY = 6 * 3600
+
+    def _download_requests_warn_amule_down(self, n: int) -> None:
+        """Aviso de escritorio (como mucho cada _AMULE_WARN_EVERY): hay
+        solicitudes esperando y el aMule de este equipo no responde.
+        Antes no se enteraba nadie (real: un PC con aMule cerrado varios
+        días mientras las solicitudes se quedaban sin bajar). Nunca lanza."""
+        try:
+            now = _time.time()
+            if now - float(getattr(self, "_download_requests_amule_warn_ts", 0) or 0)                     < self._AMULE_WARN_EVERY:
+                return
+            self._download_requests_amule_warn_ts = now
+            self._send_notification(
+                "aMule está cerrado",
+                f"Hay {n} solicitud{'es' if n != 1 else ''} esperando. "
+                "Abre aMule para que este equipo pueda descargarlas.")
+        except Exception:
+            pass
+
+    def _download_requests_amule_reachable(self) -> bool:
+        """¿Responde el aMule de este equipo (EC)? Antes de reclamar: un PC
+        con aMule cerrado, sin EC o con eMule reclamaba y gastaba los
+        intentos de todo lo pendiente. Si el lock de EC está cogido es que
+        algo está hablando con aMule ahora mismo: responde. Nunca lanza."""
+        lock = getattr(self, "_amule_ec_lock", None)
+        got = False
+        try:
+            if lock is not None:
+                got = lock.acquire(timeout=1.0)
+                if not got:
+                    return True
+            ec = EcClient(host=self.config_data.get("amule_host", "localhost"),
+                          port=self.config_data.get("amule_port", 4712),
+                          password=self.config_data.get("amule_password", ""),
+                          timeout=5.0)
+            try:
+                ec.connect()
+                return True
+            finally:
+                try:
+                    ec.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            _log.debug("Solicitudes: aMule no responde (%s)", e)
+            return False
+        finally:
+            if got:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+
     def _download_requests_amule_state(self, needed: bool):
         """(cola de aMule [{hash_hex, name}] o None si no se pudo leer,
         nombres de archivo de la carpeta vigilada) -- para detectar
@@ -796,7 +872,7 @@ class DownloadRequestsMixin:
 
     def _download_requests_sweep_finished(self, data: dict, amule_queue) -> None:
         """Barrido: quita de aMule las descargas lanzadas para solicitudes
-        que ya están finales (done/failed/cancelled) — llegaron al
+        que ya están terminadas (done/cancelled) — llegaron al
         servidor por otra vía y su descarga siguió en aMule hasta
         terminar días después (caso real: Andrómeda). Solo por hash
         exacto guardado en la solicitud (nunca por nombre: no se toca
@@ -823,7 +899,12 @@ class DownloadRequestsMixin:
             for entry in (data or {}).values():
                 if not isinstance(entry, dict):
                     continue
-                if entry.get("status") not in ("done", "failed", "cancelled"):
+                # "failed" NO: que falle en otro equipo no dice nada de la
+                # copia que baja aquí, y si termina, el recheck de fallidas
+                # la pasa a "Lista" (real: Andrómeda 2x09-3x10, 24
+                # capítulos bajando en este aMule; otro PC se las quedó,
+                # fallaron allí y este barrido borró las buenas de aquí).
+                if entry.get("status") not in ("done", "cancelled"):
                     continue
                 for h in (entry.get("amule_hashes") or []):
                     h = str(h).lower()
@@ -947,7 +1028,7 @@ class DownloadRequestsMixin:
             # Subida por ESTE pc aunque las listas aún no lo reflejen
             # (real: "Sin piedad" subida y la solicitud sin done).
             try:
-                if _dr.uploaded_request(_dr.load_upload_history(), entry):
+                if _dr.uploaded_for_request(_dr.load_upload_history(), entry):
                     return "done"
             except Exception:
                 pass
@@ -974,7 +1055,7 @@ class DownloadRequestsMixin:
             # lo confirma igual (ver uploaded_request, nombre original).
             try:
                 from core.download_requests import load_upload_history as _luh0
-                from core.download_requests import uploaded_request as _ur0
+                from core.download_requests import uploaded_for_request as _ur0
                 if _ur0(_luh0(), entry):
                     return "done"
             except Exception:
@@ -996,7 +1077,7 @@ class DownloadRequestsMixin:
         # manual, sin rastro en las listas -- el done no llegaba nunca).
         try:
             from core.download_requests import load_upload_history as _luh
-            from core.download_requests import uploaded_request as _ur
+            from core.download_requests import uploaded_for_request as _ur
             if _ur(_luh(), entry):
                 return "done"
         except Exception:
@@ -1299,6 +1380,13 @@ class DownloadRequestsMixin:
                         query, is_movie=False, typical_size=typical, exclude_hashes=old_hashes)
             except Exception as ex:
                 ok, motivo, _h = False, str(ex)[:200], ""
+            if not ok and motivo == _dr.AMULE_UNAVAILABLE:
+                # Fallo de este PC, no de lo pedido: no seguir probando
+                # objetivos (cada uno espera el timeout de conexión).
+                last_error = motivo
+                _log.warning("Solicitudes: %s sin lanzar: aMule no responde en este equipo",
+                             _dr.describe(entry))
+                break
             if not ok and motivo == ALREADY_COMPLETED_REASON:
                 # aMule ya lo tiene bajado (en Incoming, esperando a
                 # AutoWatcher, o ya subido): no es un fallo. Antes se
@@ -1339,6 +1427,9 @@ class DownloadRequestsMixin:
                 self._download_request_record_replacement(entry, name, year)
                 nd = _dr.mark_replacement_launched(nd, req_id) or nd
             return nd, True
+        if last_error == _dr.AMULE_UNAVAILABLE:
+            # Sin gastar intento: que la coja un equipo con aMule.
+            return _dr.unclaim(data, req_id, user=user, error=last_error), False
         _log.warning("Solicitudes: %s no se pudo lanzar (%s)", _dr.describe(entry),
                      last_error or "no encontrado")
         return _dr.release(data, req_id, user=user, error=last_error or "no encontrado"), False

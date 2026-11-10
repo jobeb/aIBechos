@@ -270,11 +270,13 @@ def mark_status(data: dict, req_id: str, status: str, user: str = "",
         updated["last_error"] = str(error)[:500]
     if status == "done":
         updated["completed_at"] = ts
+    if status in ("done", "downloading") and not error:
         # El error de un intento anterior ya no vale: la web lo enseñaba
         # en rojo debajo de "Lista" (real: 7 terminadas con "descarga
-        # incompleta" de un intento previo).
-        if not error:
-            updated["last_error"] = ""
+        # incompleta" de un intento previo) y de "Descargando" (real: 8
+        # capítulos de Star Wars: Maul bajando con "aMule no disponible"
+        # del intento de otro PC).
+        updated["last_error"] = ""
     result = dict(data)
     result[req_id] = updated
     return result
@@ -352,6 +354,35 @@ def release(data: dict, req_id: str, user: str = "", error: str = "",
                "dl_percent": None, "dl_speed": None, "up_percent": None}
     if error:
         updated["last_error"] = str(error)[:500]
+    result[req_id] = updated
+    return result
+
+
+#: Motivo de auto_download cuando no se puede hablar con aMule.
+AMULE_UNAVAILABLE = "aMule no disponible"
+
+
+def unclaim(data: dict, req_id: str, user: str = "", error: str = "",
+            now: float | None = None) -> dict | None:
+    """Como release() pero SIN gastar intento: devuelve la solicitud a
+    "pending" para que la coja otro equipo. Para cuando el fallo es de
+    ESTE PC y no de lo pedido (aMule cerrado o sin EC): antes gastaba los
+    MAX_ATTEMPTS en unas horas y la dejaba "Fallida" sin haberla buscado
+    nunca (real: 18 fallidas por "aMule no disponible" de un PC con el
+    aMule cerrado, entre ellas MOURINHO y El más grande enteras). Con
+    *user* solo suelta su propio claim. None si no existe."""
+    entry = _entry(data, req_id)
+    if entry is None:
+        return None
+    if user and entry.get("claimed_by") and entry.get("claimed_by") != user:
+        return None
+    ts = now if now is not None else time.time()
+    updated = {**entry, "status": "pending", "claimed_by": "", "claimed_at": 0,
+               "heartbeat_at": 0, "updated_at": ts,
+               "dl_percent": None, "dl_speed": None, "up_percent": None}
+    if error:
+        updated["last_error"] = str(error)[:500]
+    result = dict(data)
     result[req_id] = updated
     return result
 
@@ -867,6 +898,22 @@ def uploaded_request_since(history: list, entry: dict, since) -> bool:
     recent = [e for e in history or []
               if isinstance(e, dict) and _ts(e) >= since]
     return uploaded_request(recent, entry)
+
+
+def uploaded_for_request(history: list, entry: dict) -> bool:
+    """¿Se subió lo pedido DESPUÉS de pedirlo? Una subida anterior no
+    vale: si se pidió es que faltaba, así que aquella copia se borró
+    luego (real: Andrómeda 1x01 subida el 9-10, ya no estaba en el
+    servidor, y tres solicitudes seguidas se dieron por "Lista" en
+    minutos por esa subida vieja sin bajar nada). Sin requested_at
+    válido (solicitudes antiguas), cualquier subida. Nunca lanza."""
+    try:
+        since = float(entry.get("requested_at") or 0)
+    except (TypeError, ValueError, AttributeError):
+        since = 0.0
+    if since > 0:
+        return uploaded_request_since(history, entry, since)
+    return uploaded_request(history, entry)
 
 
 #: Margen tras lanzar antes de dar una descarga por perdida en aMule

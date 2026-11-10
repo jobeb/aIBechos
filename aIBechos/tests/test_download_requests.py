@@ -553,3 +553,37 @@ def test_touch_heartbeat_solo_el_dueno_y_espaciado():
     assert dr.touch_heartbeat(data, "r1", "Efren", now=now) is None        # no es suya
     # El latido sobrevive a la fusión con la copia vieja del servidor.
     assert dr.merge(nd, data)["r1"]["heartbeat_at"] == now
+
+
+def test_unclaim_no_gasta_intento():
+    data = {"a": {"status": "claimed", "claimed_by": "Efren", "claimed_at": 5,
+                  "attempts": 3, "updated_at": 5}}
+    assert dr.unclaim(data, "a", user="Jose") is None, "solo su propio claim"
+    out = dr.unclaim(data, "a", user="Efren", error=dr.AMULE_UNAVAILABLE, now=100)
+    assert out["a"]["status"] == "pending"
+    assert out["a"]["claimed_by"] == ""
+    assert out["a"]["attempts"] == 3
+    assert out["a"]["last_error"] == "aMule no disponible"
+    assert data["a"]["status"] == "claimed", "no muta la entrada"
+
+
+def test_descargando_borra_error_de_intento_anterior():
+    """Real: Star Wars: Maul bajando con "aMule no disponible" en rojo."""
+    data = {"a": {"status": "claimed", "claimed_by": "Jose",
+                  "last_error": "aMule no disponible"}}
+    out = dr.mark_status(data, "a", "downloading", user="Jose")
+    assert out["a"]["last_error"] == ""
+
+
+def test_subida_anterior_a_la_solicitud_no_la_completa():
+    """Real: Andrómeda 1x01 subida el 9-10 y borrada después; tres
+    solicitudes posteriores se daban por "Lista" por esa subida vieja."""
+    entry = {"media_type": "tv", "title": "Andrómeda", "season": 1, "episode": 1,
+             "requested_at": 2000.0}
+    remote = "/datos2/series/Andrómeda/Temporada 01//Andrómeda 1x01 La noche oscura.mkv"
+    old = [{"status": "ok", "remote": remote, "ts": 1000.0}]
+    assert dr.uploaded_request(old, entry), "el historial sí casa"
+    assert not dr.uploaded_for_request(old, entry)
+    assert dr.uploaded_for_request(old + [{"status": "ok", "remote": remote, "ts": 2500.0}], entry)
+    sin_fecha = dict(entry, requested_at=0)
+    assert dr.uploaded_for_request(old, sin_fecha), "antiguas sin fecha: como antes"

@@ -53,6 +53,7 @@ def _cycle_app(data, launched, pushed):
     app._download_requests_ftp = lambda: SimpleNamespace(disconnect=lambda: None)
     app._download_requests_server_index = lambda wanted: {}
     app._download_requests_amule_state = lambda needed: (None, [])   # sin aMule
+    app._download_requests_amule_reachable = lambda: True   # aMule responde
     app._download_request_check_done = lambda entry, idx=None: None
     # Progreso: métodos reales del mixin (sin aMule no publican nada).
     # MethodType porque van colgados de un SimpleNamespace, no de una
@@ -328,7 +329,9 @@ def test_sweep_quita_huerfanas_finales(monkeypatch):
     }
     queue = [{"hash_hex": "aa"}, {"hash_hex": "cc"}, {"hash_hex": "dd"}, {"hash_hex": "zz"}]
     App._download_requests_sweep_finished(app, data, queue)
-    assert sorted(cancelled) == ["aa", "cc"]
+    # "failed" no: lo que falló en otro PC puede estar bajando bien aquí
+    # (real: Andrómeda, 24 capítulos borrados de este aMule).
+    assert sorted(cancelled) == ["aa"]
     # Segunda llamada seguida: throttle, sin más conexiones.
     cancelled.clear()
     App._download_requests_sweep_finished(app, data, queue)
@@ -368,3 +371,85 @@ def test_peli_con_fila_atrasada_mira_el_historial(monkeypatch):
     monkeypatch.setattr(dr, "load_upload_history",
                         lambda path=None: [{"status": "ok", "remote": REMOTE, "ts": 1000}])
     assert App._download_request_check_done(app, dict(MOVIE)) == "done"
+
+
+def test_ciclo_sin_amule_no_reclama(monkeypatch):
+    """Caso real: un PC con el aMule cerrado reclamaba todo lo pendiente y
+    lo soltaba con intento gastado hasta dejarlo "Fallida" (MOURINHO, El
+    más grande). Sin aMule no se reclama nada."""
+    import core.shared_data as sd
+    data = {"p": {"tmdb_id": 1, "media_type": "movie", "title": "Hope",
+                  "status": "pending", "claimed_by": "", "claimed_at": 0,
+                  "requested_at": time.time(), "attempts": 0}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    app._download_requests_amule_reachable = lambda: False
+    notes = []
+    app._AMULE_WARN_EVERY = App._AMULE_WARN_EVERY
+    app._download_requests_amule_warn_ts = 0.0
+    app._send_notification = lambda title, msg: notes.append(msg)
+    app._download_requests_warn_amule_down = MethodType(
+        App._download_requests_warn_amule_down, app)
+    App._download_requests_cycle(app)
+    App._download_requests_cycle(app)
+    assert launched == []
+    assert len(notes) == 1, "avisa una vez, no en cada ciclo"
+    assert "1 solicitud esperando" in notes[0]
+    assert not pushed or pushed[-1]["p"]["status"] == "pending"
+
+
+def test_ciclo_amule_caido_al_lanzar_suelta_sin_gastar_intento(monkeypatch):
+    """aMule responde al sondeo pero se cae al lanzar: la primera vuelve a
+    pendiente sin gastar intento y las demás se sueltan sin buscarlas."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {f"r{i}": {"tmdb_id": i, "media_type": "movie", "title": f"P{i}",
+                      "status": "pending", "claimed_by": "", "claimed_at": 0,
+                      "requested_at": now + i, "attempts": 0}
+            for i in range(3)}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+
+    def _launch(d, rid):
+        launched.append(rid)
+        return dr.unclaim(d, rid, user="Jose", error=dr.AMULE_UNAVAILABLE), False
+    app._download_request_launch = _launch
+    App._download_requests_cycle(app)
+    assert launched == ["r0"], "tras el primer fallo de aMule no se busca nada más"
+    final = pushed[-1]
+    for i in range(3):
+        assert final[f"r{i}"]["status"] == "pending"
+        assert final[f"r{i}"]["claimed_by"] == ""
+        assert final[f"r{i}"]["attempts"] == 0
+
+
+def test_launch_amule_no_disponible_no_gasta_intento():
+    """_download_request_launch real: con "aMule no disponible" no prueba
+    el resto de capítulos y suelta sin intento gastado."""
+    now = time.time()
+    data = {"s": {"tmdb_id": 7, "media_type": "tv", "season": 1, "episode": None,
+                  "title": "MOURINHO", "year": "2026", "status": "claimed",
+                  "claimed_by": "Jose", "claimed_at": now, "requested_at": now,
+                  "attempts": 2}}
+    calls = []
+    app = SimpleNamespace(config_data={}, _missing_ep_results=[
+        {"tmdb_id": 7, "missing": {"1": [1, 2, 3]}}])
+    app._download_requests_user = lambda: "Jose"
+    app._download_request_canonical = lambda entry: ("MOURINHO", "2026")
+    app._series_prefers_castellano = lambda name: False
+    app._typical_size_for_series = lambda name, season=None: None
+    app._DOWNLOAD_REQUESTS_EXPAND_CAP = 50
+    app._download_request_targets = MethodType(App._download_request_targets, app)
+
+    def _dl(query, **kw):
+        calls.append(query)
+        return False, "aMule no disponible", ""
+    app._auto_amule_download_series = _dl
+    nd, launched = App._download_request_launch(app, data, "s")
+    assert launched is False
+    assert len(calls) == 1
+    assert nd["s"]["status"] == "pending"
+    assert nd["s"]["attempts"] == 2
+    assert nd["s"]["last_error"] == "aMule no disponible"
