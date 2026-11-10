@@ -6,6 +6,7 @@ resultado que los CTkToplevel de gui/app.py, porque la lógica compartida
   OverwriteDialog       "overwrite" | "skip" | "all" | "skip_all" | "replace" | "replace_all"
   StaleUploadDialog     "delete_upload" | "no_delete" | "delete_upload_all" | "no_delete_all" | None
   SeriesMatchDialog     "yes" | "no" | None
+  BatchConflictDialog   "replace" | "keep" | "skip" | "one_by_one"  (X = "skip")
   RemoveEntryDialog     una opción de core.remote_presence | None
   ConfirmRemovalDialog  True | False
   ClearDialog           "solo_subidos" | "todo" | None
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                               QVBoxLayout)
+                               QScrollArea, QVBoxLayout)
 
 from core import remote_presence as rp
 from gui_qt import theme
@@ -126,6 +127,40 @@ class StaleUploadDialog(_ChoiceDialog):
             self.buttons([("Borrar resto y subir (todos)", "delete_upload_all", "danger"),
                           ("No borrar, subir (todos)", "no_delete_all", "accent")])
         self.buttons([("Cancelar la subida", None, None)])
+
+
+class BatchConflictDialog(_ChoiceDialog):
+    """Una sola pregunta para todos los conflictos de una tanda de subida
+    (ver FilesUploadMixin._prescan_batch_conflicts). *items*:
+    [(nombre, [motivo, ...])]."""
+
+    def __init__(self, parent, items: list, total: int, show_keep: bool = True):
+        super().__init__(parent, "Archivos que ya están en el servidor", close_result="skip", width=560)
+        n = len(items)
+        self.label(f"{n} de {total} archivo{'s' if total != 1 else ''} de esta subida "
+                   f"{'chocan' if n != 1 else 'choca'} con lo que ya hay en el servidor:",
+                   bold=True, size=11)
+        text = "\n".join(f"• {name}\n      {'; '.join(reasons)}" for name, reasons in items)
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lbl.setStyleSheet(f"color: {theme.PENDING_COLOR};")
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setWidget(lbl)
+        area.setMinimumHeight(min(320, 46 * n + 10))
+        self._lay.addWidget(area)
+        self.label("Sustituir: los que ya están completos se sobrescriben, las otras versiones "
+                   "se borran SOLO si la subida nueva termina bien y los restos antiguos se borran."
+                   + ("\nSubir sin borrar nada: se suben conservando lo que hay; los que ya están "
+                      "completos con el mismo nombre se omiten." if show_keep else ""),
+                   color=theme.PENDING_COLOR, size=9)
+        specs = [("Sustituir todo", "replace", "danger")]
+        if show_keep:
+            specs.append(("Subir sin borrar nada", "keep", "accent"))
+        specs.append(("Omitir estos", "skip", None))
+        self.buttons(specs)
+        self.buttons([("Preguntar uno a uno", "one_by_one", None)])
 
 
 class SeriesMatchDialog(_ChoiceDialog):

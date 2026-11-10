@@ -22,7 +22,8 @@ Es una mixin que hereda QtAppCore (gui_qt/core_host.py), que aporta estos
                    _ftp_row_done(entry), _ftp_row_uploading(entry), _refresh_ftp_columns(),
                    _restore_ftp_row_buttons(), _refresh_ftp_space()
   diálogos         _make_overwrite_dialog(...), _make_stale_upload_dialog(...),
-                   _make_series_match_dialog(...)  -> objeto con .result (hilo de la interfaz)
+                   _make_series_match_dialog(...), _make_batch_conflict_dialog(...)
+                   -> objeto con .result (hilo de la interfaz)
   otras pestañas   _remove_uploaded_episode_from_missing_list(info),
                    _remove_uploaded_movie_from_movies_list(info), _cancel_missing_episodes_scan(),
                    _refresh_cleanup_item_after_replace(...), _queue_upload_notification(...),

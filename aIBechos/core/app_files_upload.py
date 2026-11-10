@@ -21,6 +21,16 @@ from core.status_colors import ERROR_COLOR, PENDING_COLOR, SUCCESS_COLOR, WARNIN
 _log = get_logger("aIBechos.gui", "app.log")
 
 
+class _UploadTargetError(Exception):
+    """Sin destino remoto calculable (falta categoría o ruta en Ajustes)."""
+
+    def __init__(self, code: str, error_msg: str, row_label: str):
+        super().__init__(error_msg)
+        self.code = code
+        self.error_msg = error_msg
+        self.row_label = row_label
+
+
 class FilesUploadMixin:
     @staticmethod
     def _unqueue_status(entry, prev_status: str) -> str:
@@ -64,6 +74,9 @@ class FilesUploadMixin:
             if cancel_event is not None and cancel_event.is_set():
                 _log.info("Diálogo %s: subida cancelada mientras esperaba respuesta", what)
                 return None
+        # Sin esto el log no dejaba ver qué diálogos salieron ni qué se
+        # contestó (real: "me preguntó tres veces" sin rastro en app.log).
+        _log.info("Diálogo %s: respuesta %r", what, answer[0])
         return answer[0]
 
     def _get_free_space_with_jellyfin_fallback(self, ftp_conn, root: str):
@@ -236,6 +249,8 @@ class FilesUploadMixin:
             entry._stale_checked = False
             entry._duplicate_checked = False
             entry._last_upload_remote_size = 0
+            entry._conflict_policy = None
+            entry._conflict_dup = None
             self._update_row(entry)
         self._refresh_ftp_columns()
         threading.Thread(target=self._queue_worker, daemon=True).start()
@@ -486,6 +501,20 @@ class FilesUploadMixin:
             pass
         return False
 
+    def _omit_by_batch_policy(self, entry, remote_file: str, reason: str, size=None):
+        """Omitir *entry* por lo contestado en el diálogo de conflictos de
+        la tanda: estado accionable (reintentable) y rastro en el historial."""
+        entry.status = self._unqueue_status(entry, entry.status)
+        self._ftp_row_set(entry, "Omitido", 0, 0)
+        self.after(0, lambda e=entry: self._update_row(e))
+        if size is None:
+            try:
+                size = Path(entry.path).stat().st_size
+            except OSError:
+                size = 0
+        self._save_skip_history(entry, remote_file, size, reason)
+        _log.info("Subida: %r omitido por la decisión de la tanda (%s)", entry.name, reason)
+
     def _resolve_stale_remote(self, entry, remote_file: str, stale_remote: str, is_batch: bool):
         """Resto de una subida anterior con otro nombre (*stale_remote*):
         borrarlo o no según lo ya contestado "(todos)" en la tanda o
@@ -493,7 +522,16 @@ class FilesUploadMixin:
         aquí. Se llama con _upload_confirm_lock cogido."""
         if not stale_remote:
             return None
-        choice = getattr(self, "_upload_stale_choice", None)
+        # Decisión tomada en la revisión previa de la tanda
+        # (_prescan_batch_conflicts): no volver a preguntar.
+        policy = getattr(entry, "_conflict_policy", None)
+        if policy == "skip":
+            entry._stale_checked = True
+            self._omit_by_batch_policy(entry, remote_file,
+                                       f"Quedaba un resto de una subida anterior: {stale_remote}")
+            return True, "omitido"
+        choice = {"replace": "delete", "keep": "no_delete"}.get(
+            policy, getattr(self, "_upload_stale_choice", None))
         if choice == "no_delete":
             entry._stale_checked = True
             return None
@@ -523,45 +561,104 @@ class FilesUploadMixin:
             _log.warning("No se pudo borrar el resto de subida antiguo %s: %s", stale_remote, e)
         return None
 
-    def _upload_entry_with(self, entry, ftp_conn, speed_kbs, skip_ev):
-        """Sube un único archivo usando la conexión ftp_conn dada. Devuelve (ok, msg)."""
-        if self._auto_is_processing(entry.path):
-            # El modo automático lo está procesando ahora mismo: omitir en
-            # la tanda manual con mensaje claro en vez de competir por el
-            # archivo (ver _auto_is_processing). El automático actualiza
-            # esta misma fila al terminar (mismo path → mismo entry).
-            self._ftp_row_set(entry, "En proceso (auto)", entry.ftp_progress, 0)
-            self.after(0, lambda e=entry: self._update_row(e))
-            _log.info("Subida: %r lo está procesando el modo automático, se omite en la tanda manual",
-                      entry.name)
-            return True, "en_proceso_auto"
-        if not Path(entry.path).exists():
-            # El renombrado de AutoWatcher no espera cupo de subida (solo la
-            # transferencia en sí — ver core/upload_slots.py), así que puede
-            # renombrar y subir el archivo por su cuenta mientras esta
-            # entrada seguía esperando turno en la cola manual con el nombre
-            # viejo. Si AutoWatcher ya lo dio por subido, sincronizar el
-            # estado aquí en vez de fallar con "archivo no encontrado" en
-            # bucle en cada reintento.
-            auto_status = self._auto_processed_status(entry.path)
-            if auto_status == "subido":
-                entry.status = "subido"
-                self._ftp_row_set(entry, "Subido (automático)", 1, 0)
-                self.after(0, lambda e=entry: self._update_row(e))
-                return True, "ya_subido_por_auto"
-            entry.status    = "error"
-            entry.error_msg = "Archivo local no encontrado (¿se movió, se renombró o lo procesó el modo automático?)"
-            self._ftp_row_set(entry, "No encontrado", 0, 0)
-            self.after(0, lambda e=entry: self._update_row(e))
-            _log.warning("Subida: archivo local no encontrado %r", entry.path)
-            return False, "archivo_no_encontrado"
+    def _prescan_batch_conflicts(self, ftp_conn):
+        """Revisa TODA la tanda antes de subir y, si hay conflictos, pregunta
+        UNA vez qué hacer con todos ellos:
 
+          - ya completo en el servidor con el mismo nombre
+          - otra versión del mismo contenido con otro nombre (duplicado)
+          - resto de una subida anterior con otro nombre
+
+        Antes cada caso tenía su propio diálogo con su propio "(todos)", y
+        una tanda mezclada preguntaba varias veces seguidas con ventanas
+        distintas. La respuesta queda en entry._conflict_policy:
+        "replace" | "keep" | "skip"; "Preguntar uno a uno" no fija nada y
+        sigue el flujo de siempre. Los parciales del mismo nombre (se
+        reanudan solos) no son conflicto. Solo con 2 o más archivos."""
+        entries = [e for e in list(self._upload_queue)
+                   if e.media_info and not getattr(e, "_upload_dropped", False)
+                   and getattr(e, "_conflict_policy", None) is None]
+        if len(entries) < 2:
+            return
+        from core.duplicate_detect import find_duplicate
+        self.after(0, lambda: self._set_status("Comprobando qué hay ya en el servidor…", PENDING_COLOR))
+        listings = {}
+        conflicts = []   # (entry, dup, reasons)
+        for entry in entries:
+            if self._upload_cancel.is_set():
+                return
+            if (getattr(entry, "_upload_dropped", False) or not Path(entry.path).exists()
+                    or self._auto_is_processing(entry.path)):
+                continue
+            try:
+                _root, remote_dir, remote_filename, remote_file = self._upload_target(entry, ftp_conn)
+            except _UploadTargetError:
+                continue   # la subida lo marcará con su error
+            if entry.status == "esperando_confirmacion":
+                # Venía de contestar "¿Es la misma serie?" (_resolve_series_folder)
+                entry.status = "en_cola"
+                self.after(0, lambda en=entry: self._update_row(en))
+            stale = ("" if getattr(entry, "_stale_checked", False) else
+                     self._stale_remote_from_history(entry.path, entry.name, remote_file))
+            try:
+                local_size = Path(entry.path).stat().st_size
+            except OSError:
+                continue
+            remote_size = ftp_conn.get_remote_size(remote_file)
+            already_exists = remote_size is not None and remote_size >= local_size
+            dup = None
+            listed = False
+            if not already_exists and not getattr(entry, "_duplicate_checked", False):
+                if remote_dir not in listings:
+                    listings[remote_dir] = ftp_conn.list_files_checked(remote_dir)
+                listing = listings[remote_dir]
+                if listing is not None:
+                    listed = True
+                    dup = find_duplicate(listing, entry.media_info, remote_filename)
+            reasons = []
+            if already_exists:
+                reasons.append("ya está completo en el servidor")
+            if dup:
+                reasons.append(f"ya hay otra versión: {dup}")
+            if stale:
+                reasons.append(f"resto de una subida anterior: {Path(stale).name}")
+            if not reasons:
+                if listed:
+                    entry._duplicate_checked = True   # comprobado: sin duplicados
+                continue
+            conflicts.append((entry, dup, reasons))
+        if not conflicts or self._upload_cancel.is_set():
+            return
+        _log.info("Subida: %d de %d archivo(s) de la tanda con conflicto: %s", len(conflicts),
+                  len(entries), "; ".join(f"{e.name}: {', '.join(r)}" for e, _d, r in conflicts))
+        for e, _d, _r in conflicts:
+            e.status = "esperando_confirmacion"
+            self.after(0, lambda en=e: self._update_row(en))
+        items = [(e.new_name or e.name, r) for e, _d, r in conflicts]
+        # "Subir sin borrar nada" solo cambia algo si hay duplicados o restos
+        # (lo ya completo con el mismo nombre se omitiría igual).
+        can_keep = any(not r[0].startswith("ya está completo") for _e, _d, r in conflicts)
+        res = self._ask_gui(
+            lambda: self._make_batch_conflict_dialog(items, len(entries), show_keep=can_keep),
+            "batch-conflicts", self._upload_cancel)
+        if res is None:
+            res = "skip"   # cerrado con la X: jamás sustituir por defecto
+        for e, dup, _r in conflicts:
+            if e.status == "esperando_confirmacion":
+                e.status = "en_cola"
+                self.after(0, lambda en=e: self._update_row(en))
+            if res not in ("replace", "keep", "skip"):
+                continue   # "Preguntar uno a uno": flujo de siempre
+            e._conflict_policy = res
+            e._conflict_dup = dup
+            e._duplicate_checked = True
+
+    def _upload_target(self, entry, ftp_conn):
+        """Destino remoto de *entry*: (root, remote_dir, remote_filename,
+        remote_file). Lanza _UploadTargetError si falta configuración. Lo
+        usan la subida y la revisión previa de la tanda
+        (_prescan_batch_conflicts), así las dos miran la MISMA ruta."""
         info = entry.media_info
-        if not info:
-            self._ftp_row_set(entry, "Sin info TMDB", 0, 0)
-            self.after(0, lambda e=entry: self._update_row(e))
-            return True, "sin_info"
-
         if entry.remote_dir_override:
             # El usuario fijó la carpeta a mano (doble clic en la columna
             # "Destino" de la tabla) -- prevalece sobre todo lo demás, ni
@@ -604,18 +701,10 @@ class FilesUploadMixin:
                         "categoría, se usa la de género: '%s'",
                         info.title, info.tmdb_id, category.get("name") if category else None)
             if not category:
-                entry.status    = "error"
-                entry.error_msg = "Sin categoría FTP configurada"
-                self._ftp_row_set(entry, "Sin categoría", 0, 0)
-                self.after(0, lambda e=entry: self._update_row(e))
-                return False, "sin_categoria"
+                raise _UploadTargetError("sin_categoria", "Sin categoría FTP configurada", "Sin categoría")
             root = category.get("root", "")
             if not root:
-                entry.status    = "error"
-                entry.error_msg = f"Categoría '{category.get('name')}' sin ruta configurada"
-                self._ftp_row_set(entry, "Sin ruta", 0, 0)
-                self.after(0, lambda e=entry: self._update_row(e))
-                return False, "sin_ruta"
+                raise _UploadTargetError("sin_ruta", f"Categoría '{category.get('name')}' sin ruta configurada", "Sin ruta")
 
             if info.media_type == "tv":
                 serie_name = self._resolve_series_folder(ftp_conn, category, info, entry)
@@ -630,6 +719,55 @@ class FilesUploadMixin:
         rename_remote   = self.config_data.get("rename_remote", True)
         remote_filename = (entry.new_name if rename_remote else entry.name) or Path(entry.path).name
         remote_file = f"{remote_dir.rstrip('/')}/{remote_filename}"
+        return root, remote_dir, remote_filename, remote_file
+
+    def _upload_entry_with(self, entry, ftp_conn, speed_kbs, skip_ev):
+        """Sube un único archivo usando la conexión ftp_conn dada. Devuelve (ok, msg)."""
+        if self._auto_is_processing(entry.path):
+            # El modo automático lo está procesando ahora mismo: omitir en
+            # la tanda manual con mensaje claro en vez de competir por el
+            # archivo (ver _auto_is_processing). El automático actualiza
+            # esta misma fila al terminar (mismo path → mismo entry).
+            self._ftp_row_set(entry, "En proceso (auto)", entry.ftp_progress, 0)
+            self.after(0, lambda e=entry: self._update_row(e))
+            _log.info("Subida: %r lo está procesando el modo automático, se omite en la tanda manual",
+                      entry.name)
+            return True, "en_proceso_auto"
+        if not Path(entry.path).exists():
+            # El renombrado de AutoWatcher no espera cupo de subida (solo la
+            # transferencia en sí — ver core/upload_slots.py), así que puede
+            # renombrar y subir el archivo por su cuenta mientras esta
+            # entrada seguía esperando turno en la cola manual con el nombre
+            # viejo. Si AutoWatcher ya lo dio por subido, sincronizar el
+            # estado aquí en vez de fallar con "archivo no encontrado" en
+            # bucle en cada reintento.
+            auto_status = self._auto_processed_status(entry.path)
+            if auto_status == "subido":
+                entry.status = "subido"
+                self._ftp_row_set(entry, "Subido (automático)", 1, 0)
+                self.after(0, lambda e=entry: self._update_row(e))
+                return True, "ya_subido_por_auto"
+            entry.status    = "error"
+            entry.error_msg = "Archivo local no encontrado (¿se movió, se renombró o lo procesó el modo automático?)"
+            self._ftp_row_set(entry, "No encontrado", 0, 0)
+            self.after(0, lambda e=entry: self._update_row(e))
+            _log.warning("Subida: archivo local no encontrado %r", entry.path)
+            return False, "archivo_no_encontrado"
+
+        info = entry.media_info
+        if not info:
+            self._ftp_row_set(entry, "Sin info TMDB", 0, 0)
+            self.after(0, lambda e=entry: self._update_row(e))
+            return True, "sin_info"
+
+        try:
+            root, remote_dir, remote_filename, remote_file = self._upload_target(entry, ftp_conn)
+        except _UploadTargetError as e:
+            entry.status    = "error"
+            entry.error_msg = e.error_msg
+            self._ftp_row_set(entry, e.row_label, 0, 0)
+            self.after(0, lambda en=entry: self._update_row(en))
+            return False, e.code
 
         # Este mismo archivo se subió antes bajo OTRO nombre (identificación
         # vieja y errónea -- p.ej. "Papillon (2017)" como "Papillon (1973)"),
@@ -689,8 +827,12 @@ class FilesUploadMixin:
         # (Va FUERA del lock de abajo: list_files es una llamada de red, y
         # mantener el lock durante ella frenaría en serie a todos los workers
         # de la tanda aunque no tuvieran nada que confirmar.)
+        policy = getattr(entry, "_conflict_policy", None)
         dup = None
-        if not already_exists and not getattr(entry, "_duplicate_checked", False):
+        if not already_exists and policy is not None:
+            # Ya detectado (o descartado) en la revisión previa de la tanda.
+            dup = getattr(entry, "_conflict_dup", None)
+        elif not already_exists and not getattr(entry, "_duplicate_checked", False):
             from core.duplicate_detect import find_duplicate
             existing_files = ftp_conn.list_files_checked(remote_dir)
             if existing_files is None:
@@ -716,7 +858,27 @@ class FilesUploadMixin:
                 # Quitado de la lista mientras esperaba su turno de diálogo
                 # (ver _drop_from_upload): ni preguntar ni subir.
                 return False, "saltado"
-            if already_exists and not self._upload_overwrite_all and not self._upload_skip_all:
+            if policy is not None and (already_exists or dup):
+                # Contestado UNA vez para toda la tanda en el diálogo de
+                # conflictos (_prescan_batch_conflicts). Antes cada tipo de
+                # conflicto tenía su propio diálogo y su propio "(todos)",
+                # así que una tanda con varios casos preguntaba varias veces
+                # con ventanas distintas (real: 5 capítulos de The Twilight
+                # Zone, tres diálogos de "¿sustituir?").
+                if policy == "replace":
+                    if already_exists:
+                        force_overwrite = True
+                    else:
+                        entry._replace_duplicate = f"{remote_dir.rstrip('/')}/{dup}"
+                elif already_exists or policy == "skip":
+                    # "Subir sin borrar nada" no puede subir sin pisar si el
+                    # mismo nombre ya está completo: se omite.
+                    reason = ("Ya existía en el servidor (conflictos de la tanda)" if already_exists
+                              else f"Ya había otro archivo con el mismo contenido: {dup}")
+                    self._omit_by_batch_policy(entry, remote_file, reason, local_size)
+                    return True, "omitido"
+                # "keep" con duplicado: se sube y se conservan los dos
+            elif already_exists and not self._upload_overwrite_all and not self._upload_skip_all:
                 # Estado visible en la columna "Estado": si no se distingue de
                 # "En cola" es fácil no darse cuenta de que hay un diálogo
                 # esperando respuesta (p.ej. cuando el modo automático ya subió
@@ -1128,6 +1290,13 @@ class FilesUploadMixin:
         else:
             _log.info("Subida: %d conexión(es) en paralelo listas para esta tanda", len(pool))
 
+        # Una sola pregunta por tanda para todos los conflictos (ver
+        # _prescan_batch_conflicts), antes de que los workers empiecen.
+        try:
+            self._prescan_batch_conflicts(pool[0])
+        except Exception:
+            _log.exception("Subida: fallo revisando conflictos de la tanda; se pregunta archivo a archivo")
+
         import queue as _queue
         conn_q = _queue.Queue()
         for c in pool:
@@ -1237,6 +1406,8 @@ class FilesUploadMixin:
                                   and not getattr(e, "_upload_dropped", False)]
                     if stragglers:
                         for e in stragglers:
+                            e._conflict_policy = None
+                            e._conflict_dup = None
                             e.ftp_progress = 0.0
                             e.ftp_speed    = 0.0
                             e.ftp_status   = "En espera"
@@ -1292,6 +1463,10 @@ class FilesUploadMixin:
         if self._upload_running:
             if entry not in self._upload_queue or getattr(entry, "_upload_dropped", False):
                 entry._upload_dropped = False
+                # Encolado a mano a mitad de tanda: se pregunta por él aunque
+                # la revisión de conflictos de la tanda ya lo hubiera omitido.
+                entry._conflict_policy = None
+                entry._conflict_dup = None
                 self._reserve_manual_entries([entry])
                 self._upload_queue.append(entry)
                 self._upload_batch_size = len(self._upload_queue)

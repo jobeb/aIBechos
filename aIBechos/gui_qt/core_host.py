@@ -413,6 +413,10 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         from gui_qt.files.dialogs import StaleUploadDialog
         return StaleUploadDialog.ask(self.window, *args, **kwargs)
 
+    def _make_batch_conflict_dialog(self, *args, **kwargs):
+        from gui_qt.files.dialogs import BatchConflictDialog
+        return BatchConflictDialog.ask(self.window, *args, **kwargs)
+
     def _make_series_match_dialog(self, *args, **kwargs):
         from gui_qt.files.dialogs import SeriesMatchDialog
         return SeriesMatchDialog.ask(self.window, *args, **kwargs)
