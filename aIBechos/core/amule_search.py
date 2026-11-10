@@ -43,8 +43,14 @@ def sanitize_search_query(query: str) -> str:
     un capítulo de Doctor Who) y como keywords de Kad no aportan nada.
     Las comillas NO se tocan aquí: un template personalizado podría
     usarlas a propósito para frase exacta (en el fallback de nombre de
-    archivo ya las quita filename_stem_to_search_terms)."""
-    q = re.sub(r"[()\[\]{}]+", " ", query or "")
+    archivo ya las quita filename_stem_to_search_terms).
+    Las tipográficas (“” «» „) y ¡¿ sí: Kad no las separa y quedaban
+    pegadas a la palabra -- buscaba "“cumbres" y "¡a", que no casan con
+    ningún archivo (real: “Cumbres Borrascosas”, Hot Wheels ¡A correr!).
+    El apóstrofo curvo pasa a recto (Ocean’s -> Ocean's, como en los
+    nombres de archivo)."""
+    q = re.sub(r"[()\[\]{}“”„«»¡¿]+", " ", query or "")
+    q = q.replace("’", "'").replace("‘", "'")
     return re.sub(r"\s+", " ", q).strip()
 
 

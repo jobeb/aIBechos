@@ -44,3 +44,12 @@ def test_build_query_respeta_template():
 
 def test_build_query_defecto_serie():
     assert build_amule_query("Doctor Who", 11, 8) == "Doctor Who 11x08"
+
+
+def test_sanitize_quita_comillas_tipograficas():
+    """Real: “Cumbres Borrascosas” y Hot Wheels ¡A correr! sin resultados:
+    Kad buscaba las palabras con la comilla/¡ pegada."""
+    assert build_amule_query("“Cumbres Borrascosas”", None, None, "2026") == "Cumbres Borrascosas"
+    assert sanitize_search_query("Hot Wheels ¡A correr!") == "Hot Wheels A correr!"
+    assert sanitize_search_query("«Lazos»") == "Lazos"
+    assert sanitize_search_query("Ocean’s Eleven") == "Ocean's Eleven"
