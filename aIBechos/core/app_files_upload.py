@@ -1529,6 +1529,30 @@ class FilesUploadMixin:
             except Exception:
                 pass
 
+    def _delete_remote_files(self, remote_paths: list) -> dict:
+        """Como _delete_remote_file pero para varios con UNA conexión:
+        {ruta: (ok, msg)}. Hilo."""
+        own_ftp = self._new_ftp_client()
+        ok, msg = own_ftp.connect(
+            self.config_data.get("ftp_host", ""), int(self.config_data.get("ftp_port", 21)),
+            self.config_data.get("ftp_user", ""), self.config_data.get("ftp_password", ""),
+            self.config_data.get("ftp_use_tls", False))
+        if not ok:
+            return {p: (False, msg or "no se pudo conectar") for p in remote_paths}
+        out = {}
+        try:
+            for p in remote_paths:
+                try:
+                    out[p] = own_ftp.delete_file(p)
+                except Exception as e:
+                    out[p] = (False, str(e))
+        finally:
+            try:
+                own_ftp.disconnect()
+            except Exception:
+                pass
+        return out
+
     def _enqueue_or_start(self, entries: list):
         """Encola si ya hay subida en curso, si no inicia nueva tanda."""
         if self._upload_running:

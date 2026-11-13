@@ -138,7 +138,8 @@ QUITAR_LISTA          = "lista"
 QUITAR_Y_LOCAL        = "lista_local"
 QUITAR_LOCAL_Y_REMOTO = "lista_local_servidor"
 
-DESTRUCTIVAS = (QUITAR_Y_LOCAL, QUITAR_LOCAL_Y_REMOTO)
+DESTRUCTIVAS = (QUITAR_Y_LOCAL, QUITAR_LOCAL_Y_REMOTO,
+                "borrar_local", "borrar_servidor", "borrar_ambos")
 
 
 def removal_options(local_exists: bool, remote_path: str) -> list:
@@ -162,6 +163,55 @@ def removal_options(local_exists: bool, remote_path: str) -> list:
     if looks_like_remote_path(remote_path):
         opciones.append(QUITAR_LOCAL_Y_REMOTO)
     return opciones
+
+
+# ── Botón "Eliminar" (uno o varios archivos seleccionados) ──────────────
+#
+# Un solo diálogo para toda la selección. Todas las opciones quitan las
+# filas de la lista; lo que cambia es qué se borra además. Cada opción se
+# aplica a cada archivo donde se puede: "Borrar del disco" con un archivo
+# que ya no está en local solo lo quita de la lista.
+BORRAR_LOCAL    = "borrar_local"
+BORRAR_SERVIDOR = "borrar_servidor"
+BORRAR_AMBOS    = "borrar_ambos"
+
+
+def presence_counts(items: list) -> dict:
+    """*items*: [(local_exists, remote_path)]. Cuántos están en disco, en
+    el servidor (ruta fiable), en los dos y en ninguno."""
+    n_local = n_remote = n_both = n_none = 0
+    for local_exists, remote in items:
+        en_srv = looks_like_remote_path(remote)
+        n_local += bool(local_exists)
+        n_remote += en_srv
+        n_both += bool(local_exists) and en_srv
+        n_none += (not local_exists) and not en_srv
+    return {"total": len(items), "local": n_local, "remote": n_remote,
+            "both": n_both, "none": n_none}
+
+
+def bulk_removal_options(items: list) -> list:
+    """Opciones del diálogo de "Eliminar", de menos a más destructiva:
+    solo se ofrece borrar donde hay algo que borrar."""
+    c = presence_counts(items)
+    opciones = [QUITAR_LISTA]
+    if c["local"]:
+        opciones.append(BORRAR_LOCAL)
+    if c["remote"]:
+        opciones.append(BORRAR_SERVIDOR)
+    if c["local"] and c["remote"]:
+        opciones.append(BORRAR_AMBOS)
+    return opciones
+
+
+def removal_targets(option: str, local_path: str, local_exists: bool,
+                    remote_path: str) -> tuple:
+    """(ruta_local_a_borrar, ruta_remota_a_borrar) de un archivo para la
+    opción elegida; "" donde no se borra nada."""
+    local = local_path if local_exists and option in (BORRAR_LOCAL, BORRAR_AMBOS) else ""
+    remote = (remote_path if looks_like_remote_path(remote_path)
+              and option in (BORRAR_SERVIDOR, BORRAR_AMBOS) else "")
+    return local, remote
 
 
 def is_destructive(option: str) -> bool:

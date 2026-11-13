@@ -126,6 +126,13 @@ class FilesTab(QWidget):
         self.upload_btn.setToolTip("Subir al servidor todos los archivos de la lista, cada uno a la carpeta "
                                    "de su columna \"Destino\". Ctrl+U sube solo lo seleccionado.")
         self.upload_btn.clicked.connect(lambda: self.host._on_header_upload_clicked())
+        self.delete_btn = QPushButton("Eliminar")
+        self.delete_btn.setProperty("danger", True)
+        self.delete_btn.setToolTip("Quitar de la lista los archivos seleccionados y, si quieres, borrarlos "
+                                   "también de tu disco y/o del servidor (pregunta según dónde estén). Supr.")
+        self.delete_btn.clicked.connect(self._remove_selection)
+        self.delete_btn.setVisible(False)
+        head.addWidget(self.delete_btn)
         head.addWidget(self.clear_btn)
         head.addWidget(self.upload_btn)
         root.addLayout(head)
@@ -275,14 +282,10 @@ class FilesTab(QWidget):
             self.host._upload_one(sel[0])
 
     def _remove_selection(self):
+        # Botón "Eliminar" y Supr: un solo diálogo para toda la selección.
         sel = self.host._current_selection()
-        if len(sel) == 1:
-            self.host._remove_entry(sel[0])
-        elif sel:
-            # _remove_entry pregunta por cada archivo (borrar del disco o del
-            # servidor): con varios serían varios diálogos seguidos.
-            self.host._set_status("Supr quita los archivos de uno en uno: selecciona solo uno.",
-                                  theme.WARNING_COLOR)
+        if sel:
+            self.host._remove_entries(sel)
 
     def update_row(self, entry):
         if not self.model.update_entry(entry):
@@ -322,6 +325,8 @@ class FilesTab(QWidget):
         self.select_all_btn.setText("Deseleccionar todos" if all_sel else "Seleccionar todos")
         self.upload_btn.setText(f"Subir seleccionados ({n})" if n > 1 else "Subir todo")
         self.clear_btn.setText(f"Limpiar seleccionados ({n})" if n > 1 else "Limpiar")
+        self.delete_btn.setText(f"Eliminar ({n})" if n > 1 else "Eliminar")
+        self.delete_btn.setVisible(n >= 1)
 
     def update_status_bar(self):
         files = self.host.files

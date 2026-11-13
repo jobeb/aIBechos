@@ -9,6 +9,8 @@ resultado que los CTkToplevel de gui/app.py, porque la lógica compartida
   BatchConflictDialog   "replace" | "keep" | "skip" | "one_by_one"  (X = "skip")
   RemoveEntryDialog     una opción de core.remote_presence | None
   ConfirmRemovalDialog  True | False
+  RemoveEntriesDialog   una opción de core.remote_presence (botón Eliminar) | None
+  ConfirmBulkRemovalDialog True | False
   ClearDialog           "solo_subidos" | "todo" | None
 
 Los .ask(...) se llaman en el hilo de la interfaz y devuelven el diálogo ya
@@ -218,6 +220,98 @@ class ConfirmRemovalDialog(_ChoiceDialog):
         if remote_path:
             self.label("En el servidor:", color=theme.PENDING_COLOR, size=9)
             self.label(remote_path, selectable=True)
+        self.label("Esta acción NO se puede deshacer.", bold=True, color=theme.ERROR_COLOR)
+        self.buttons([("Cancelar", False, None), ("Sí, borrar", True, "danger")])
+
+
+def _plural(n: int, uno: str, varios: str) -> str:
+    return f"{n} {uno if n == 1 else varios}"
+
+
+class RemoveEntriesDialog(_ChoiceDialog):
+    """Botón "Eliminar": opciones según dónde están los archivos. Todas
+    los quitan de la lista."""
+
+    def __init__(self, parent, names: list, counts: dict, opciones: list):
+        super().__init__(parent, "Eliminar", close_result=None, width=480)
+        n = counts["total"]
+        self.label(f"¿Qué quieres hacer con {'este archivo' if n == 1 else f'estos {n} archivos'}?",
+                   bold=True, size=11)
+        if n == 1:
+            self.label(names[0], bold=True, selectable=True)
+        else:
+            lbl = QLabel("\n".join(f"• {x}" for x in names))
+            lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setWidget(lbl)
+            area.setMinimumHeight(min(200, 20 * n + 10))
+            self._lay.addWidget(area)
+
+        donde = []
+        if n == 1:
+            if counts["both"]:
+                donde.append("Está en tu disco y en el servidor.")
+            elif counts["local"]:
+                donde.append("Está solo en tu disco (no consta subido al servidor).")
+            elif counts["remote"]:
+                donde.append("Está solo en el servidor (ya no está en tu disco).")
+            else:
+                donde.append("No está ni en tu disco ni consta en el servidor.")
+        else:
+            donde.append(f"En tu disco: {counts['local']}  ·  En el servidor: {counts['remote']}"
+                         f"  ·  En los dos: {counts['both']}")
+            if counts["none"]:
+                donde.append(f"{_plural(counts['none'], 'no está', 'no están')} en ningún sitio.")
+        self.label(" ".join(donde), color="#7f8c8d", size=9)
+
+        textos = {
+            rp.QUITAR_LISTA: ("Quitar solo de la lista",
+                              "No se borra nada: los archivos se quedan donde están.", None),
+            rp.BORRAR_LOCAL: (f"Borrar del disco ({counts['local']})",
+                              "Se borran de tu disco. Lo que haya en el servidor se queda.", "danger"),
+            rp.BORRAR_SERVIDOR: (f"Borrar del servidor ({counts['remote']})",
+                                 "Se borran del servidor. Lo que haya en tu disco se queda.", "danger"),
+            rp.BORRAR_AMBOS: ("Borrar del disco y del servidor",
+                              "Se borran de los dos sitios, donde estén.", "danger"),
+        }
+        for opt in opciones:
+            etiqueta, detalle, style = textos[opt]
+            b = QPushButton(etiqueta)
+            if style:
+                b.setProperty(style, True)
+            b.clicked.connect(lambda _=False, o=opt: self._close(o))
+            self._lay.addWidget(b)
+            self.label(detalle, color=theme.PENDING_COLOR, size=9)
+        self.label("Cualquier opción quita los archivos de la lista.", color="#7f8c8d", size=9)
+        self.buttons([("Cancelar", None, None)])
+
+
+class ConfirmBulkRemovalDialog(_ChoiceDialog):
+    def __init__(self, parent, local_paths: list, remote_paths: list):
+        super().__init__(parent, "Confirmar borrado", close_result=False, width=520)
+        partes = []
+        if local_paths:
+            partes.append(f"{_plural(len(local_paths), 'archivo', 'archivos')} de tu disco")
+        if remote_paths:
+            partes.append(f"{_plural(len(remote_paths), 'archivo', 'archivos')} del servidor")
+        self.label("Se va a borrar de verdad: " + " y ".join(partes), bold=True, size=11)
+        lineas = []
+        if local_paths:
+            lineas.append("En tu disco:")
+            lineas += [f"   {p}" for p in local_paths]
+        if remote_paths:
+            if lineas:
+                lineas.append("")
+            lineas.append("En el servidor:")
+            lineas += [f"   {p}" for p in remote_paths]
+        lbl = QLabel("\n".join(lineas))
+        lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setWidget(lbl)
+        area.setMinimumHeight(min(260, 20 * len(lineas) + 10))
+        self._lay.addWidget(area)
         self.label("Esta acción NO se puede deshacer.", bold=True, color=theme.ERROR_COLOR)
         self.buttons([("Cancelar", False, None), ("Sí, borrar", True, "danger")])
 

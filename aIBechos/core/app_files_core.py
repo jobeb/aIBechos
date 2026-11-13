@@ -959,6 +959,179 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
             self._clear_detail()
         self._update_assign_button_label()
 
+    # ── Botón "Eliminar" (uno o varios seleccionados) ──
+
+    def _remove_entries(self, entries: list):
+        """Botón "Eliminar" / Supr: un solo diálogo para toda la selección,
+        con las opciones que permite dónde está cada archivo (disco,
+        servidor, los dos). Todas quitan las filas de la lista.
+
+        Saber si está en el servidor puede necesitar FTP (registros viejos
+        del historial sin ruta remota fiable), así que se averigua en un
+        hilo y el diálogo se abre después en el de la interfaz."""
+        entries = [e for e in entries if e in self.files]
+        if not entries:
+            return
+        self._set_status(f"Comprobando dónde está{'n' if len(entries) != 1 else ''} "
+                         f"{len(entries)} archivo{'s' if len(entries) != 1 else ''}…", PENDING_COLOR)
+        threading.Thread(target=self._locate_entries_then_ask, args=(entries,),
+                         daemon=True).start()
+
+    def _locate_entries(self, entries: list) -> list:
+        """[(entry, local_path, local_exists, remote_path)]. Hilo."""
+        historial = self._load_history()
+        out = []
+        for e in entries:
+            nombre = e.new_name or e.name
+            remote = rp.remote_path_from_history(historial, e.path, nombre)
+            if not remote and rp.was_uploaded_according_to_history(historial, e.path, nombre):
+                try:
+                    remote = self._ftp_lookup_uploaded_file(e, nombre)
+                except Exception:
+                    _log.warning("No se pudo buscar en el servidor: %s", nombre, exc_info=True)
+                    remote = ""
+            local_exists = bool(e.path) and Path(e.path).exists()
+            out.append((e, e.path, local_exists, remote))
+        return out
+
+    def _locate_entries_then_ask(self, entries: list):
+        try:
+            located = self._locate_entries(entries)
+        except Exception:
+            _log.warning("Eliminar: no se pudo comprobar dónde están los archivos", exc_info=True)
+            located = [(e, e.path, bool(e.path) and Path(e.path).exists(), "") for e in entries]
+        self.after(0, lambda: self._ask_bulk_removal(located))
+
+    def _ask_bulk_removal(self, located: list):
+        located = [t for t in located if t[0] in self.files]
+        if not located:
+            self._set_status("", None)
+            return
+        items = [(lex, rem) for _, _, lex, rem in located]
+        opciones = rp.bulk_removal_options(items)
+        counts = rp.presence_counts(items)
+        names = [e.new_name or e.name for e, _, _, _ in located]
+        accion = self._make_remove_entries_dialog(names, counts, opciones).result
+        if accion is None:
+            self._set_status("", None)
+            return
+
+        plan = []       # (entry, local_a_borrar, remoto_a_borrar)
+        for e, lp, lex, rem in located:
+            plan.append((e, *rp.removal_targets(accion, lp, lex, rem)))
+        locales = [lp for _, lp, _ in plan if lp]
+        remotos = [r for _, _, r in plan if r]
+        if not locales and not remotos:
+            self._drop_entry_rows([e for e, _, _ in plan])
+            n = len(plan)
+            self._set_status(f"Quitado{'s' if n != 1 else ''} de la lista: {n} archivo{'s' if n != 1 else ''}",
+                             SUCCESS_COLOR)
+            return
+        if not self._make_confirm_bulk_removal_dialog(locales, remotos).result:
+            self._set_status("", None)
+            return
+        self._set_status(f"Borrando {len(plan)} archivo{'s' if len(plan) != 1 else ''}…", PENDING_COLOR)
+        threading.Thread(target=self._delete_entries_worker, args=(plan,), daemon=True).start()
+
+    def _cancel_entry_upload(self, entry, local_path: str) -> bool:
+        """Saca *entry* de la subida manual y de la automática. True si
+        estaba subiéndose o en cola."""
+        was = (entry in getattr(self, "_upload_queue", [])
+               or getattr(entry, "status", "") in ("subiendo", "en_cola"))
+        try:
+            if entry in getattr(self, "_upload_queue", []):
+                self._drop_from_upload([entry])
+        except Exception:
+            pass
+        watcher = getattr(self, "_watcher", None)
+        if watcher is not None and local_path:
+            try:
+                watcher.cancel_file(local_path)
+            except Exception:
+                _log.warning("No se pudo cancelar la subida automática de %s",
+                             local_path, exc_info=True)
+        return was
+
+    @staticmethod
+    def _remove_local_retrying(local_path: str) -> str:
+        """Borra del disco reintentando unos segundos si está en uso (una
+        subida recién cancelada aún puede tenerlo abierto). "" si va bien,
+        si no el error."""
+        err = ""
+        for _ in range(10):
+            try:
+                if Path(local_path).exists():
+                    os.remove(local_path)
+                return ""
+            except OSError as e:
+                err = str(e)
+                _time.sleep(0.5)
+        return err or "archivo en uso"
+
+    def _delete_entries_worker(self, plan: list):
+        """Hilo: para cada archivo, primero el servidor y solo si va bien el
+        disco (mismo orden que la ✕: si fallara el remoto tras borrar el
+        local, lo del servidor se quedaría sin copia desde la que
+        reintentar). Lo que falla se queda en la lista para reintentar."""
+        cancelados = [self._cancel_entry_upload(e, lp or e.path) for e, lp, _ in plan]
+        if any(cancelados):
+            _time.sleep(0.4)
+        remotos = [r for _, _, r in plan if r]
+        res_remoto = self._delete_remote_files(remotos) if remotos else {}
+        hechos, fallos = [], []
+        for e, lp, rem in plan:
+            nombre = e.new_name or e.name
+            if rem:
+                ok, msg = res_remoto.get(rem, (False, "sin respuesta"))
+                if not ok:
+                    _log.warning("Eliminar: no se pudo borrar en el servidor %s (%s)", rem, msg)
+                    fallos.append(f"{nombre}: servidor ({msg})")
+                    continue
+            if lp:
+                err = self._remove_local_retrying(lp)
+                if err:
+                    _log.warning("Eliminar: no se pudo borrar en local %s (%s)", lp, err)
+                    aviso = ", el del servidor SÍ se borró" if rem else ""
+                    fallos.append(f"{nombre}: disco ({err}{aviso})")
+                    continue
+            hechos.append(e)
+
+        def _finish():
+            self._drop_entry_rows(hechos)
+            if fallos:
+                self._set_status(f"Eliminados {len(hechos)}; {len(fallos)} no se pudieron "
+                                 f"y siguen en la lista: {fallos[0]}"
+                                 + (f" (y {len(fallos) - 1} más, ver app.log)" if len(fallos) > 1 else ""),
+                                 ERROR_COLOR)
+            else:
+                n = len(hechos)
+                self._set_status(f"Eliminado{'s' if n != 1 else ''} {n} archivo{'s' if n != 1 else ''}",
+                                 SUCCESS_COLOR)
+        self.after(0, _finish)
+
+    def _drop_entry_rows(self, entries: list):
+        """_drop_entry_row para varios, refrescando la tabla una sola vez."""
+        if not entries:
+            return
+        ids = {id(e) for e in entries}
+        try:
+            en_cola = [e for e in entries if e in getattr(self, "_upload_queue", [])]
+            if en_cola:
+                self._drop_from_upload(en_cola)
+        except Exception:
+            pass
+        for e in entries:
+            self._discard_from_auto_watcher(e)
+        self.files = [e for e in self.files if id(e) not in ids]
+        self._multi_selected = {e for e in self._multi_selected if id(e) not in ids}
+        if self._selected_entry is not None and id(self._selected_entry) in ids:
+            self._selected_entry = None
+        self._refresh_table()
+        self._autosave_session()
+        if self._selected_entry is None:
+            self._clear_detail()
+        self._update_assign_button_label()
+
     def _delete_local_file(self, entry, local_path: str, remote_borrado: bool = False) -> bool:
         """Borra el archivo del disco. False si falla, para que la fila NO
         desaparezca de la lista y se pueda reintentar: perder la fila tras
