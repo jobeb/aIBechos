@@ -79,9 +79,9 @@ class SharedSyncMixin:
         A diferencia de reservas/favoritos/veredictos de doblaje (un dict
         que se fusiona clave a clave), el remoto aquí es una LISTA que
         solo crece por añadido -- se descarga fresca, se le añade esta
-        entrada con su "kind" ("subida"/"borrado"), se recorta a los
-        últimos 500 igual que los históricos locales, y se vuelve a
-        subir."""
+        entrada con su "kind" ("subida"/"borrado"), se fusiona con la
+        copia local y se recorta por antigüedad (core/activity_log.py), y
+        se vuelve a subir."""
         remote_path = self._activity_remote_path()
         if not remote_path:
             return
@@ -103,9 +103,11 @@ class SharedSyncMixin:
                     remote_list, _is_new = read_shared_json(own_ftp, remote_path, kind="list")
                     if remote_list is None:
                         return
-                    remote_list.append({**entry, "kind": kind})
-                    if len(remote_list) > 500:
-                        remote_list = remote_list[-500:]
+                    # Retención por antigüedad (no "últimos 500") y fusión con
+                    # la copia local: repone lo que hubiera recortado un
+                    # cliente de una versión anterior (ver core/activity_log.py).
+                    from core.activity_log import reconcile
+                    remote_list = reconcile(remote_list + [{**entry, "kind": kind}])
                     data = _json.dumps(remote_list, ensure_ascii=False, indent=2).encode("utf-8")
                     up_ok, _up_msg = own_ftp.upload_bytes(data, remote_path)
                     if up_ok:
@@ -118,7 +120,7 @@ class SharedSyncMixin:
         """Suma una subida al ranking compartido (ver core/upload_stats.py,
         pestaña Estadísticas) -- llamado desde _save_history_entry para
         toda subida OK, manual o de AutoWatcher. A diferencia del
-        historial de actividad (que recorta a 500), este archivo nunca
+        historial de actividad (que caduca a los 90 días), este archivo nunca
         rota: cada subida SUMA a un total por persona, para siempre.
         Mismo patrón lectura-modificación-escritura que
         _push_shared_dub_verdict_to_ftp."""

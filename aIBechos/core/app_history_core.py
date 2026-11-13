@@ -223,7 +223,11 @@ class HistoryCoreMixin:
                     return
                 if not isinstance(remote_list, list):
                     return
-                self.after(0, lambda: self._apply_synced_activity_history(remote_list))
+                # Se enseña la fusión con la copia local: si un cliente viejo
+                # recortó el remoto a 500, aquí no se pierde (core/activity_log.py).
+                from core.activity_log import reconcile
+                merged = reconcile(remote_list)
+                self.after(0, lambda: self._apply_synced_activity_history(merged))
             finally:
                 own_ftp.disconnect()
         threading.Thread(target=worker, daemon=True).start()

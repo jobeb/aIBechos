@@ -6,11 +6,9 @@ un dato persistente aparte: no hay nada que sembrar/sincronizar/subir al
 FTP para esto, solo esta función pura sobre datos que la app ya tiene en
 memoria.
 
-Nota: el historial de actividad compartido solo guarda los últimos 500
-registros (rota), así que en un servidor muy activo una racha real muy
-larga podría no reflejarse entera si los registros más antiguos ya
-rotaron -- mismo límite que ya acepta el gráfico de 30 días, no es nuevo
-aquí.
+Nota: el historial de actividad compartido caduca a los 90 días (ver
+core/activity_log.py; antes eran solo los últimos 500 registros), así que
+una racha más larga que eso no se refleja entera.
 """
 
 import datetime
