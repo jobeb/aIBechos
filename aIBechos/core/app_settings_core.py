@@ -338,22 +338,79 @@ class SettingsCoreMixin:
         threading.Thread(target=worker, daemon=True).start()
 
     def _check_for_updates_at_startup(self):
+        """Al arrancar y cada UPDATE_CHECK_INTERVAL_MS (la app vive días en
+        la bandeja: solo al abrir no se enteraba de una versión nueva)."""
+        self._check_for_updates(manual=False)
+
+    def _check_for_updates(self, manual: bool = False):
         """Comprueba en segundo plano si hay una versión más nueva publicada
-        en GitHub Releases (core/update_check.py) y, si la hay y el usuario
-        no la saltó ya, muestra un aviso para ir a la página de la release.
-        Nunca descarga ni reemplaza el ejecutable en sitio. Silencioso si la
-        consulta falla -- no es una acción que el usuario haya pedido
-        explícitamente."""
+        en GitHub Releases (core/update_check.py). Nunca descarga ni
+        reemplaza el ejecutable en sitio.
+
+        Automática (*manual* False): silenciosa si falla o si ya es la
+        última; respeta "Saltar esta versión" y avisa una sola vez por
+        versión y sesión. Con la ventana oculta en la bandeja no abre el
+        diálogo: manda una notificación y lo deja pendiente para cuando se
+        abra la ventana (ver _show_pending_update).
+
+        Manual (botón de Ajustes): siempre informa del resultado -- al
+        día, error o el diálogo de la versión nueva aunque se saltara."""
+        if self._update_check_running:
+            # Ya hay una en marcha (p.ej. la de las 6 h): su resultado se
+            # tratará como manual para que el botón no se quede esperando.
+            if manual:
+                self._update_check_manual_waiting = True
+            return
+        self._update_check_running = True
+
         def worker():
-            from core.update_check import check_for_update
-            result = check_for_update(__version__)
-            if result is None:
-                return
-            tag, html_url = result
-            if tag == self.config_data.get("skipped_update_version", ""):
-                return
-            self.after(0, lambda: self._show_update_dialog(tag, html_url))
+            from core.update_check import latest_release_status
+            try:
+                st = latest_release_status(__version__)
+            except Exception as e:   # no debería: latest_release_status no lanza
+                st = {"status": "error", "error": str(e)}
+            self.after(0, lambda: self._on_update_check_result(st, manual))
         threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_check_result(self, st: dict, manual: bool):
+        self._update_check_running = False
+        manual = manual or self._update_check_manual_waiting
+        self._update_check_manual_waiting = False
+        status = st.get("status")
+        if status == "update":
+            tag, url = st.get("tag", ""), st.get("url", "")
+            if manual:
+                self.settings_view.on_update_check_done(f"Disponible {tag}")
+                self._show_update_dialog(tag, url)
+                return
+            if tag == self.config_data.get("skipped_update_version", "") \
+                    or tag in self._update_notified_tags:
+                return
+            self._update_notified_tags.add(tag)
+            if self._window_is_visible():
+                self._show_update_dialog(tag, url)
+            else:
+                self._pending_update = (tag, url)
+                self._send_notification("aIBechos — actualización disponible",
+                                        f"Ya está publicada la versión {tag}. "
+                                        "Abre la app para descargarla.")
+            return
+        if not manual:
+            return
+        if status == "current":
+            msg = f"Ya tienes la última versión (v{__version__})"
+            self._set_status(msg, SUCCESS_COLOR)
+        else:
+            msg = "No se pudo comprobar si hay actualizaciones"
+            self._set_status(f"{msg}: {st.get('error', '')}"[:200], ERROR_COLOR)
+        self.settings_view.on_update_check_done(msg)
+
+    def _show_pending_update(self):
+        """Al abrir la ventana desde la bandeja: el diálogo de una versión
+        nueva que se avisó con notificación mientras estaba oculta."""
+        pending, self._pending_update = self._pending_update, None
+        if pending:
+            self._show_update_dialog(*pending)
 
     def _export_config(self):
         path = self._ask_save_path("Exportar configuración", "aIBechos_config.json")

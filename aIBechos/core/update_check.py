@@ -29,11 +29,13 @@ def _parse_version(tag: str) -> tuple:
     return tuple(parts)
 
 
-def check_for_update(current_version: str, timeout: int = 10):
-    """Devuelve (tag_name, html_url) de la última release de GitHub si es
-    más nueva que *current_version*, o None si no lo es, si la consulta
-    falla, o si la respuesta no trae los campos esperados. No lanza nunca --
-    pensado para llamarse en un hilo de fondo al arrancar la app."""
+def latest_release_status(current_version: str, timeout: int = 10) -> dict:
+    """Estado de la última release de GitHub frente a *current_version*:
+    {"status": "update", "tag", "url"} si hay una más nueva,
+    {"status": "current", "tag"} si ya es la última (o una anterior), o
+    {"status": "error", "error"} si la consulta falla o la respuesta no trae
+    los campos esperados. No lanza nunca. La comprobación manual de Ajustes
+    necesita distinguir "al día" de "no se pudo consultar"."""
     try:
         resp = requests.get(
             _RELEASES_URL, timeout=timeout,
@@ -42,19 +44,30 @@ def check_for_update(current_version: str, timeout: int = 10):
         data = resp.json()
     except Exception as e:
         _log.warning("Fallo al consultar la última release de GitHub: %s", e)
-        return None
+        return {"status": "error", "error": str(e)}
 
-    tag = data.get("tag_name", "")
-    html_url = data.get("html_url", "")
+    tag = data.get("tag_name", "") if isinstance(data, dict) else ""
+    html_url = data.get("html_url", "") if isinstance(data, dict) else ""
     if not tag or not html_url:
-        return None
+        return {"status": "error", "error": "respuesta sin tag_name/html_url"}
 
     try:
         if _parse_version(tag) <= _parse_version(current_version):
-            return None
+            return {"status": "current", "tag": tag}
     except Exception as e:
         _log.warning("Fallo al comparar versiones ('%s' vs '%s'): %s", tag, current_version, e)
-        return None
+        return {"status": "error", "error": str(e)}
 
     _log.info("Nueva versión disponible: %s (actual: %s)", tag, current_version)
-    return tag, html_url
+    return {"status": "update", "tag": tag, "url": html_url}
+
+
+def check_for_update(current_version: str, timeout: int = 10):
+    """Devuelve (tag_name, html_url) de la última release de GitHub si es
+    más nueva que *current_version*, o None si no lo es, si la consulta
+    falla, o si la respuesta no trae los campos esperados. No lanza nunca --
+    ver latest_release_status."""
+    st = latest_release_status(current_version, timeout=timeout)
+    if st["status"] != "update":
+        return None
+    return st["tag"], st["url"]

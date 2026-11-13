@@ -120,10 +120,21 @@ class SettingsTab(QWidget):
         self.outer.addTab(server, "🌐 Servidor")
         self.outer.currentChanged.connect(lambda _i: self._current_lazy().ensure_current())
         root.addWidget(self.outer, 1)
+        ver_row = QHBoxLayout()
+        ver_row.addStretch(1)
         ver = QLabel(f"aIBechos v{__version__}")
-        ver.setAlignment(Qt.AlignCenter)
         ver.setStyleSheet(f"color: {theme.PENDING_COLOR}; font-size: 9pt;")
-        root.addWidget(ver)
+        ver_row.addWidget(ver)
+        self.update_btn = QPushButton("Buscar actualizaciones")
+        self.update_btn.setToolTip("Consulta ahora si hay una versión nueva publicada "
+                                   "(también se comprueba sola al abrir y cada 6 horas).")
+        self.update_btn.clicked.connect(self._check_updates_now)
+        ver_row.addWidget(self.update_btn)
+        self.update_result = QLabel("")
+        self.update_result.setStyleSheet(f"color: {theme.PENDING_COLOR}; font-size: 9pt;")
+        ver_row.addWidget(self.update_result)
+        ver_row.addStretch(1)
+        root.addLayout(ver_row)
         host.settings_view = self
         self.client_tabs.ensure_current()
 
@@ -192,6 +203,16 @@ class SettingsTab(QWidget):
                 "ves ahora. ¿Publicar de todas formas?"):
             return
         self.host._publish_server_config()
+
+    def _check_updates_now(self):
+        self.update_btn.setEnabled(False)
+        self.update_result.setText("Comprobando…")
+        self.host._check_for_updates(manual=True)
+
+    def on_update_check_done(self, text: str):
+        """Gancho de SettingsCoreMixin._on_update_check_result (manual)."""
+        self.update_btn.setEnabled(True)
+        self.update_result.setText(text)
 
     def reload_from_config(self):
         """Tira las páginas construidas (config cambió por debajo: importar,

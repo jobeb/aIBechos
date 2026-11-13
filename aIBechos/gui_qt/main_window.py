@@ -50,6 +50,9 @@ VIEW_KEYS = {"missing": "missing_ep"}
 MIGRATED = {"files", "movies", "missing", "downloads", "cleanup", "info", "config"}
 UPLOAD_NOTIFICATION_DEBOUNCE_MS = 8000   # mismo valor que la versión Tk
 FTP_SPACE_PERIODIC_MS = 5 * 60 * 1000
+# La app vive días en la bandeja: sin esto solo se enteraba de una versión
+# nueva al volver a abrirla.
+UPDATE_CHECK_INTERVAL_MS = 6 * 3600 * 1000
 
 
 def resource_path(name: str) -> str:
@@ -235,6 +238,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(400, host._migrate_autostart_identity)
         QTimer.singleShot(2200, host._sync_server_config_from_ftp)
         QTimer.singleShot(3500, host._check_for_updates_at_startup)
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(UPDATE_CHECK_INTERVAL_MS)
+        self._update_timer.timeout.connect(host._check_for_updates_at_startup)
+        self._update_timer.start()
         # Escaneo de episodios que faltan en segundo plano si toca (cada hora
         # se comprueba; de verdad se repite cada 12 h).
         self._bg_scan_timer = QTimer(self)
@@ -442,6 +449,8 @@ class MainWindow(QMainWindow):
         tray.activated.connect(lambda reason: self._show_from_tray()
                                if reason in (QSystemTrayIcon.Trigger,
                                              QSystemTrayIcon.DoubleClick) else None)
+        # Clic en la notificación (p.ej. "actualización disponible"): abre la ventana.
+        tray.messageClicked.connect(self._show_from_tray)
         tray.show()
         self.tray = tray
 
@@ -453,6 +462,8 @@ class MainWindow(QMainWindow):
             self.showNormal()
         self.raise_()
         self.activateWindow()
+        # Versión nueva avisada con notificación mientras estaba en la bandeja.
+        QTimer.singleShot(0, self.host._show_pending_update)
 
     def _ensure_on_screen(self):
         """Si la ventana quedó fuera de todas las pantallas (monitor

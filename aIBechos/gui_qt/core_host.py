@@ -196,6 +196,11 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         self.watch_sync_view = _NullView()  # pestaña Sincronizar visionado
         self.window = None                 # ventana principal (diálogos, notificaciones)
         self.settings_view = _NullView()
+        # Comprobación de actualizaciones (ver SettingsCoreMixin._check_for_updates).
+        self._update_check_running = False
+        self._update_check_manual_waiting = False
+        self._update_notified_tags: set = set()
+        self._pending_update = None
         # Listas de proveedores/filtros/pesos al scoring de aMule (como Tk al arrancar).
         self._apply_provider_lists(self.config_data)
 
@@ -496,6 +501,14 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         from gui_qt.files.dialogs import ConfirmRemovalDialog
         return ConfirmRemovalDialog.ask(self.window, *args, **kwargs)
 
+    def _make_remove_entries_dialog(self, *args, **kwargs):
+        from gui_qt.files.dialogs import RemoveEntriesDialog
+        return RemoveEntriesDialog.ask(self.window, *args, **kwargs)
+
+    def _make_confirm_bulk_removal_dialog(self, *args, **kwargs):
+        from gui_qt.files.dialogs import ConfirmBulkRemovalDialog
+        return ConfirmBulkRemovalDialog.ask(self.window, *args, **kwargs)
+
     # ── Ganchos: Historial, Liberar espacio, Protegidos ──
 
     def _current_view_key(self) -> str:
@@ -610,6 +623,15 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
     def _queue_upload_notification(self, name: str, *args, **kwargs):
         if self.window is not None:
             self.after(0, lambda: self.window.queue_upload_notification(name))
+
+    def _window_is_visible(self) -> bool:
+        """La ventana principal está a la vista (ni en la bandeja ni
+        minimizada)."""
+        w = self.window
+        try:
+            return bool(w is not None and w.isVisible() and not w.isMinimized())
+        except Exception:
+            return False
 
     def _send_notification(self, title: str, message: str):
         if self.window is not None:
