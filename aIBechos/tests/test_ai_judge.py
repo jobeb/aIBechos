@@ -87,3 +87,23 @@ def test_pick_con_ia_caida_sigue_como_antes():
     assert chosen is a and notes == []
     chosen, notes = pick_with_judge([a], lambda _c: {"verdict": "dudoso", "reason": "raro el tamaño"})
     assert chosen is a and notes == ["dudoso: raro el tamaño"]
+
+
+def test_judge_or_keep_llega_a_consultar_al_juez(monkeypatch):
+    """Regresión: _judge_or_keep ordenaba con score_download(..., max_size)
+    (6 argumentos, la función acepta 5); el TypeError se capturaba y el juez
+    no se ejecutaba NUNCA -- se descargaba italiano/1999 sin control."""
+    from core import amule_download as ad
+    from core.amule_client import AmuleSearchResult as R
+    vistos = []
+
+    def _judge(wanted, cand, key, model=None):
+        vistos.append((wanted, cand["name"]))
+        return {"verdict": "malo", "reason": "italiano"}
+    monkeypatch.setattr(aif, "judge_download_candidate", _judge)
+    cfg = {"ai_fallback_enabled": True, "ai_api_key": "k"}
+    r = R(1, "Hunter x Hunter - 02x01 - Offerta.mkv", "300 MB", 5, True)
+    best, motivo = ad._judge_or_keep(cfg, "Hunter x Hunter 2x01", r, [r], False,
+                                     2011, 300 * 2**20, 400 * 2**20)
+    assert vistos and vistos[0][0]["year"] == 2011
+    assert best is None and motivo.startswith("IA:")

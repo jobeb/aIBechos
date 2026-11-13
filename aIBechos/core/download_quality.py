@@ -115,8 +115,13 @@ _POR_RE = re.compile(
     re.IGNORECASE)
 # Palabras italianas muy distintivas para el título (una sola basta si viene con Kagome o sola en el título)
 _ITA_TITLE_DISTINCTIVE_RE = re.compile(
-    r"\b(?:della|delle|degli|dalla|dalle|degli|riunione|mossa|mosse|visitatori|visitatore|speranza|riconciliazione|preparativi|inviti|udienze|avventori|vigilia|apertura|decisione|folla|danza|che)\b",
+    r"\b(?:sotto|miglior|migliore|piccolo|piccola|della|delle|degli|dalla|dalle|degli|riunione|mossa|mosse|visitatori|visitatore|speranza|riconciliazione|preparativi|inviti|udienze|avventori|vigilia|apertura|decisione|folla|danza|che)\b",
     re.IGNORECASE)
+
+# Títulos de Hunter × Hunter en italiano: "Offerta × E × Premura" (en
+# castellano es "× Y ×"). Real: ~35 capítulos así pasaron sin marca ITA.
+_ITA_X_E_X_RE = re.compile(r"[x×]\s+E\s+[x×]")
+
 
 def _episode_title_part(name: str) -> str:
     """Extrae el título del episodio (lo que va después de 2x16 / S02E16) hasta el siguiente tag técnico.
@@ -629,7 +634,7 @@ SCORE_WEIGHT_DEFAULTS = {
     "episode_match": 50.0, "episode_mismatch": -40.0,
     "year_match": 15.0, "year_mismatch": -40.0,
     "title_overlap_2": 12.0, "title_overlap_1": 5.0, "title_overlap_0": -40.0,
-    "spanish": 18.0, "non_spanish": -60.0,
+    "spanish": 18.0, "non_spanish": -60.0, "no_language": -10.0,
     "res_4k": 30.0, "res_1080": 25.0, "res_720": 20.0, "res_sd": 8.0,
     "ext_mkv": 8.0, "ext_mp4": 6.0, "ext_avi": 4.0, "ext_mov": 3.0,
     "ext_divx": 2.0, "ext_nonvideo": -25.0,
@@ -653,6 +658,7 @@ SCORE_WEIGHT_LABELS = {
     "title_overlap_0": ("Título serie", "Otra serie"),
     "spanish": ("Idioma", "Español"),
     "non_spanish": ("Idioma", "No español"),
+    "no_language": ("Idioma", "Sin marca"),
     "res_4k": ("Calidad", "4K/2160p"),
     "res_1080": ("Calidad", "1080p"),
     "res_720": ("Calidad", "720p"),
@@ -693,6 +699,7 @@ SCORE_WEIGHT_TIPS = {
     "title_overlap_0": "Parece de OTRA serie (título sin relación): resta fuerte.",
     "spanish": "Marca de español: spa, spanish, español, castellano, latino o dual.",
     "non_spanish": "El release trae otro idioma (catalán, italiano, alemán, portugués). Solo extranjero se excluye del todo; con español además, resta esto.",
+    "no_language": "Sin ninguna marca de idioma (ni spa/castellano/dual ni otro): puede ser castellano sin etiquetar o un idioma no detectado; a igualdad gana el que declara castellano.",
     "res_4k": "Resolución 4K/2160p. Solo puntúa la primera resolución que coincida.",
     "res_1080": "Resolución 1080p. Solo puntúa la primera resolución que coincida.",
     "res_720": "Resolución 720p. Solo puntúa la primera resolución que coincida.",
@@ -831,6 +838,22 @@ def _years_in_name(name: str) -> set:
     return {int(m) for m in _MOVIE_YEAR_RE.findall(name or "")}
 
 
+_BRACKET_YEAR_RE = re.compile(r"[(\[]\s*((?:18|19|20)\d{2})\s*[)\]]")
+
+
+def _declared_series_years(name: str, query: str = "") -> set:
+    """Años con los que un capítulo declara su SERIE: entre paréntesis o
+    corchetes en cualquier parte ("..._Castellano (1999).mp4") o sueltos en
+    la parte de la serie, antes de la numeración ("The Twilight Zone 2019
+    1x09"). Los sueltos detrás de la numeración se ignoran (pueden ser parte
+    del título del capítulo), y también los que trae la propia consulta
+    (series que se llaman como un año: "1923")."""
+    n = name or ""
+    years = {int(y) for y in _BRACKET_YEAR_RE.findall(n)}
+    years |= _years_in_name(_series_title_before_episode(n))
+    return years - _years_in_name(_series_title_before_episode(query or ""))
+
+
 def is_adult_content(name: str) -> bool:
     """True si el nombre delata contenido adulto/porno (motor _PORN_RE más
     la lista editable p2p_blocked_adult, ver set_filter_lists).
@@ -856,6 +879,8 @@ def is_italian_only(name: str) -> bool:
     # Marcador explícito ITA/Italiano (caza SUB_ITA, AAC_ITA con (?<![A-Za-z0-9]))
     # o de la lista editable del usuario.
     if _ITA_RE.search(name) or _lang_hit("it", name):
+        return True
+    if _ITA_X_E_X_RE.search(name):
         return True
     # Título del episodio en italiano (ej. "Tensei 2x16 - La Riunione Che Danza 1080P")
     # Con solo nombre+numero+título, 1 palabra distintiva en el título ya indica italiano
@@ -883,11 +908,21 @@ def is_vos_content(name: str) -> bool:
     emergencia, igual que is_italian_only / is_french_content."""
     if not name:
         return False
-    if not (_VOS_RE.search(name) or _lang_hit("vos", name)):
-        return False
     if _DUAL_RE.search(name):
         return False
-    return True
+    if _ENG_SUBS_RE.search(name) and not _LANG_RE.search(name):
+        return True
+    return bool(_VOS_RE.search(name) or _lang_hit("vos", name))
+
+
+# Versión original con subtítulos en inglés, sin ninguna marca de castellano:
+# es VOS aunque no lo diga (real: "Star.Trek.Lower.Decks.5x06.(English.Subs)
+# ...hispashare.org).mkv" y los "[HorribleSubs] Hunter X Hunter - 137" se
+# colaban). Con español además ("(Spanish.English.Subs)", "Spa.Eng.Subs") no.
+_ENG_SUBS_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:english|eng)[\s._-]*subs?(?![A-Za-z0-9])"
+    r"|(?<![A-Za-z0-9])(?:horriblesubs|subsplease)(?![A-Za-z0-9])",
+    re.IGNORECASE)
 
 
 def is_french_content(name: str) -> bool:
@@ -1199,13 +1234,24 @@ def score_download(result: AmuleSearchResult,
     # por tener mejor calidad: se premia la coincidencia y se castiga fuerte
     # la discrepancia (mismo criterio que la numeración de episodio). Si el
     # nombre no trae ningún año, no se puede comprobar y no se puntúa.
-    if expected_year:
+    if expected_year and expected is None:
         years = _years_in_name(name)
         if years:
             if expected_year in years:
                 score += _W("year_match")
             else:
                 score += _W("year_mismatch")
+    elif expected_year:
+        # Capítulo de serie: *expected_year* es el año de ESTRENO de la
+        # serie. Un capítulo no puede declarar un año anterior: si lo hace
+        # es OTRA serie con el mismo nombre (real: el ⚡ de "Hunter × Hunter"
+        # (2011) bajó y subió la de 1999, "..._Castellano (1999).mp4") y se
+        # excluye. Años posteriores no dicen nada (temporadas de otros años).
+        declared = _declared_series_years(name, query)
+        if any(y < expected_year for y in declared):
+            return 0.0
+        if expected_year in declared:
+            score += _W("year_match")
 
     # Coincidencia del TÍTULO de la serie con la consulta. Además de la
     # numeración (arriba) se exige que el resultado sea de la MISMA serie:
@@ -1231,6 +1277,11 @@ def score_download(result: AmuleSearchResult,
     # Idioma/audio español
     if _LANG_RE.search(name):
         score += _W("spanish")
+    else:
+        # Ninguna marca de idioma: puede ser castellano sin etiquetar, pero
+        # también italiano/inglés que no se detecta -- a igualdad, gana el
+        # que declara castellano.
+        score += _W("no_language")
     # Otro idioma: si es SOLO extranjero ya se excluyó arriba (0.0); si
     # llega aquí trae español además (o es catalán) y resta una sola vez.
     if has_other_language(name):
@@ -1334,13 +1385,19 @@ def explain_score(result: AmuleSearchResult, query: str = "", expected_year: int
                 lines.append("  → serie distinta → excluido (0)")
             else:
                 lines.append(f"  → episodio coincide {_W('episode_match'):+.0f}")
-    if expected_year:
+    if expected_year and _parse_season_episode(query) is not None:
+        declared = _declared_series_years(name, query)
+        if any(y < expected_year for y in declared):
+            lines.append(f"Serie declarada {sorted(declared)} anterior al estreno {expected_year} → excluido")
+    elif expected_year:
         years = _years_in_name(name)
         if years:
             lines.append(f"Año en nombre {years} vs esperado {expected_year} {'✓' if expected_year in years else '✗'}")
     # Idioma (pesos efectivos, ver _W)
     if _LANG_RE.search(name):
         lines.append(f"Idioma castellano/spa → {_W('spanish'):+.0f}")
+    else:
+        lines.append(f"Sin marca de idioma → {_W('no_language'):+.0f}")
     if _CAT_RE.search(name) or _lang_hit("ca", name):
         lines.append(f"Catalán → {_W('non_spanish'):+.0f}")
     if _ITA_RE.search(name) or _lang_hit("it", name):

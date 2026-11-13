@@ -106,10 +106,14 @@ def _judge_or_keep(config, query: str, best, results: list, is_movie: bool,
     try:
         ranked = sorted((r for r in results if r is not None
                          and _result_hash(r).lower() not in (excluded or set())),
+                        # score_download no recibe max_size (el techo ya se aplicó al
+                        # elegir): pasárselo lanzaba TypeError y, capturado abajo,
+                        # el juez no llegó a ejecutarse NUNCA desde que existe.
                         key=lambda r: score_download(r, query, expected_year, is_movie,
-                                                     typical_size, max_size),
+                                                     typical_size),
                         reverse=True)
     except Exception:
+        _log.exception("Juez IA: no se pudo ordenar candidatos de %r, se descarga sin juez", query)
         return best, ""
     if best not in ranked:
         ranked = [best] + ranked

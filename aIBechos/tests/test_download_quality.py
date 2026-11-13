@@ -1124,3 +1124,47 @@ def test_lang_box_marks_flow_into_engine():
     finally:
         set_filter_lists(langs={k: [] for k in LANG_KINDS}, adult=[],
                          sample=[], scr=[], exts=[])
+
+# ── Casos reales 2026-11 (Hunter × Hunter, Lower Decks, Twilight Zone) ──
+
+def test_capitulo_de_serie_homonima_anterior_se_excluye():
+    """El ⚡ de Hunter × Hunter (2011) bajaba la de 1999."""
+    n = "1x27 Hunter x Hunter Hyskoa × Curarpikt × El susurro _Castellano (1999).mp4"
+    assert score_download(_r(1, n), "Hunter x Hunter 1x27", expected_year=2011) == 0.0
+    # Sin año pedido no cambia nada.
+    assert score_download(_r(1, n), "Hunter x Hunter 1x27") > 15
+
+
+def test_capitulo_con_año_posterior_o_en_el_titulo_no_se_castiga():
+    base = score_download(_r(1, "Andromeda 5x01 Spanish.avi"), "Andromeda 5x01")
+    # Temporada de un año posterior al estreno: no dice nada.
+    assert score_download(_r(1, "Andromeda (2004) 5x01 Spanish.avi"), "Andromeda 5x01",
+                          expected_year=2000) >= base
+    # Año suelto detrás de la numeración (título del capítulo): se ignora.
+    assert score_download(_r(1, "Andromeda 5x01 Odisea 1984 Spanish.avi"), "Andromeda 5x01",
+                          expected_year=2000) >= base - 1
+    # Serie que se llama como un año.
+    assert score_download(_r(1, "1923 1x01 Spanish.mkv"), "1923 1x01", expected_year=2022) > 15
+
+
+def test_ingles_subtitulado_sin_castellano_es_vos():
+    assert is_vos_content("Star.Trek.Lower.Decks.5x06.(English.Subs).WEBRip.1080p.by.Jonkar.(hispashare.org).mkv")
+    assert is_vos_content("03x01 - [HorribleSubs] Hunter X Hunter - 137 [720p].mkv")
+    # Con castellano además, no.
+    assert not is_vos_content("Visionquest.1x08.Para.siempre.(Spanish.English.Subs).WEBRip.mkv")
+    assert not is_vos_content("Andrómeda.2X20.El.Caballero.(Spa.Eng.Subs).Web.mkv")
+
+
+def test_titulos_italianos_sin_marca_ita():
+    assert is_italian_only("Hunter x Hunter - 02x01 - Offerta × E × Premura.mkv")
+    assert is_italian_only("Hunter x Hunter - 02x30 - Morra Cinese x E x Debolezza.mkv")
+    assert is_italian_only("Star Trek Lower Decks 5x03 Il miglior hotel esotico per i naniti (1080p).mkv")
+    assert is_italian_only("1x04 - Peluche sotto copertura (Operation Plush & Cover).mkv")
+    # El castellano "× Y ×" sigue valiendo.
+    assert not is_italian_only("Hunter x Hunter - 01x53 - Engaño × Y × Psique.mkv")
+
+
+def test_a_igualdad_gana_el_que_declara_castellano():
+    sin = score_download(_r(1, "Serie 1x01 720p.mkv"), "Serie 1x01")
+    con = score_download(_r(1, "Serie 1x01 720p Castellano.mkv"), "Serie 1x01")
+    assert con > sin

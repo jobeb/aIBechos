@@ -711,6 +711,8 @@ class AutoCompleteMixin:
                 return
             fresh = fresh_results[0]
             series_name = fresh.get("name", row["name"])
+            series_year = (self._missing_ep_known_year(fresh)
+                           or self._missing_ep_known_year(row))
         else:
             # Serie sin fila en el detector de huecos -- puede ser una serie
             # RECOMENDADA de la pestaña "Recomendado" que no está en el
@@ -732,6 +734,8 @@ class AutoCompleteMixin:
                 _log.info("Autocompletado: '%s' sin episodios emitidos (o sin datos de TMDB)", rec.get("title"))
                 return
             series_name = rec.get("title", "")
+            _y = str(rec.get("year") or rec.get("release_date") or "")[:4]
+            series_year = _y if _y.isdigit() else None
             # Cruce FTP también para recomendadas: si ya está en el FTP (copiada a mano,
             # o subida previa sin pasar por Jellyfin/Plex) no debe re-descargarse entera.
             # Antes se construía fresh = {missing: expected} sin cruce y X-Men '97
@@ -749,6 +753,9 @@ class AutoCompleteMixin:
                 return
             fresh = {"name": series_name, "missing": fresh_missing}
 
+        # Año de estreno: descarta capítulos de OTRA serie homónima más
+        # antigua (Hunter × Hunter 1999 por la de 2011, ver score_download).
+        _series_year_int = int(series_year) if series_year else None
         checked = (self._auto_checked_map().get(str(tmdb_id)) or {})
         retries = (self._auto_retry_map().get(str(tmdb_id)) or {})
         now = _time.time()
@@ -971,7 +978,8 @@ class AutoCompleteMixin:
                             _typ_alt = self._typical_size_for_series(series_name, season)
                         except Exception:
                             _typ_alt = None
-                        ok2, why2, h2 = self._auto_amule_download_series(alt_query, search_type=alt_st, typical_size=_typ_alt)
+                        ok2, why2, h2 = self._auto_amule_download_series(alt_query, search_type=alt_st, typical_size=_typ_alt,
+                                                                           expected_year=_series_year_int)
                         rec["stuck_tries"] = int(rec.get("stuck_tries", 0) or 0) + 1
                         rec["last_alt_ts"] = _time.time()
                         if ok2 and h2:
@@ -1003,7 +1011,8 @@ class AutoCompleteMixin:
                 _typ_ep = self._typical_size_for_series(series_name, season)
             except Exception:
                 _typ_ep = None
-            ok, why, h = self._auto_amule_download_series(query, typical_size=_typ_ep)
+            ok, why, h = self._auto_amule_download_series(query, typical_size=_typ_ep,
+                                                          expected_year=_series_year_int)
             if ok:
                 # Éxito: queda "checked" (no se vuelve a reintentar) y se
                 # borra cualquier reintento previo. Además se registra en

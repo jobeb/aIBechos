@@ -627,6 +627,21 @@ class AutoWatcher:
         finally:
             self._in_progress.discard(key)
 
+    @staticmethod
+    def _only_series_if_episode(results, media_type, season, episode, path=None):
+        """Un archivo con numeración de capítulo (2x41) es un capítulo de
+        SERIE: las películas de *results* no valen aunque el título se
+        parezca (real: "2x41 - Patata bollente (...) by animehunter.mkv" se
+        subió como la película "La patata caliente (1979)" con un 73%)."""
+        if not results or media_type != "tv" or not season or not episode:
+            return results
+        tv = [r for r in results if r.get("media_type", "tv") == "tv"]
+        if len(tv) < len(results):
+            _log.debug("Descartadas %d película(s) para un capítulo %sx%s: %s",
+                       len(results) - len(tv), season, episode,
+                       getattr(path, "name", path))
+        return tv
+
     def _try_ai_fallback(self, path: Path, detected: dict):
         """Igual que en gui/app.py::_try_ai_fallback -- último recurso
         cuando TMDB no encuentra nada con el título limpiado localmente. Solo
@@ -806,7 +821,9 @@ class AutoWatcher:
                 # primero (ver TMDBClient.search_multi). Antes mandaba la
                 # popularidad y "Amadeus 1x05" se identificaba como la
                 # película "Amadeus (1984)".
-                results = self.tmdb.search_multi(detected["title"], prefer_type=media_type)
+                results = self._only_series_if_episode(
+                    self.tmdb.search_multi(detected["title"], prefer_type=media_type),
+                    media_type, season, episode, path)
                 if not results:
                     # Intentar búsqueda alternativa con template por serie
                     from core.amule_search import build_amule_query
@@ -848,6 +865,8 @@ class AutoWatcher:
                         media_type = detected.get("media_type", media_type)
                         season    = detected.get("season")
                         episode   = detected.get("episode")
+                        results = self._only_series_if_episode(
+                            results, media_type, season, episode, path)
 
                 if not results:
                     _log.warning("Sin resultados TMDB para: %s", path.name)

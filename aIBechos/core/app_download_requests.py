@@ -1377,7 +1377,8 @@ class DownloadRequestsMixin:
                     _t, s, e = target
                     query = build_amule_query(name, s, e, year, templates, prefers)
                     ok, motivo, _h = self._auto_amule_download_series(
-                        query, is_movie=False, typical_size=typical, exclude_hashes=old_hashes)
+                        query, is_movie=False, typical_size=typical, exclude_hashes=old_hashes,
+                        expected_year=int(year) if str(year).isdigit() else None)
             except Exception as ex:
                 ok, motivo, _h = False, str(ex)[:200], ""
             if not ok and motivo == _dr.AMULE_UNAVAILABLE:
