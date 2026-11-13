@@ -125,3 +125,18 @@ def test_poster_cache_sin_qpixmap_en_worker(qapp, qtbot, tmp_path, monkeypatch):
     main = threading.main_thread()
     assert created, "se esperaba algún QPixmap (en GUI)"
     assert all(t is main for t in created), "QPixmap creado fuera de la GUI"
+
+
+def test_serie_en_servidor_con_huecos_ofrece_el_siguiente():
+    tv = _item(media_type="tv")
+    primary, _ = card_buttons(tv, {"in_server": True, "next_gap": (3, 2)})
+    assert primary.glyph == "⬇ Siguiente (3x02)" and primary.enabled
+    # Sin huecos: en servidor, deshabilitado.
+    primary, _ = card_buttons(tv, {"in_server": True, "next_gap": None})
+    assert "En servidor" in primary.glyph and not primary.enabled
+    # Descarga en marcha: manda el estado de la descarga.
+    primary, _ = card_buttons(tv, {"in_server": True, "next_gap": (3, 2), "dl": "busy"})
+    assert "Siguiente" not in primary.glyph
+    # Una película nunca usa next_gap.
+    primary, _ = card_buttons(_item(), {"in_server": True, "next_gap": (3, 2)})
+    assert "En servidor" in primary.glyph

@@ -187,7 +187,15 @@ def card_buttons(item: dict, state: dict) -> tuple:
     is_tv = item.get("media_type") == "tv"
     in_server = bool(state.get("in_server"))
     dl = state.get("dl")
-    if in_server:
+    gap = state.get("next_gap") if is_tv else None
+    if gap and dl not in DL_PRIMARY:
+        # Serie ya en el servidor con huecos: el piloto ya está, se ofrece
+        # el primer capítulo que falta (datos de "Episodios que faltan").
+        s, e = gap
+        primary = Action("download", f"⬇ Siguiente ({s}x{int(e):02d})", theme.ICON_DL_IDLE,
+                         f"Descargar el primer capítulo que falta en el servidor ({s}x{int(e):02d}) "
+                         "en aMule (en segundo plano). Para completar la serie entera usa ⚡.")
+    elif in_server and not gap:
         primary = Action("download", "✓ En servidor", theme.ICON_DL_OK, "Ya está en el servidor",
                          enabled=False)
     elif dl in DL_PRIMARY:

@@ -201,3 +201,18 @@ def test_filas_con_menu_contextual(qtbot):
     texts = [a.text() for a in menu.actions() if not a.isSeparator()]
     assert any("Descargar" in t or "Piloto" in t for t in texts)
     assert texts[-1] == "🔎 Ver ficha"
+
+
+def test_ocultar_en_servidor_deja_las_series_con_huecos(qtbot):
+    """"Ocultar ya en el servidor" oculta solo lo completo: una serie con
+    huecos sigue a la vista con su "⬇ Siguiente (TxE)"."""
+    from core.recommended_rows import apply_filters
+    tab = _tab(qtbot)
+    tab.switches["missing_movies_hide_in_server"].setChecked(True)   # repinta: antes de fijar estado
+    tab._owned = {("tv", 1), ("tv", 2), ("movie", 3)}
+    tab._next_gaps = {2: (3, 2)}
+    f = tab._static_filters("tv")
+    items = [{"media_type": "tv", "tmdb_id": 1}, {"media_type": "tv", "tmdb_id": 2},
+             {"media_type": "movie", "tmdb_id": 3}]
+    assert [i["tmdb_id"] for i in apply_filters(items, **f)] == [2]
+    assert tab._card_state({"media_type": "tv", "tmdb_id": 2})["next_gap"] == (3, 2)

@@ -99,6 +99,7 @@ class MoviesTab(QWidget):
         self._build_token = 0
         self._dl_state: dict = {}
         self._owned: set = set()
+        self._next_gaps: dict = {}   # tmdb_id de serie -> (temporada, episodio) del primer hueco
         self._genre_names: dict = {"movie": {}, "tv": {}}   # por tipo: nombre -> ids
         self._shown_key = None
         self._server_ids_ready = False
@@ -388,7 +389,10 @@ class MoviesTab(QWidget):
         return set(self._genre_names.get(kind, {}).get(name, set()))
 
     def _static_filters(self, kind: str) -> dict:
-        return {"owned_ids": set(self._owned),
+        # "Ocultar ya en el servidor" oculta solo lo COMPLETO: una serie con
+        # huecos sigue a la vista (su botón ofrece "⬇ Siguiente (TxE)").
+        with_gaps = {("tv", tid) for tid in self._next_gaps}
+        return {"owned_ids": set(self._owned) - with_gaps,
                 "hide_owned": self.switches["missing_movies_hide_in_server"].isChecked(),
                 "hide_asian": self.switches["missing_movies_hide_asian"].isChecked(),
                 "genre_ids": self._genre_ids(kind), "year_min": self._year_min()}
@@ -553,6 +557,19 @@ class MoviesTab(QWidget):
         except Exception:
             pass
         self._owned = owned
+        # Primer hueco de cada serie que ya está en el servidor (datos de
+        # "Episodios que faltan"): su botón ofrece "⬇ Siguiente (3x02)" en
+        # vez del piloto.
+        gaps = {}
+        try:
+            from core.missing_ep_rows import next_missing_episode
+            for row in self.host._missing_ep_results or []:
+                nxt = next_missing_episode(row)
+                if nxt and row.get("tmdb_id"):
+                    gaps[int(row["tmdb_id"])] = nxt
+        except Exception:
+            _log.warning("Recomendado: no se pudieron leer los huecos de las series", exc_info=True)
+        self._next_gaps = gaps
 
     def _refresh_server_ids(self):
         if not (self.config.get("jellyfin_enabled") or self.config.get("plex_enabled")):
@@ -612,6 +629,7 @@ class MoviesTab(QWidget):
     def _card_state(self, item: dict) -> dict:
         mt, tid = _mtype(item), item.get("tmdb_id", 0)
         return {"in_server": (mt, tid) in self._owned,
+                "next_gap": self._next_gaps.get(int(tid or 0)) if mt == "tv" else None,
                 "dl": self._dl_state.get((mt, tid)),
                 "auto_on": mt == "tv" and self.host._is_missing_ep_auto_enabled(tid),
                 "fav": self.ctx.is_favorite(mt, tid),
@@ -758,7 +776,11 @@ class MoviesTab(QWidget):
             return
         self._dl_state[key] = "busy"
         self._refresh_card(key)
-        query = f"{r.get('title', '')} 1x01" if is_tv else r.get("title", "")
+        if is_tv:
+            season, episode = self._next_gaps.get(int(r.get("tmdb_id") or 0)) or (1, 1)
+            query = f"{r.get('title', '')} {season}x{episode:02d}"
+        else:
+            query = r.get("title", "")
         host = self.host
 
         def worker():
@@ -768,7 +790,7 @@ class MoviesTab(QWidget):
                 typical = typical_size_for_query(host.config_data, query)
             ok, why, _h, name = auto_download(host.config_data, host._amule_ec_lock, query,
                                               typical_size=typical, is_movie=not is_tv,
-                                              expected_year=None if is_tv else year)
+                                              expected_year=int(year) if str(year or "").isdigit() else None)
 
             def apply():
                 if ok:

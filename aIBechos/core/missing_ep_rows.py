@@ -661,3 +661,22 @@ def shared_verdicts_to_apply(results: list, merged: dict, previous: dict) -> dic
         r["ai_verdict"] = verdict
         to_apply[r["tmdb_id"]] = verdict
     return to_apply
+
+
+def next_missing_episode(row: dict):
+    """(temporada, episodio) del PRIMER hueco de una fila de "Episodios que
+    faltan" (rows_from_cache), o None si no tiene. Sin especiales
+    (temporada 0) ni lo ignorado: es lo que ofrece el botón "⬇ Siguiente"
+    de Recomendado para una serie que ya está en el servidor."""
+    if not row or row.get("ignored"):
+        return None
+    from core.missing_episodes import apply_ignored_filter
+    missing = apply_ignored_filter(row.get("missing") or {}, row.get("ignored_seasons"),
+                                   row.get("ignored_episodes") or {})
+    for season in sorted(int(s) for s in missing):
+        if season <= 0:
+            continue
+        eps = sorted(int(e) for e in (missing.get(season) or missing.get(str(season)) or []))
+        if eps:
+            return season, eps[0]
+    return None
