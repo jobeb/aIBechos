@@ -166,11 +166,14 @@ jobs:
             ## aIBechos ${{ github.ref_name }}
 
             ### Novedades
-            - Archivos: al subir varios archivos, si algunos chocan con lo que ya hay en el servidor (ya subidos, otra versión del mismo capítulo o película, restos de una subida anterior) se pregunta una sola vez qué hacer con todos: Sustituir todo, Subir sin borrar nada, Omitir estos o Preguntar uno a uno.
-            - Archivos: los diálogos de la subida ya no se apilan ni se dan por "Omitir" solos a los 30 segundos; quitar o saltar un archivo de una subida en marcha ya no para ni desordena el resto.
-            - Solicitudes web: aMule ya no pierde descargas en curso porque la misma solicitud fallara en otro equipo.
-            - Solicitudes web: si aMule no está abierto no se cogen solicitudes y se avisa; una película reciente sin fuentes vuelve a presolicitada en vez de darse por fallida.
-            - Búsquedas en aMule: títulos con paréntesis o comillas tipográficas («», “”, ¡¿) ya no dan error ni se quedan sin resultados, y una serie ya no acepta otra solo por contener su nombre (p. ej. "Girls").
+            - Archivos: nuevo botón "Eliminar" con uno o varios archivos seleccionados (también la tecla Supr). Pregunta una sola vez para toda la selección y ofrece borrar del disco, del servidor o de los dos según dónde esté cada archivo; siempre los quita de la lista.
+            - Recomendado: una serie que ya está en el servidor pero tiene huecos ofrece "Siguiente (TxE)" en vez de "Piloto (1x01)", y "Ocultar ya en el servidor" solo oculta las series completas.
+            - Descargas: el juez IA de aMule vuelve a funcionar (fallaba siempre y se descargaba sin revisar). Las series se buscan por su año de estreno, así que ya no se cuela otra versión con el mismo nombre (p. ej. Hunter x Hunter 1999 en vez de 2011).
+            - Descargas: los subtítulos en inglés (HorribleSubs, SubsPlease…) cuentan como VOS, se detecta mejor el italiano y se penalizan los archivos sin idioma declarado.
+            - Modo automático: un archivo con temporada y episodio (1x05, S01E05) ya no se identifica como película.
+            - La app busca actualizaciones cada 6 horas, no solo al abrirse, y Ajustes tiene un botón "Buscar actualizaciones".
+            - Estadísticas: el historial de actividad se guarda 90 días, así que "Subidas en los últimos 30 días" vuelve a cubrir el mes entero.
+            - Liberar espacio: el año ya no sale dos veces en el título, y se avisa (⚠) cuando el año del nombre no coincide con el de la ficha.
 
             ### Instalación
             - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).
