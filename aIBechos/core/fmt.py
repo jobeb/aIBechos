@@ -1,5 +1,7 @@
 """Formato de tamaños y velocidades para mostrar."""
 
+import re
+
 
 def fmt_speed(bps):
     if bps >= 1048576:
@@ -41,3 +43,33 @@ def fmt_transfer(bps: int) -> str:
     if bps < 1024 * 1024:
         return f"{bps/1024:.1f} KB"
     return f"{bps/1024/1024:.2f} MB"
+
+
+# Año al final de un título tal como viene del servidor: "Los Vengadores
+# (2012)", "La singular vida de Ibelin 2024", "Sherlock Holmes 2 -2011".
+_TRAILING_YEAR_RE = re.compile(r"[\s._-]*[(\[]?\s*((?:18|19|20)\d{2})\s*[)\]]?\s*$")
+
+
+def title_with_year(name: str, year) -> tuple[str, str | None]:
+    """("Título (año)", año_distinto|None) para enseñar *name* con su año
+    UNA vez: los nombres de Jellyfin/Plex/carpeta ya suelen llevarlo (en 618
+    de 955 películas de Liberar espacio salía "Los Vengadores (2012)
+    (2012)"). Si el nombre trae un año DISTINTO al de los metadatos se deja
+    tal cual y se devuelve el de los metadatos aparte: suele ser una ficha
+    mal identificada ("Iron Man 3 (2013)" con año 2008). Un título que es
+    solo un año ("1923", "1984") no se toca."""
+    name = (name or "").strip()
+    y = str(year or "").strip()
+    if not y.isdigit():
+        return name, None
+    m = _TRAILING_YEAR_RE.search(name)
+    base = name[:m.start()].strip() if m else name
+    if not m or not base:
+        # Nombre de archivo en bruto con el año en medio ("El hombre
+        # menguante (2025)-BDRIP.1080p..."): ya lo dice, no se repite.
+        if base and re.search(rf"(?<!\d){y}(?!\d)", name):
+            return name, None
+        return f"{name} ({y})", None
+    if int(m.group(1)) == int(y):
+        return f"{base} ({y})", None
+    return name, y

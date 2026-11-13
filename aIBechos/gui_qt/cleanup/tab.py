@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFrame, 
                                QProgressBar, QPushButton, QScrollArea, QSplitter, QTreeView, QVBoxLayout,
                                QWidget)
 
-from core.fmt import fmt_size
+from core.fmt import fmt_size, title_with_year
 from core.status_colors import ERROR_COLOR, PENDING_COLOR, WARNING_COLOR
 from core.trending import explain_trending_score, format_trending_score, trending_score
 from gui_qt import theme
@@ -155,7 +155,8 @@ class CleanupModel(QAbstractItemModel):
             if role == Qt.DisplayRole:
                 if col == C_NAME:
                     icon = "📺" if it.media_type == "tv" else "🎬"
-                    return f"{icon} {it.name} ({it.year})" if it.year else f"{icon} {it.name}"
+                    shown, other = title_with_year(it.name, it.year)
+                    return f"{icon} {shown} ⚠ {other}" if other else f"{icon} {shown}"
                 if col == C_SIZE:
                     return fmt_size(it.size_bytes)
                 if col == C_TREND:
@@ -166,7 +167,10 @@ class CleanupModel(QAbstractItemModel):
                     return "🔒" if host._is_reserved(it.media_type, it.tmdb_id) else "🔓"
             elif role == Qt.ToolTipRole:
                 if col == C_NAME:
-                    return f"{it.name}\n{host._cleanup_item_reason_text(it)}\n{it.ftp_path}"
+                    _shown, other = title_with_year(it.name, it.year)
+                    warn = (f"\n⚠ El nombre dice otro año y {it.source or 'el servidor'} le asigna "
+                            f"{other}: puede estar mal identificada." if other else "")
+                    return f"{it.name}\n{host._cleanup_item_reason_text(it)}\n{it.ftp_path}{warn}"
                 if col == C_TREND:
                     return explain_trending_score(it.play_count, it.last_played_ts, time.time())
                 if col == C_FAV:
