@@ -41,12 +41,43 @@ REQ_COLORS = {"done": SUCCESS_COLOR, "failed": ERROR_COLOR, "downloading": WARNI
 
 
 def _size(sz) -> str:
-    sz = sz or 0
-    if sz >= 1024 * 1024:
-        return f"{sz / (1024 * 1024):.1f} MB"
-    if sz >= 1024:
-        return f"{sz // 1024} KB"
-    return f"{sz} B"
+    # Mismo formato que el resto de la app (antes no pasaba de MB:
+    # "1434000.0 MB" en vez de 1,4 TB).
+    from core.fmt import fmt_size
+    try:
+        return fmt_size(int(sz or 0))
+    except (TypeError, ValueError):
+        return fmt_size(0)
+
+
+def upload_summary(rows: list, now: float | None = None) -> str:
+    """Resumen de lo subido entre *rows* (registros de historial):
+    "N subidas · X en total · hoy X · últimos 7 días X". "" si no hay."""
+    import datetime as _dt
+    import time as _t
+    ts_now = now if now is not None else _t.time()
+    today = _dt.datetime.fromtimestamp(ts_now).date()
+    n = total = day = week = 0
+    for e in rows or []:
+        if not isinstance(e, dict) or e.get("kind", "subida") != "subida" or e.get("status", "ok") != "ok":
+            continue
+        try:
+            size = int(e.get("size") or 0)
+            ts = float(e.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        n += 1
+        total += size
+        if ts:
+            d = _dt.datetime.fromtimestamp(ts).date()
+            if d == today:
+                day += size
+            if (today - d).days < 7:
+                week += size
+    if not n:
+        return ""
+    return (f"{n} subida{'s' if n != 1 else ''} correcta{'s' if n != 1 else ''} · {_size(total)} en total"
+            f" · hoy {_size(day)} · últimos 7 días {_size(week)}")
 
 
 class HistoryModel(QAbstractTableModel):
@@ -223,7 +254,8 @@ class HistoryTab(QWidget):
         rows = [e for e in self._all if self.host._history_entry_matches(e, q)] if q else self._all
         self.model.set_rows(rows)
         if rows:
-            self.empty.setText("")
+            summary = upload_summary(rows)
+            self.empty.setText((("Búsqueda: " if q else "") + summary) if summary else "")
         elif q:
             self.empty.setText("Ningún registro coincide con la búsqueda.")
         else:
