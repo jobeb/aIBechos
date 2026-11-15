@@ -160,9 +160,12 @@ class MissingEpScanMixin:
                                            apply_season_split_filter, find_unknown_seasons,
                                            looks_like_absolute_numbering, remap_absolute_episodes,
                                            normalize_tmdb_season_numbering)
-        from core.missing_episodes_cache import load_cache, save_cache
+        from core.missing_episodes_cache import load_cache, generation, save_scan_result
         from core.cleanup_candidates import merge_usage_entries
 
+        # Lo que se cambie en la caché mientras escaneamos (episodio subido,
+        # serie borrada...) se vuelve a aplicar al guardar (save_scan_result).
+        started_gen = generation()
         cache = dict(load_cache())
 
         # Si la misma serie está en Jellyfin Y en Plex (bibliotecas
@@ -533,7 +536,7 @@ class MissingEpScanMixin:
 
         import time as _time
         cache["_meta"] = {"last_scan_ts": _time.time(), "scanned_by": self.config_data.get("app_user_name", "")}
-        save_cache(cache)
+        save_scan_result(cache, started_gen)
         # Compartir con el resto de clientes del mismo servidor -- ver
         # _push_missing_episodes_to_ftp, para que no tengan que repetir
         # este mismo escaneo (puede tardar minutos).
@@ -1117,8 +1120,10 @@ class MissingEpScanMixin:
                                            apply_season_split_filter, find_unknown_seasons,
                                            looks_like_absolute_numbering, remap_absolute_episodes,
                                            normalize_tmdb_season_numbering)
-        from core.missing_episodes_cache import load_cache, save_cache, remove_series_from_cache
+        from core.missing_episodes_cache import (load_cache, update_cache, generation,
+                                                 save_scan_result, remove_series_from_cache)
 
+        started_gen = generation()
         old_tmdb_id = r["tmdb_id"]
         tmdb_id = old_tmdb_id
         name = r["name"]
@@ -1162,9 +1167,7 @@ class MissingEpScanMixin:
             # que se quita de la caché aquí mismo -- igual que ya hace un
             # reescaneo completo con las series que desaparecen (ver
             # _scan_missing_episodes).
-            cache = dict(load_cache())
-            remove_series_from_cache(cache, old_tmdb_id)
-            save_cache(cache)
+            update_cache(lambda c: remove_series_from_cache(c, old_tmdb_id))
             self._push_missing_episodes_to_ftp()
             server_label = "Jellyfin" if source == "jellyfin" else "Plex"
             return [], f"ya no está en {server_label}"
@@ -1331,7 +1334,7 @@ class MissingEpScanMixin:
         cache[str(tmdb_id)] = cache_entry
 
         if not (missing or unknown_seasons):
-            save_cache(cache)
+            save_scan_result(cache, started_gen)
             self._push_missing_episodes_to_ftp()
             return [], None   # ya no le falta nada -- se quita de la lista
 
@@ -1368,7 +1371,7 @@ class MissingEpScanMixin:
         cache_entry["unknown_seasons"] = sorted(new_row.get("unknown_seasons") or [])
         cache_entry["present_season_counts"] = {
             str(k): v for k, v in (new_row.get("server_season_counts") or {}).items()}
-        save_cache(cache)
+        save_scan_result(cache, started_gen)
         self._push_missing_episodes_to_ftp()
 
         if not (new_row["missing"] or new_row["unknown_seasons"]):

@@ -1097,10 +1097,8 @@ class MissingEpisodesTab(QWidget):
     def _persist_ai_verdicts(self, verdicts: dict):
         if not verdicts:
             return
-        from core.missing_episodes_cache import load_cache, save_cache
-        cache = dict(load_cache())
-        if mer.persist_ai_verdicts(cache, verdicts):
-            save_cache(cache)
+        from core.missing_episodes_cache import update_cache
+        update_cache(lambda c: mer.persist_ai_verdicts(c, verdicts))
 
     def ask_ai_batch(self):
         """Una sola llamada para todas las series con huecos (solo
@@ -1225,10 +1223,8 @@ class MissingEpisodesTab(QWidget):
         from core.missing_episodes import remove_missing_episode
         if not remove_missing_episode(self._results, tmdb_id, season, episode):
             return
-        from core.missing_episodes_cache import load_cache, save_cache, remove_missing_episode_from_cache
-        cache = load_cache()
-        if remove_missing_episode_from_cache(cache, tmdb_id, season, episode):
-            save_cache(cache)
+        from core.missing_episodes_cache import update_cache, remove_missing_episode_from_cache
+        if update_cache(lambda c: remove_missing_episode_from_cache(c, tmdb_id, season, episode)):
             self.ctx.push_missing_episodes()
         self.render()
 

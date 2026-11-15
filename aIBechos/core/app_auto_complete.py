@@ -1186,10 +1186,8 @@ class AutoCompleteMixin:
         if not removed:
             return
 
-        from core.missing_episodes_cache import load_cache, save_cache, remove_series_from_cache
-        cache = load_cache()
-        if remove_series_from_cache(cache, tmdb_id):
-            save_cache(cache)
+        from core.missing_episodes_cache import update_cache, remove_series_from_cache
+        if update_cache(lambda c: remove_series_from_cache(c, tmdb_id)):
             self._push_missing_episodes_to_ftp()
 
         # La serie ya no está en el servidor -- el autocompletado no tiene

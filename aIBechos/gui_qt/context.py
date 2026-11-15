@@ -351,17 +351,23 @@ class AppContext(QObject):
             return
 
         def _apply(remote_cache):
-            from core.missing_episodes_cache import load_cache, save_cache, merge_remote_into_local
-            previous = load_cache()
-            merged = merge_remote_into_local(previous, remote_cache)
-            if merged == previous:
-                return
+            from core.missing_episodes_cache import update_cache, merge_remote_into_local
+
+            def _merge(cache):
+                merged = merge_remote_into_local(cache, remote_cache)
+                if merged == cache:
+                    return False
+                cache.clear()
+                cache.update(merged)
+                return True
             try:
-                save_cache(merged)
+                # Sin diario: trae datos completos, no un cambio puntual.
+                changed = update_cache(_merge, journal=False)
             except Exception:
                 _log.warning("Episodios que faltan (Qt): no se pudo guardar el mirror local", exc_info=True)
                 return
-            self.missing_cache_changed.emit()
+            if changed:
+                self.missing_cache_changed.emit()
         self._fetch_shared("episodios_que_faltan", _apply)
 
     # ── Episodios que faltan: ignorados, comunes a todos (core/missing_ep_ignored.py) ──
@@ -372,7 +378,7 @@ class AppContext(QObject):
         apuntan en local (y en la caché) al momento y luego se fusionan con
         el archivo compartido."""
         from core import missing_ep_ignored as ign
-        from core.missing_episodes_cache import load_cache, save_cache
+        from core.missing_episodes_cache import update_cache
         by = self.config.get("app_user_name", "").strip()
         marks = ign.load_marks()
         now = time.time()
@@ -382,7 +388,7 @@ class AppContext(QObject):
             marks = ign.set_mark(marks, tmdb_id, season, episode, on=on, by=by, now=now, until=until)
         ign.save_marks(marks)
         try:
-            save_cache(dict(load_cache()))   # rellena los campos desde las marcas
+            update_cache(lambda c: True, journal=False)   # rellena los campos desde las marcas
         except Exception:
             _log.warning("Ignorados: no se pudo actualizar la caché local", exc_info=True)
         self._last_sync.pop("episodios_ignorados", None)
@@ -432,7 +438,7 @@ class AppContext(QObject):
 
     def _apply_missing_ignored(self, merged: dict) -> None:
         from core import missing_ep_ignored as ign
-        from core.missing_episodes_cache import load_cache, save_cache
+        from core.missing_episodes_cache import update_cache
         # Se vuelve a fusionar con lo local: pudo cambiar mientras tanto.
         local = ign.load_marks()
         new = ign.merge(local, merged)
@@ -440,7 +446,7 @@ class AppContext(QObject):
             return
         ign.save_marks(new)
         try:
-            save_cache(dict(load_cache()))
+            update_cache(lambda c: True, journal=False)
         except Exception:
             _log.warning("Ignorados: no se pudo actualizar la caché local", exc_info=True)
         self.missing_cache_changed.emit()

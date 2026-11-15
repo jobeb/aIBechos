@@ -40,7 +40,9 @@ solo se rellenan a partir de él al leer/guardar (_with_ignored). strip_personal
 merge_remote_into_local() son las dos funciones puras que separan esos
 campos personales del resto al subir/bajar."""
 
+import copy
 import json
+import threading
 import time
 
 from core.appdirs import app_data_dir
@@ -100,6 +102,62 @@ def save_cache(cache: dict) -> None:
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(path, cache)
+
+
+#: Un solo punto de escritura: los cambios pequeños (episodio subido, serie
+#: borrada, veredicto de la IA...) pasan por update_cache() con candado y
+#: quedan en un diario. Los escaneos, que tardan minutos y construyen su
+#: caché a partir de una copia, guardan con save_scan_result(), que vuelve a
+#: aplicar lo del diario posterior a su inicio: antes, el guardado del
+#: escaneo deshacía esos cambios (p. ej. un episodio subido mientras
+#: escaneaba volvía a salir como faltante).
+_write_lock = threading.RLock()
+_generation = 0
+_journal: list = []          # [(generación, fn)], los últimos _JOURNAL_MAX
+_JOURNAL_MAX = 500
+
+
+def generation() -> int:
+    """Marca de "ahora" para save_scan_result (llamar al empezar)."""
+    with _write_lock:
+        return _generation
+
+
+def update_cache(fn, journal: bool = True) -> bool:
+    """Aplica *fn(cache)* (muta, devuelve True si cambió algo) sobre la
+    caché actual, con candado, y la guarda. *journal*: apuntarlo para
+    reaplicarlo sobre el resultado de un escaneo en curso (False para lo
+    que ya trae datos completos, como la fusión con la compartida)."""
+    global _generation
+    with _write_lock:
+        cache = copy.deepcopy(load_cache())
+        try:
+            changed = bool(fn(cache))
+        except Exception:
+            return False
+        if not changed:
+            return False
+        save_cache(cache)
+        _generation += 1
+        if journal:
+            _journal.append((_generation, fn))
+            del _journal[:-_JOURNAL_MAX]
+        return True
+
+
+def save_scan_result(cache: dict, since: int) -> None:
+    """Guarda la caché construida por un escaneo que empezó en *since*
+    (generation()), con los cambios pequeños hechos mientras tanto."""
+    global _generation
+    with _write_lock:
+        for gen, fn in list(_journal):
+            if gen > since:
+                try:
+                    fn(cache)
+                except Exception:
+                    pass
+        save_cache(cache)
+        _generation += 1
 
 
 def remove_missing_episode_from_cache(cache: dict, tmdb_id: int, season: int, episode: int) -> bool:
@@ -179,6 +237,9 @@ def merge_remote_into_local(local_cache: dict, remote_cache: dict) -> dict:
 
 
 def _reset_cache_for_tests() -> None:
-    global _cache, _next_expiry
+    global _cache, _next_expiry, _generation
     _cache = None
     _next_expiry = 0.0
+    with _write_lock:
+        _generation = 0
+        _journal.clear()
