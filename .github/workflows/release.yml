@@ -46,6 +46,17 @@ jobs:
           if (Test-Path build) { Remove-Item -Recurse -Force build }
           python -m PyInstaller --noconfirm aIBechos.spec
 
+      - name: Prueba de arranque del ejecutable (--smoke-test)
+        # Abre el .exe ya compilado en modo prueba (core/smoke_test.py): si
+        # falta algo en el paquete (keyring, paramiko, un plugin Qt...) la
+        # release se para aquí en vez de publicarse rota.
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:AIBECHOS_SMOKE_OUT = "$PWD\smoke.txt"
+          $p = Start-Process -FilePath "dist/aIBechos/aIBechos.exe" -ArgumentList "--smoke-test" -Wait -PassThru
+          if (Test-Path smoke.txt) { Get-Content smoke.txt }
+          if ($p.ExitCode -ne 0) { throw "La prueba de arranque falló (código $($p.ExitCode))" }
+
       - name: Generar instalador Inno Setup
         run: |
           if (Test-Path installer_output) { Remove-Item -Recurse -Force installer_output }
@@ -87,6 +98,11 @@ jobs:
         run: |
           VERSION=$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('core/version.py', encoding='utf-8').read()).group(1))")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Prueba de arranque del ejecutable (--smoke-test)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: dist/aIBechos.app/Contents/MacOS/aIBechos --smoke-test
 
       - name: Empaquetar en DMG
         run: |
@@ -130,6 +146,11 @@ jobs:
         run: |
           VERSION=$(python3 -c "import re; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', open('core/version.py', encoding='utf-8').read()).group(1))")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Prueba de arranque del ejecutable (--smoke-test)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: dist/aIBechos/aIBechos --smoke-test
 
       - name: Empaquetar en tar.gz
         run: |

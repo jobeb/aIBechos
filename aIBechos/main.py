@@ -13,6 +13,10 @@ from core.single_instance import acquire
 
 
 def main():
+    if "--smoke-test" in sys.argv:
+        # CI de la release: ¿abre el ejecutable compilado? (core/smoke_test.py)
+        from core.smoke_test import run as smoke
+        sys.exit(smoke())
     if not acquire():
         from gui_qt.app import warn_already_running
         warn_already_running()
