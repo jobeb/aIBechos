@@ -309,6 +309,7 @@ class CleanupCoreMixin:
         compartida (subidas, refresco de espacio...)."""
         from core.cleanup_candidates import CleanupItem, merge_usage_entries
         from core.media_server_refresh import get_jellyfin_usage_stats, get_plex_usage_stats, parse_media_date
+        from core.app_movies_core import MediaServerUnavailable
 
         t0 = _time.monotonic()
         # Claves (nombre, tipo) en vez de solo nombre -- una serie y una
@@ -333,7 +334,11 @@ class CleanupCoreMixin:
             t_jf = _time.monotonic()
             stats = get_jellyfin_usage_stats(
                 self.config_data.get("jellyfin_host", ""), self.config_data.get("jellyfin_api_key", ""),
-                username=self.config_data.get("jellyfin_username", "")) or {}
+                username=self.config_data.get("jellyfin_username", ""))
+            if stats is None:
+                # Sin respuesta no es "nadie lo ha visto": seguir habría
+                # propuesto borrar series que sí se ven.
+                raise MediaServerUnavailable("Jellyfin")
             for key, entry in stats.items():
                 entry["source"] = "jellyfin"
                 entry["server_id"] = key
@@ -345,7 +350,9 @@ class CleanupCoreMixin:
                 progress_cb(0, 0, "Consultando Plex (visionado y tamaños)...")
             t_px = _time.monotonic()
             stats = get_plex_usage_stats(
-                self.config_data.get("plex_host", ""), self.config_data.get("plex_token", "")) or {}
+                self.config_data.get("plex_host", ""), self.config_data.get("plex_token", ""))
+            if stats is None:
+                raise MediaServerUnavailable("Plex")
             for key, entry in stats.items():
                 entry["source"] = "plex"
                 entry["server_id"] = key
@@ -359,7 +366,9 @@ class CleanupCoreMixin:
             self.config_data.get("ftp_user", ""), self.config_data.get("ftp_password", ""),
             self.config_data.get("ftp_use_tls", False))
         if not ok:
-            return []
+            # Antes devolvía [] y la pestaña lo guardaba y lo compartía:
+            # un FTP caído vaciaba el análisis de todos.
+            raise ConnectionError("No se pudo conectar con el FTP")
 
         try:
             if progress_cb:

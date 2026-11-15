@@ -724,8 +724,14 @@ class CleanupTab(QWidget):
         h._cleanup_ep_cache = {}
 
         def worker():
+            from core.app_movies_core import MediaServerUnavailable
             try:
                 items = h._scan_cleanup_candidates(progress_cb=lambda c, t, n: ui(lambda: self._progress(c, t, n)))
+            except (MediaServerUnavailable, ConnectionError) as e:
+                msg = (f"{e} no responde: sin su visionado no se puede analizar" if isinstance(
+                    e, MediaServerUnavailable) else str(e))
+                ui(lambda: self._abort_scan(msg + " -- se mantiene el análisis anterior"))
+                return
             except Exception:
                 from core.applog import get_logger
                 get_logger("aIBechos.qt", "app.log").exception("Liberar espacio (Qt): fallo en el análisis")
@@ -733,6 +739,16 @@ class CleanupTab(QWidget):
                 items = h._cleanup_raw_items
             ui(lambda: self._finish_scan(items))
         run_in_thread(worker)
+
+    def _abort_scan(self, msg: str):
+        """Escaneo cancelado por un servidor que no respondió: ni se toca
+        el análisis anterior ni se guarda/comparte nada."""
+        self._scanning = False
+        self.scan_btn.setEnabled(True)
+        self.progress.hide()
+        self.set_status(msg)
+        self.ctx.set_status(msg, ERROR_COLOR)
+        self.apply_filters()
 
     def _progress(self, c, t, name):
         if t > 0:

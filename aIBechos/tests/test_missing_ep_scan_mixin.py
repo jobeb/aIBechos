@@ -116,3 +116,16 @@ def test_compute_dub_updates_uses_merged_cutoff(monkeypatch):
     eps = updates["10"]["episodes"]
     assert eps == {"1x03": True, "1x04": False}   # T2 sin corte: sin dato
     assert updates["10"]["eldoblaje"]["cutoff"] == {"1": 3}
+
+
+def test_jellyfin_caido_no_vacia_la_cache(monkeypatch):
+    """Real: con Jellyfin sin responder se borraban todas las series de la
+    caché (y con ellas lo ignorado)."""
+    store = {}
+    _patch(monkeypatch, store)
+    host = _Host()
+    host._scan_missing_episodes(force_full=True)
+    assert {"10", "20"} <= set(store)
+    monkeypatch.setattr(msr, "get_jellyfin_series", lambda host, key: None)
+    host._scan_missing_episodes(force_full=True)
+    assert {"10", "20"} <= set(store)

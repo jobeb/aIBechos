@@ -656,14 +656,20 @@ class MoviesTab(QWidget):
         self._cancel_event = threading.Event()
         cancel = self._cancel_event
         self._set_scanning(True)
+        previous = list(host._movies_results or [])
         if force_full:
             host._movies_results = []
 
         def worker():
+            from core.app_movies_core import MediaServerUnavailable
             try:
                 results = host._scan_missing_movies(
                     progress_cb=lambda c, t, n: ui(lambda: self._progress(c, t, n)),
                     cancel_event=cancel, force_full=force_full)
+            except MediaServerUnavailable as e:
+                self.ctx.set_status(f"{e} no responde: no se puede saber qué hay ya en el servidor, "
+                                    "se mantienen las recomendaciones anteriores", ERROR_COLOR)
+                results = previous
             except Exception:
                 _log.exception("Recomendador (Qt): fallo inesperado durante el escaneo")
                 self.ctx.set_status("El escaneo terminó con un error -- revisa app.log", ERROR_COLOR)

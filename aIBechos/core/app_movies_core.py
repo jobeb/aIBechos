@@ -20,6 +20,12 @@ from core.status_colors import PENDING_COLOR
 _log = get_logger("aIBechos.gui", "app.log")
 
 
+
+class MediaServerUnavailable(Exception):
+    """Jellyfin/Plex no respondió al listar su biblioteca: sin esa lista
+    no se sabe qué hay ya, así que el escaneo de Recomendado se cancela
+    (se conservan las recomendaciones anteriores)."""
+
 class MoviesCoreMixin:
     # Constante de clase (antes en App, gui/app.py)
     _MISSING_MOVIES_SYNC_MIN_INTERVAL = 20   # segundos, ver _sync_missing_movies_from_ftp
@@ -238,28 +244,24 @@ class MoviesCoreMixin:
         # número de tmdb_id sin ser la misma obra.
         server_movie_ids = set()
         server_series_ids = set()
+
+        def _collect(label, items, into):
+            # None = el servidor no respondió (no "no tiene nada"): seguir
+            # recomendaba como nuevo todo lo que ya estaba en él.
+            if items is None:
+                raise MediaServerUnavailable(label)
+            for it in items:
+                if it.get("tmdb_id"):
+                    into.add(it["tmdb_id"])
+
         if self.config_data.get("jellyfin_enabled"):
-            for m in (get_jellyfin_movies(
-                    self.config_data.get("jellyfin_host", ""),
-                    self.config_data.get("jellyfin_api_key", "")) or []):
-                if m.get("tmdb_id"):
-                    server_movie_ids.add(m["tmdb_id"])
-            for s in (get_jellyfin_series(
-                    self.config_data.get("jellyfin_host", ""),
-                    self.config_data.get("jellyfin_api_key", "")) or []):
-                if s.get("tmdb_id"):
-                    server_series_ids.add(s["tmdb_id"])
+            jf = (self.config_data.get("jellyfin_host", ""), self.config_data.get("jellyfin_api_key", ""))
+            _collect("Jellyfin", get_jellyfin_movies(*jf), server_movie_ids)
+            _collect("Jellyfin", get_jellyfin_series(*jf), server_series_ids)
         if self.config_data.get("plex_enabled"):
-            for m in (get_plex_movies(
-                    self.config_data.get("plex_host", ""),
-                    self.config_data.get("plex_token", "")) or []):
-                if m.get("tmdb_id"):
-                    server_movie_ids.add(m["tmdb_id"])
-            for s in (get_plex_series(
-                    self.config_data.get("plex_host", ""),
-                    self.config_data.get("plex_token", "")) or []):
-                if s.get("tmdb_id"):
-                    server_series_ids.add(s["tmdb_id"])
+            px = (self.config_data.get("plex_host", ""), self.config_data.get("plex_token", ""))
+            _collect("Plex", get_plex_movies(*px), server_movie_ids)
+            _collect("Plex", get_plex_series(*px), server_series_ids)
 
         # Cliente TMDB propio del escaneo (no self.tmdb) para usar la API key
         # ACTUAL de la configuración, por si cambió sin reiniciar.
