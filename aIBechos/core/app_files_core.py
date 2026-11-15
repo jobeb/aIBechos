@@ -172,6 +172,14 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                         pass
                 return
 
+            if tipo in ("uploaded", "skip", "error"):
+                # Para el resumen al volver a la ventana (core/away_summary.py).
+                try:
+                    if not self._window_is_visible():
+                        self._away_summary.record(tipo, entry.new_name or new_name or entry.name)
+                except AttributeError:
+                    pass   # host sin ventana (tests, uso sin interfaz)
+
             if tipo == "renamed":
                 entry.new_name = new_name or ""
                 entry.status   = "renombrado"

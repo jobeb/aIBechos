@@ -116,6 +116,8 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         # (ruta, tipo) de eventos del automático sin fila ya avisados en el
         # log (ver _on_auto_file_event).
         self._orphan_events_logged = set()
+        from core.away_summary import AwaySummary
+        self._away_summary = AwaySummary()   # lo que pasó con la ventana oculta (ver MainWindow)
 
         # Autocompletado (⚡) y solicitudes de la web
         from core.auto_series import load_local_cache as _load_auto_series

@@ -17,7 +17,7 @@ import re
 import sys
 import time
 
-from PySide6.QtCore import QPoint, QRect, QTimer
+from PySide6.QtCore import QEvent, QPoint, QRect, QTimer
 from PySide6.QtGui import QAction, QGuiApplication, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox,
                                QPushButton, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget)
@@ -464,6 +464,25 @@ class MainWindow(QMainWindow):
         self.activateWindow()
         # Versión nueva avisada con notificación mientras estaba en la bandeja.
         QTimer.singleShot(0, self.host._show_pending_update)
+        QTimer.singleShot(0, self._show_away_summary)
+
+    def _show_away_summary(self):
+        """Resumen de lo que hizo el modo automático mientras la ventana
+        estaba oculta (core/away_summary.py), en la barra de estado."""
+        try:
+            text, had_errors = self.host._away_summary.take()
+        except Exception:
+            return
+        if text:
+            from gui_qt.theme import ERROR_COLOR, SUCCESS_COLOR
+            self.host._set_status(text, ERROR_COLOR if had_errors else SUCCESS_COLOR)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        # Restaurada desde minimizada (la bandeja va por _show_from_tray).
+        if (event.type() == QEvent.WindowStateChange
+                and not self.isMinimized() and self.isVisible()):
+            QTimer.singleShot(0, self._show_away_summary)
 
     def _ensure_on_screen(self):
         """Si la ventana quedó fuera de todas las pantallas (monitor
