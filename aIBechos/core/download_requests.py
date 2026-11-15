@@ -527,6 +527,45 @@ def failed_to_recheck(data: dict, user: str, now: float | None = None,
     return out
 
 
+#: Una "failed" vuelve sola a la cola pasado este tiempo, hasta
+#: FAILED_MAX_REVIVALS veces (ver revive_failed). Antes se quedaba
+#: "Fallida" para siempre salvo "Descargar ahora mismo", y muchas
+#: fallaban solo por no tener aún fuentes en aMule esos días.
+FAILED_REVIVE_SECONDS = 3 * 86400
+FAILED_MAX_REVIVALS = 2
+
+
+def revive_failed(data: dict, user: str, now: float | None = None) -> tuple[dict, list]:
+    """(dict NUEVO, ids revividos): las "failed" de *user* (o sin dueño)
+    con más de FAILED_REVIVE_SECONDS sin cambios y menos de
+    FAILED_MAX_REVIVALS revividas vuelven a "pending" con los intentos a
+    cero. Solo el último equipo que la tuvo, como failed_to_recheck, que
+    corre antes en el mismo ciclo: así no se relanza algo que ya estaba
+    en el servidor. Nunca lanza."""
+    ts = now if now is not None else time.time()
+    result = dict(data or {})
+    revived = []
+    for rid, e in (data or {}).items():
+        try:
+            if not isinstance(e, dict) or e.get("status") != "failed":
+                continue
+            owner = e.get("claimed_by") or ""
+            if owner and owner != user:
+                continue
+            if ts - float(e.get("updated_at") or 0) < FAILED_REVIVE_SECONDS:
+                continue
+            n = int(e.get("revivals") or 0)
+            if n >= FAILED_MAX_REVIVALS:
+                continue
+        except (TypeError, ValueError):
+            continue
+        result[rid] = {**e, "status": "pending", "claimed_by": "", "claimed_at": 0,
+                       "attempts": 0, "revivals": n + 1, "updated_at": ts,
+                       "dl_percent": None, "dl_speed": None, "up_percent": None}
+        revived.append(rid)
+    return result, revived
+
+
 #: Espera antes de reintentar una solicitud que ya falló n veces:
 #: RETRY_BACKOFF_SECONDS * 2^(n-1) (30 min, 1 h, 2 h, 4 h). Sin ella, cada
 #: ciclo (5 min) la volvía a lanzar y los MAX_ATTEMPTS se gastaban en

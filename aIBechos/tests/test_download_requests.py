@@ -587,3 +587,42 @@ def test_subida_anterior_a_la_solicitud_no_la_completa():
     assert dr.uploaded_for_request(old + [{"status": "ok", "remote": remote, "ts": 2500.0}], entry)
     sin_fecha = dict(entry, requested_at=0)
     assert dr.uploaded_for_request(old, sin_fecha), "antiguas sin fecha: como antes"
+
+
+def test_fallida_vuelve_sola_a_la_cola_pasados_unos_dias():
+    day = 86400
+    data = {"vieja": {"status": "failed", "claimed_by": "Jose", "attempts": 5,
+                      "updated_at": 0, "last_error": "sin candidato"},
+            "reciente": {"status": "failed", "claimed_by": "Jose", "updated_at": 2 * day},
+            "ajena": {"status": "failed", "claimed_by": "Efren", "updated_at": 0},
+            "sin_dueno": {"status": "failed", "claimed_by": "", "updated_at": 0},
+            "agotada": {"status": "failed", "claimed_by": "Jose", "updated_at": 0,
+                        "revivals": dr.FAILED_MAX_REVIVALS},
+            "lista": {"status": "done", "claimed_by": "Jose", "updated_at": 0}}
+    now = dr.FAILED_REVIVE_SECONDS + 1
+    out, revived = dr.revive_failed(data, "Jose", now=now)
+    assert sorted(revived) == ["sin_dueno", "vieja"]
+    e = out["vieja"]
+    assert e["status"] == "pending" and e["attempts"] == 0 and e["revivals"] == 1
+    assert e["claimed_by"] == "" and e["updated_at"] == now
+    assert e["last_error"] == "sin candidato", "se conserva el motivo"
+    assert out["reciente"]["status"] == "failed"
+    assert out["ajena"]["status"] == "failed"
+    assert out["agotada"]["status"] == "failed"
+    assert data["vieja"]["status"] == "failed", "no muta la entrada"
+    # Revivida: reclamable ya mismo (intentos a cero, sin backoff).
+    assert "vieja" in [rid for rid, _e in dr.pending_for_worker(out, now=now)]
+
+
+def test_revivida_que_vuelve_a_fallar_cuenta_sus_revividas():
+    data = {"a": {"status": "pending", "claimed_by": "Jose", "attempts": dr.MAX_ATTEMPTS - 1,
+                  "revivals": 1, "updated_at": 0}}
+    out = dr.release(data, "a", user="Jose", error="descarga incompleta", now=10)
+    assert out["a"]["status"] == "failed" and out["a"]["revivals"] == 1
+    later = 10 + dr.FAILED_REVIVE_SECONDS
+    out, revived = dr.revive_failed(out, "Jose", now=later)
+    assert revived == ["a"] and out["a"]["revivals"] == 2
+    out = dr.release(dict(out, a=dict(out["a"], attempts=dr.MAX_ATTEMPTS - 1)),
+                     "a", user="Jose", now=later + 1)
+    _out, revived = dr.revive_failed(out, "Jose", now=later + 10 * dr.FAILED_REVIVE_SECONDS)
+    assert revived == [], "tope de revividas"

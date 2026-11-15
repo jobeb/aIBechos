@@ -205,8 +205,10 @@ class DownloadRequestsMixin:
                            "year": entry.get("year")}
         try:
             server_index = self._download_requests_server_index(wanted)
+            server_index_ok = True
         except Exception:
             server_index = {}
+            server_index_ok = False
         done_now = 0
         failed_now = 0
         amule_queue, local_names = self._download_requests_amule_state(
@@ -298,6 +300,17 @@ class DownloadRequestsMixin:
                 done_now += 1
                 _log.info("Solicitudes: %s estaba fallida pero ya está en el servidor, completada",
                           _dr.describe(data.get(rid) or {}))
+        # Las fallidas que no aparecieron (ya mirado justo arriba) vuelven
+        # a la cola pasados unos días, un número limitado de veces. Sin
+        # índice del servidor no se sabe si ya están: se espera a otro ciclo.
+        _revived = []
+        if server_index_ok:
+            data, _revived = _dr.revive_failed(data, user)
+        for rid in _revived:
+            changed = True
+            _log.info("Solicitudes: %s estaba fallida, se vuelve a intentar (%d/%d)",
+                      _dr.describe(data.get(rid) or {}),
+                      int((data.get(rid) or {}).get("revivals") or 0), _dr.FAILED_MAX_REVIVALS)
         # Solo ocupan hueco las recientes: una descarga de más de
         # CLAIM_TTL_SECONDS sigue en aMule esperando fuentes (el done
         # llega al subirse) y contarla bloqueaba la cola entera -- caso
