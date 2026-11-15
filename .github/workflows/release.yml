@@ -187,9 +187,14 @@ jobs:
             ## aIBechos ${{ github.ref_name }}
 
             ### Novedades
-            - Episodios que faltan: lo ignorado (series, temporadas o episodios) ya no se pierde al escanear, si Jellyfin/Plex no responden o al sincronizar con otros equipos, y ahora es común a todos los usuarios.
-            - Solicitudes web: una solicitud fallida vuelve sola a la cola pasados 3 días, hasta 2 veces, por si ya hay fuentes en aMule.
+            - Episodios que faltan: lo ignorado (series, temporadas o episodios) ya no se pierde al escanear, si Jellyfin/Plex no responden o al sincronizar con otros equipos, y ahora es común a todos los usuarios. El botón 🚫 dice quién lo ignoró y cuándo, y el menú contextual tiene "Ignorar 30 días" (vuelve a contar solo).
+            - Episodios que faltan: un escaneo ya no deshace lo que pasó mientras escaneaba (un episodio subido ya no vuelve a salir como faltante).
+            - Solicitudes web: una solicitud fallida vuelve sola a la cola pasados 3 días, hasta 2 veces, y la web dice cuándo se reintentará.
+            - Favoritos y reservas: un cambio que no se pudo subir (sin red, FTP caído) ya no se pierde en la siguiente sincronización; se sube en cuanto se puede.
+            - Recomendado y Liberar espacio: con Jellyfin/Plex o el FTP sin responder, el análisis se cancela y se mantiene el anterior (antes Recomendado sugería lo que ya estaba en el servidor y Liberar espacio daba todo por "nunca visto").
             - Archivos: la columna "Peso" ya no se queda en blanco cuando el archivo se movió o borró después de subirlo; las filas antiguas lo toman del historial.
+            - Archivos: al volver a la ventana, resumen de lo que hizo el modo automático mientras estaba en la bandeja ("12 subidos, 1 con error").
+            - Historial: resumen de lo subido (total, hoy y últimos 7 días) y peso en GB/TB.
 
             ### Instalación
             - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).
