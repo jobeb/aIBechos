@@ -133,7 +133,7 @@ def is_archive_file(filepath: str) -> bool:
 
 def build_name_for_media_info(info: MediaInfo, ext: str, templates: dict) -> str:
     """Elige la plantilla según info.media_type/genre_ids y construye el
-    nombre -- misma lógica que gui/app.py::_build_name, extraída aquí para
+    nombre -- misma lógica que core/app_files_identify.py::_build_name, extraída aquí para
     que core/auto_watcher.py (identificación de libros/cómics en el Modo
     Automático) la reutilice sin duplicar el dispatch de 4 vías.
 

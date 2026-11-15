@@ -267,7 +267,7 @@ class TMDBClient:
         return top_cast_names(self.get_credits(media_type, tmdb_id), limit)
 
     # Listas de películas que alimentan la pestaña "Películas" (recomendar
-    # lo que no está en el servidor, ver gui/app.py::_scan_missing_movies).
+    # lo que no está en el servidor, ver core/app_movies_core.py::_scan_missing_movies).
     # Cada endpoint devuelve el mismo formato de resultado que /search/movie
     # (id, title, release_date, poster_path, vote_average, popularity,
     # overview, genre_ids) -- solo cambia la fuente; /trending ya añade

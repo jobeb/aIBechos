@@ -1,6 +1,6 @@
 """
 Caché de la lista de candidatas de "Liberar espacio" (ver
-gui/app.py::_scan_cleanup_candidates). El análisis completo puede tardar
+core/app_cleanup_core.py::_scan_cleanup_candidates). El análisis completo puede tardar
 más de un minuto en un servidor grande (consulta a Jellyfin/Plex de todos
 los usuarios + recorrido del FTP) -- esto guarda el resultado para que no
 haya que repetirlo cada vez que se abre la app; solo hace falta pulsar

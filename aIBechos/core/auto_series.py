@@ -7,7 +7,7 @@ core/favorites.py y core/reservations.py.
 
 OJO: esto NO cambia qué descarga cada equipo -- el autocompletado sigue
 siendo personal de cada instalación (config.json, ver
-gui/app.py::_auto_complete_series). Lo compartido es solo informativo:
+core/app_auto_complete.py::_auto_complete_series). Lo compartido es solo informativo:
 quién tiene cada serie en auto y desde cuándo, para avisar al activar un
 rayo que otro equipo ya tiene puesto y mostrarlo en el tooltip.
 
@@ -127,7 +127,7 @@ def other_owners(data: dict, media_type: str, tmdb_id: int, user: str) -> dict:
 def transfer_auto_owner(data: dict, old_owner: str, new_owner: str) -> dict:
     """Devuelve un dict NUEVO con la propiedad del auto de *old_owner*
     reasignada a *new_owner* -- para cuando alguien cambia "Tu nombre" en
-    Ajustes (ver gui/app.py::_resolve_app_user_name_change). Si el nombre
+    Ajustes (ver core/app_settings_core.py::_resolve_app_user_name_change). Si el nombre
     nuevo ya era dueño de esa serie, se conserva su fecha (no se pisa)."""
     result = {}
     for key, entry in data.items():

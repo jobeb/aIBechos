@@ -82,7 +82,7 @@ def _processed_db_path() -> Path:
 
 # Serializa TODAS las lecturas+escrituras de auto_processed.json, tanto las
 # de AutoWatcher (_save_entry/_delete_entry) como las de la GUI para subidas
-# manuales (gui/app.py::_mark_auto_processed/_unmark_auto_processed/
+# manuales (core/app_files_core.py::_mark_auto_processed/_unmark_auto_processed/
 # _cleanup_stale_uploading_marks, que importan este mismo lock) -- sin esto,
 # dos hilos que hacen su propio leer-modificar-escribir sin coordinarse (p.ej.
 # dos subidas manuales en paralelo terminando casi a la vez con "Subidas
@@ -140,7 +140,7 @@ DEFAULT_POLL = 10   # segundos entre escaneos (por defecto)
 
 # Estados que solo escribe la GUI cuando el usuario interviene a mano
 # (identificar, renombrar, subir manualmente -- ver
-# gui/app.py::_mark_auto_processed). AutoWatcher nunca debe pisarlos con un
+# core/app_files_core.py::_mark_auto_processed). AutoWatcher nunca debe pisarlos con un
 # resultado propio: ver _mark(). "descomprimido" es la excepción -- lo
 # escribe el propio AutoWatcher (_process_archive), pero necesita el mismo
 # tratamiento: sin esto, un archivo comprimido con "Mantener original"
@@ -1542,7 +1542,7 @@ class AutoWatcher:
                 # avisar a la GUI para que refresque esa serie en Liberar
                 # espacio sin repetir el análisis completo y sume el
                 # ahorro al ranking de adelgazadores (ver
-                # gui/app.py::_on_auto_file_event "slim_replaced").
+                # core/app_files_core.py::_on_auto_file_event "slim_replaced").
                 try:
                     _heavy_size = _heavy_remote_size
                     if not isinstance(_heavy_size, int) or _heavy_size < 0:

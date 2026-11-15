@@ -22,7 +22,7 @@ publicar desde un cliente sobrescribió en silencio las plantillas de
 nombre de todos los demás). La regla correcta es: **una clave va aquí si
 el grupo ha decidido explícitamente que debe ser una única fuente de
 verdad compartida** -- ni "cualquier cosa parecida" ni "solo lo que no se
-puede discutir". Ver gui/app.py::_publish_server_config, que exige
+puede discutir". Ver core/app_settings_core.py::_publish_server_config, que exige
 confirmación explícita antes de sobrescribir esto para todos.
 
 Categorías incluidas y por qué:
@@ -166,7 +166,7 @@ def extract_shared_config(get_fn) -> dict:
     Config.get) -- solo las claves de SHARED_CONFIG_KEYS, cada una con lo
     que valga ahora mismo en local. No incluye learned_junk_terms -- no es
     una clave de Config, vive en core/learned_terms.py y se gestiona
-    aparte (ver gui/app.py::_publish_server_config)."""
+    aparte (ver core/app_settings_core.py::_publish_server_config)."""
     return {key: get_fn(key) for key in SHARED_CONFIG_KEYS}
 
 

@@ -1,7 +1,7 @@
 """
 Caché persistente de la pestaña "Recomendado" (recomendar películas y
 series que no están en el servidor, ver core/missing_movies.py y
-gui/app.py::_scan_missing_movies). El primer escaneo es caro (varias listas
+core/app_movies_core.py::_scan_missing_movies). El primer escaneo es caro (varias listas
 de TMDB + la biblioteca de películas/series del servidor) -- esto guarda el
 resultado para que los siguientes solo crucen lo que haya cambiado, y para
 que la pestaña muestre recomendaciones aunque se abra sin conexión.
@@ -36,7 +36,7 @@ _push_missing_movies_to_ftp/_sync_missing_movies_from_ftp), igual que
 "Episodios que faltan". Antes era personal de cada instalación (el cruce
 in_server se calculaba solo contra el servidor de medios LOCAL y no tenía
 sentido compartirlo); desde que una subida marca la película como en
-servidor al instante (ver gui/app.py::_remove_uploaded_movie_from_movies_list)
+servidor al instante (ver core/app_movies_core.py::_remove_uploaded_movie_from_movies_list)
 y un cliente puede querer que el resto de instalaciones del mismo servidor
 también la quiten de sus listas, el flag "in_server" sí viaja por la red.
 El push fusiona (merge_movies_cache) en vez de reemplazar, combinando
@@ -207,7 +207,7 @@ def merge_movies_cache(local_cache: dict, remote_cache: dict) -> dict:
 def apply_remote_in_server(local_cache: dict, remote_cache: dict) -> tuple:
     """Aplica a *local_cache* (copia) el flag "in_server=True" de las
     películas/series que el REMOTO diga que ya están en el servidor -- lo
-    que se usa al BAJAR del FTP (ver gui/app.py::_apply_synced_missing_movies).
+    que se usa al BAJAR del FTP (ver core/app_movies_core.py::_apply_synced_missing_movies).
     A diferencia de merge_movies_cache (el push), aquí NO se añaden ni se
     borran entradas: si el usuario descartó una recomendación (botón 🚫,
     que la quita de la caché local) no debe volver a aparecer por el solo

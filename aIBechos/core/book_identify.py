@@ -1,7 +1,7 @@
 """
 Identificación de un libro/cómic (título ya extraído localmente, ver
 core/api_client.py::detect_episode(is_book=True)) vía OpenLibrary/Google
-Books o ComicVine -- extraído de gui/app.py::_search_book_entry (antes solo
+Books o ComicVine -- extraído de core/app_files_identify.py::_search_book_entry (antes solo
 lo usaba el panel manual de la pestaña Archivos) para que
 core/auto_watcher.py (Modo Automático) reutilice EXACTAMENTE la misma
 lógica, incluida la traducción de título vía IA para ComicVine
@@ -57,7 +57,7 @@ def identify_book_or_comic(det: dict, is_comic: bool,
     Nunca lanza -- cualquier fallo (sin resultados, error de red/API...) se
     devuelve en BookIdentifyResult.error en vez de propagar una excepción.
     No registra nada en ningún log -- eso es responsabilidad de quien
-    llama (gui/app.py::_search_book_entry, core/auto_watcher.py), cada uno
+    llama (core/app_files_identify.py::_search_book_entry, core/auto_watcher.py), cada uno
     con su propio logger/archivo de log."""
     query = det.get("title", "")
     if not query:

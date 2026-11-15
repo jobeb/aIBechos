@@ -7,12 +7,12 @@ serie o película completa), no por persona.
 Por qué incremental y no un escaneo del árbol del FTP en cada visita a la
 pestaña de Estadísticas: recorrer el servidor entero (list_tree_recursive)
 es caro. En cambio, cada subida ya conoce su ruta remota completa y su
-tamaño (ver gui/app.py::_save_history_entry), y cada borrado ya conoce qué
+tamaño (ver core/app_files_core.py::_save_history_entry), y cada borrado ya conoce qué
 carpeta se borró y cuánto pesaba (ver _save_deletion_history_entry) --
 sumar/restar en esos dos puntos ya existentes es prácticamente gratis.
 El árbol completo solo se recorre UNA vez, para sembrar el archivo
 compartido con lo que ya había en el servidor antes de que existiera esta
-función (ver gui/app.py::_sync_category_stats_from_ftp, "bootstrap").
+función (ver core/app_history_core.py::_sync_category_stats_from_ftp, "bootstrap").
 
 Formato: {category_id: {"category_name": "...", "folders": {folder_name:
 total_bytes, ...}}} -- la clave de nivel superior es el "id" de la
@@ -35,7 +35,7 @@ _FILENAME = "category_stats.json"
 # compartido ya tenía datos "válidos" -- aunque mal calculados -- y
 # _sync_category_stats_from_ftp nunca volvía a disparar el bootstrap que
 # los recalcula, por más que el código de conteo ya estuviera arreglado).
-# Ver gui/app.py::_sync_category_stats_from_ftp/_bootstrap_category_stats.
+# Ver core/app_history_core.py::_sync_category_stats_from_ftp/_bootstrap_category_stats.
 SCAN_VERSION = 2
 
 
@@ -188,7 +188,7 @@ def total_bytes(data: dict) -> int:
 def bytes_by_disk(data: dict, ftp_categories: dict) -> dict:
     """Agrupa category_summaries() por disco -- el primer segmento de la
     raíz de cada categoría, mismo criterio que
-    gui/app.py::_disks_from_categories, para que dos categorías que
+    core/app_files_upload.py::_disks_from_categories, para que dos categorías que
     comparten disco físico (p.ej. "Series" y "SeriesPeques" bajo
     /datos2/) aparezcan juntas en la misma barra en vez de una por
     categoría. Devuelve {disk_name: [{"name", "count", "bytes"}, ...]}."""

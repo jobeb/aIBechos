@@ -1,6 +1,6 @@
 """
 Caché persistente del detector de episodios que faltan (ver
-core/missing_episodes.py y gui/app.py::_scan_missing_episodes). El primer
+core/missing_episodes.py y core/missing_ep_scan.py::_scan_missing_episodes). El primer
 escaneo completo es caro (una llamada por serie + una por temporada) --
 esto guarda el resultado para que los siguientes escaneos solo tengan que
 comprobar qué ha cambiado de verdad, en vez de repetir todo el trabajo cada

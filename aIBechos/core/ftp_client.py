@@ -181,7 +181,7 @@ class FTPClient:
         aún más la lentitud. Mismo patrón que upload_file ya usa durante la
         transferencia de archivos grandes, ver ahí. Usar alrededor de
         cualquier operación de listado que pueda ser grande (ver
-        gui/app.py::_bootstrap_category_stats)."""
+        core/app_history_core.py::_bootstrap_category_stats)."""
         orig = None
         try:
             if self.ftp and self.ftp.sock:

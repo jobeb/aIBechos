@@ -144,7 +144,7 @@ def transfer_reservations(data: dict, old_owner: str, new_owner: str) -> dict:
     """Devuelve un dict NUEVO con todas las reservas de *old_owner*
     reasignadas a *new_owner* -- para cuando alguien cambia "Tu nombre" en
     Ajustes y quiere conservar lo que ya tenía reservado (ver
-    gui/app.py::_transfer_reservations)."""
+    core/app_history_core.py::_transfer_reservations)."""
     result = {}
     for key, entry in data.items():
         if entry.get("reserved_by") == old_owner:
@@ -157,5 +157,5 @@ def transfer_reservations(data: dict, old_owner: str, new_owner: str) -> dict:
 def remove_all_by_owner(data: dict, owner: str) -> dict:
     """Devuelve un dict NUEVO sin ninguna reserva de *owner* -- la otra
     opción al cambiar de nombre en Ajustes, "empezar de nuevo" en vez de
-    traspasar (ver gui/app.py::_unprotect_all_reservations)."""
+    traspasar (ver core/app_history_core.py::_unprotect_all_reservations)."""
     return {key: entry for key, entry in data.items() if entry.get("reserved_by") != owner}

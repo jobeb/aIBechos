@@ -1,7 +1,7 @@
 """
 Comprueba en GitHub Releases si hay una versión de aIBechos más nueva que
 la que se está ejecutando. Solo consulta y compara -- nunca descarga ni
-reemplaza nada, ver gui/app.py::_show_update_dialog.
+reemplaza nada, ver gui_qt/core_host.py::_show_update_dialog.
 """
 
 import requests

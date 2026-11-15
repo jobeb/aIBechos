@@ -322,7 +322,7 @@ def unverified_dub_episodes(missing: dict, dub_episodes: dict = None,
 def is_ep_dub_confirmed(season: int, ep: int, dub_episodes: dict = None,
                         dub_cutoff: dict = None) -> bool:
     """True solo si el episodio tiene doblaje ES CONFIRMADO -- para el
-    autocompletado automático (ver gui/app.py::_auto_complete_series_single_impl),
+    autocompletado automático (ver core/app_auto_complete.py::_auto_complete_series_single_impl),
     que a diferencia de la tabla/manual no puede permitirse el "visible por
     defecto": con "Ocultar sin doblaje ES" activo, lo no comprobado NO se
     descarga hasta que TMDB/eldoblaje/IA lo confirme (real: Dragon Ball Daima

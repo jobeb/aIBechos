@@ -47,3 +47,16 @@ env/
 .idea/
 *.suo
 *.user
+
+# Archivos de trabajo locales en la raíz (capturas, recortes, notas,
+# scripts sueltos, config de otras herramientas) -- no son del proyecto
+/Captura de pantalla*.png
+/crop_*.png
+/EchoLleno.jpg
+/LogoaIBechos.ico
+/LogoaIBechos.png
+/dl.txt
+/error*.txt
+/help.txt
+/fix_indent.py
+/opencode.json

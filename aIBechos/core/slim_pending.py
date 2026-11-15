@@ -1,6 +1,6 @@
 """
 Reemplazos pendientes de "Adelgazar" en Liberar espacio (ver
-gui/app.py::_slim_download_one/_slim_download_many y
+core/app_cleanup_core.py::_slim_download_one/_slim_download_many y
 core/auto_watcher.py::_upload_to_ftp).
 
 Al lanzar la descarga de una versión ligera se registra de qué gordo es
