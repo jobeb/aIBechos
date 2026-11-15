@@ -626,3 +626,15 @@ def test_revivida_que_vuelve_a_fallar_cuenta_sus_revividas():
                      "a", user="Jose", now=later + 1)
     _out, revived = dr.revive_failed(out, "Jose", now=later + 10 * dr.FAILED_REVIVE_SECONDS)
     assert revived == [], "tope de revividas"
+
+
+def test_fallida_apunta_cuando_se_reintentara_para_la_web():
+    data = {"a": {"status": "claimed", "claimed_by": "Jose", "attempts": dr.MAX_ATTEMPTS - 1}}
+    out = dr.release(data, "a", user="Jose", error="sin candidato", now=100)
+    assert out["a"]["revive_at"] == 100 + dr.FAILED_REVIVE_SECONDS
+    agotada = {"a": dict(data["a"], revivals=dr.FAILED_MAX_REVIVALS)}
+    assert dr.release(agotada, "a", user="Jose", now=100)["a"]["revive_at"] == 0
+    # Se respeta revive_at (p. ej. adelantado a mano) y se limpia al revivir.
+    pronto = {"a": dict(out["a"], revive_at=150)}
+    revived, ids = dr.revive_failed(pronto, "Jose", now=160)
+    assert ids == ["a"] and revived["a"]["revive_at"] == 0

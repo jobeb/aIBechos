@@ -344,7 +344,7 @@ def release(data: dict, req_id: str, user: str = "", error: str = "",
         return result
     if attempts >= MAX_ATTEMPTS:
         result[req_id] = {**entry, "status": "failed", "attempts": attempts,
-                          "updated_at": ts,
+                          "updated_at": ts, "revive_at": revive_at_for(entry, ts),
                           "dl_percent": None, "dl_speed": None,
                           "up_percent": None,
                           "last_error": str(error or entry.get("last_error") or "")[:500]}
@@ -535,6 +535,17 @@ FAILED_REVIVE_SECONDS = 3 * 86400
 FAILED_MAX_REVIVALS = 2
 
 
+def revive_at_for(entry: dict, failed_at: float) -> float:
+    """Cuándo volverá sola a la cola una solicitud que falla ahora (0 si
+    ya agotó sus revividas). Se guarda en la entrada ("revive_at") para
+    que la web pueda decir "se reintentará el ..."."""
+    try:
+        n = int(entry.get("revivals") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    return float(failed_at) + FAILED_REVIVE_SECONDS if n < FAILED_MAX_REVIVALS else 0.0
+
+
 def revive_failed(data: dict, user: str, now: float | None = None) -> tuple[dict, list]:
     """(dict NUEVO, ids revividos): las "failed" de *user* (o sin dueño)
     con más de FAILED_REVIVE_SECONDS sin cambios y menos de
@@ -552,7 +563,9 @@ def revive_failed(data: dict, user: str, now: float | None = None) -> tuple[dict
             owner = e.get("claimed_by") or ""
             if owner and owner != user:
                 continue
-            if ts - float(e.get("updated_at") or 0) < FAILED_REVIVE_SECONDS:
+            due = float(e.get("revive_at") or 0) or (
+                float(e.get("updated_at") or 0) + FAILED_REVIVE_SECONDS)
+            if ts < due:
                 continue
             n = int(e.get("revivals") or 0)
             if n >= FAILED_MAX_REVIVALS:
@@ -560,7 +573,7 @@ def revive_failed(data: dict, user: str, now: float | None = None) -> tuple[dict
         except (TypeError, ValueError):
             continue
         result[rid] = {**e, "status": "pending", "claimed_by": "", "claimed_at": 0,
-                       "attempts": 0, "revivals": n + 1, "updated_at": ts,
+                       "attempts": 0, "revivals": n + 1, "updated_at": ts, "revive_at": 0,
                        "dl_percent": None, "dl_speed": None, "up_percent": None}
         revived.append(rid)
     return result, revived
