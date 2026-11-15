@@ -167,10 +167,7 @@ class FilesModel(QAbstractTableModel):
             if col == COL_SPD:
                 return fmt_speed(entry.ftp_speed) if entry.status == "subiendo" and entry.ftp_speed > 0 else ""
             if col == COL_SIZE:
-                try:
-                    return host._file_size_text(entry)
-                except Exception:
-                    return ""
+                return self._size_text(entry)
             if col == COL_FAV:
                 return host._fav_symbol(entry) if entry.media_info else ""
             if col == COL_LOCK:
@@ -223,11 +220,25 @@ class FilesModel(QAbstractTableModel):
         except Exception:
             return None
 
-    def row_tooltip(self, entry) -> str:
+    def _size_text(self, entry) -> str:
+        """Peso de la fila; si el archivo ya no está y nunca se apuntó (filas
+        de antes de guardarlo), el del historial de subidas, que se queda
+        apuntado en la entrada para la próxima vez."""
         try:
-            size = self.host._file_size_text(entry)
+            text = self.host._file_size_text(entry)
+            if text:
+                return text
+            rec = self._upload_record(entry)
+            remember = getattr(self.host, "_remember_entry_size", None)
+            if rec and rec.get("size") and remember is not None:
+                remember(entry, rec.get("size"))
+                return self.host._file_size_text(entry)
         except Exception:
-            size = ""
+            pass
+        return ""
+
+    def row_tooltip(self, entry) -> str:
+        size = self._size_text(entry)
         d = entry_details(entry, dest=self._dest(entry), size_text=size, record=self._upload_record(entry))
         esc = html.escape
         color = STATUS_COLORS.get(entry.status, theme.PENDING_COLOR)

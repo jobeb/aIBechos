@@ -120,6 +120,7 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                     entry.status    = "auto"
                     entry.error_msg = ""   # nuevo intento -- descartar el motivo anterior
                     self._update_row(entry)
+                self._remember_entry_size(entry)   # el archivo aún está: luego puede no estar
                 self._autosave_session()
                 return
 
@@ -224,6 +225,10 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                 entry.ftp_progress = 1.0
                 entry.ftp_speed    = 0.0
                 entry.new_name     = new_name or entry.new_name
+                # El AutoWatcher manda el peso subido: el archivo puede
+                # moverse/borrarse ya sin que la fila lo haya leído nunca
+                # (app minimizada en la bandeja, fila fuera de la vista).
+                self._remember_entry_size(entry, size)
                 self._update_row(entry)
                 self._ftp_row_live(entry, 1.0, 0.0)
                 # Notificación de escritorio -- agrupada, ver
@@ -793,13 +798,32 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
         hubiera fallado. Se guarda el último tamaño leído con éxito en la
         propia entrada y se reutiliza mientras el archivo no esté
         disponible -- solo vacío si nunca se pudo leer ni una vez."""
-        try:
-            size = Path(entry.path).stat().st_size
-            entry._last_known_size_text = _fmt_size(size)
-            entry._last_known_size_bytes = size
-        except OSError:
-            pass
+        self._remember_entry_size(entry)
+        if not entry._last_known_size_text and entry._last_known_size_bytes:
+            # Bytes apuntados sin texto (barra de estado, orden por peso,
+            # evento "uploaded"): antes la columna salía en blanco con el
+            # tamaño ya sabido en cuanto el archivo se movía o borraba.
+            entry._last_known_size_text = _fmt_size(entry._last_known_size_bytes)
         return entry._last_known_size_text
+
+    @staticmethod
+    def _remember_entry_size(entry, size=None) -> None:
+        """Apunta en la entrada el peso (*size* o leído del disco) para
+        que la columna "Peso" lo siga mostrando cuando el archivo ya no
+        esté. No toca lo apuntado si no hay dato. Nunca lanza."""
+        if size is None:
+            try:
+                size = Path(entry.path).stat().st_size
+            except (OSError, TypeError, ValueError):
+                return
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            return
+        if size <= 0:
+            return
+        entry._last_known_size_bytes = size
+        entry._last_known_size_text = _fmt_size(size)
 
     def _entry_is_favorite(self, entry) -> bool:
         if not entry.media_info:
@@ -1197,11 +1221,10 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
         elif key == "size":
             def _sz(e):
                 if e._last_known_size_bytes is None:
-                    try:
-                        e._last_known_size_bytes = Path(e.path).stat().st_size
-                    except OSError:
-                        e._last_known_size_bytes = 0
-                return e._last_known_size_bytes
+                    # Sin apuntar 0 si falla: se quedaba como peso "sabido"
+                    # y la fila ya no volvía a mostrar el real.
+                    self._remember_entry_size(e)
+                return e._last_known_size_bytes or 0
             self.files.sort(key=_sz, reverse=not self._files_sort_asc)
 
     def _move_entry(self, entry, delta: int):

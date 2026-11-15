@@ -1201,6 +1201,9 @@ class FilesUploadMixin:
         "auto_action" (que solo aplica al modo automático, ver
         core/auto_watcher.py). Corre en el hilo de subida, no en el de la
         GUI, igual que el resto de _upload_entry_with."""
+        # Peso apuntado ANTES de mover/borrar: si la fila no se había
+        # pintado nunca, después ya no hay de dónde leerlo.
+        self._remember_entry_size(entry)
         result_path = self._apply_manual_action_to_path(Path(entry.path))
         if result_path is not None:
             entry.path = str(result_path)
