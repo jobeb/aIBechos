@@ -331,16 +331,19 @@ class AppContext(QObject):
     # ── Episodios que faltan: ignorados, comunes a todos (core/missing_ep_ignored.py) ──
 
     def set_missing_ignored(self, changes: list) -> None:
-        """*changes*: [(tmdb_id, temporada|None, episodio|None, ignorado)].
-        Se apuntan en local (y en la caché) al momento y luego se fusionan
-        con el archivo compartido."""
+        """*changes*: [(tmdb_id, temporada|None, episodio|None, ignorado[, hasta])],
+        *hasta* = epoch de caducidad (0 o ausente: para siempre). Se
+        apuntan en local (y en la caché) al momento y luego se fusionan con
+        el archivo compartido."""
         from core import missing_ep_ignored as ign
         from core.missing_episodes_cache import load_cache, save_cache
         by = self.config.get("app_user_name", "").strip()
         marks = ign.load_marks()
         now = time.time()
-        for tmdb_id, season, episode, on in changes or []:
-            marks = ign.set_mark(marks, tmdb_id, season, episode, on=on, by=by, now=now)
+        for change in changes or []:
+            tmdb_id, season, episode, on = change[:4]
+            until = change[4] if len(change) > 4 else 0
+            marks = ign.set_mark(marks, tmdb_id, season, episode, on=on, by=by, now=now, until=until)
         ign.save_marks(marks)
         try:
             save_cache(dict(load_cache()))   # rellena los campos desde las marcas
@@ -381,6 +384,15 @@ class AppContext(QObject):
                 ftp.disconnect()
             ui(lambda: self._apply_missing_ignored(merged))
         run_in_thread(worker)
+
+    def missing_ignored_note(self, tmdb_id, season=None, episode=None) -> str:
+        """" Ignorado por X el <fecha>[, vuelve a contar el <fecha>]." para
+        los tooltips, o "" si no consta."""
+        from core import missing_ep_ignored as ign
+        try:
+            return ign.describe(ign.get_mark(ign.load_marks(), tmdb_id, season, episode))
+        except Exception:
+            return ""
 
     def _apply_missing_ignored(self, merged: dict) -> None:
         from core import missing_ep_ignored as ign

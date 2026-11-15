@@ -78,3 +78,32 @@ def test_filas_de_la_pestana():
     assert rows[0]["ignored"] is False
     assert rows[0]["ignored_seasons"] == set()
     assert rows[0]["ignored_episodes"] == {1: {3}}
+
+
+def test_ignorar_unos_dias_caduca_solo():
+    m = ign.set_mark({}, 10, 1, on=True, by="Jose", now=100, until=1000)
+    assert ign.fields_for(m, 10, now=500) == (False, {1}, {})
+    assert ign.fields_for(m, 10, now=1000) == (False, set(), {})
+    assert ign.next_expiry(m, now=500) == 1000
+    assert ign.next_expiry(m, now=2000) == 0
+
+
+def test_la_cache_vuelve_a_contar_lo_caducado(monkeypatch):
+    import time as _t
+    mec.save_cache({"10": {"name": "Serie"}})
+    ign.save_marks(ign.set_mark({}, 10, on=True, until=_t.time() + 60))
+    mec.save_cache(dict(mec.load_cache()))
+    assert mec.load_cache()["10"]["ignored"] is True
+    real = _t.time
+    monkeypatch.setattr(mec.time, "time", lambda: real() + 120)
+    monkeypatch.setattr(ign.time, "time", lambda: real() + 120)
+    assert mec.load_cache()["10"]["ignored"] is False
+
+
+def test_quien_y_cuando_para_el_tooltip():
+    m = ign.set_mark({}, 10, on=True, by="Efren", now=1_789_000_000, until=4_000_000_000)
+    note = ign.describe(ign.get_mark(m, 10))
+    assert "por Efren" in note and "Vuelve a contar" in note
+    assert ign.describe(ign.get_mark(m, 11)) == ""
+    viejo = ign.marks_from_cache({"10": {"ignored": True}})
+    assert ign.describe(ign.get_mark(viejo, 10)) == ""   # sin hora real ni autor

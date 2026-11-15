@@ -51,6 +51,16 @@ _SWITCHES = [
 ]
 
 
+
+#: "Ignorar N días" del menú contextual: pasado ese tiempo vuelve a contar
+#: como faltante sola (p. ej. una temporada aún sin doblaje).
+_TEMP_IGNORE_DAYS = 30
+
+
+def _temp_ignore_until() -> float:
+    import time as _t
+    return _t.time() + _TEMP_IGNORE_DAYS * 86400
+
 class MissingEpisodesTab(QWidget):
     def __init__(self, ctx, parent=None, host=None):
         super().__init__(parent)
@@ -227,6 +237,15 @@ class MissingEpisodesTab(QWidget):
             self._dub_cache = {}
         self.render()
 
+    def _reapply_ignored(self):
+        """Lo que ya caducó ("ignorar 30 días") vuelve a contar al entrar."""
+        try:
+            from core import missing_ep_ignored as _ign
+            _ign.apply_to_rows(self._all_rows(), _ign.load_marks())
+            self.render()
+        except Exception:
+            pass
+
     def _reload_and_sync(self):
         self.ctx._last_sync.pop("episodios_que_faltan", None)
         self.reload_from_disk()
@@ -237,6 +256,7 @@ class MissingEpisodesTab(QWidget):
         equipos (con freno, ver AppContext._throttled)."""
         self.ctx.sync_missing_episodes()
         self.ctx.sync_missing_ignored()
+        self._reapply_ignored()
         self.ctx.sync_favorites()
         self.ctx.sync_reservations()
         self.ctx.fetch_shared_dub_verdicts(self._apply_shared_dub_verdicts)
@@ -455,8 +475,9 @@ class MissingEpisodesTab(QWidget):
                        f"Abrir en {'Jellyfin' if src == 'jellyfin' else 'Plex'}", enabled=bool(src)),
                 Action("ignore_series", "↺" if ignored else "🚫",
                        theme.ICON_RESTORE if ignored else theme.ICON_IGNORE,
-                       "Restaurar serie (volver a contarla como faltante)" if ignored
-                       else "Ignorar toda la serie (no contará como faltante)"),
+                       "Restaurar serie (volver a contarla como faltante)."
+                       + self.ctx.missing_ignored_note(r["tmdb_id"]) if ignored
+                       else "Ignorar toda la serie para todos (no contará como faltante)"),
                 Action("rescan", "…" if r["tmdb_id"] in self._rescanning else "↻", theme.ICON_NEUTRAL,
                        "Volver a comprobar esta serie contra el servidor: recalcula qué episodios "
                        "faltan de verdad ahora mismo, sin esperar al siguiente escaneo completo, y "
@@ -471,8 +492,9 @@ class MissingEpisodesTab(QWidget):
             acts = [
                 Action("ignore_season", "↺" if ignored else "🚫",
                        theme.ICON_RESTORE if ignored else theme.ICON_IGNORE,
-                       "Restaurar temporada (volver a contarla como faltante)" if ignored
-                       else "Ignorar toda la temporada (no contará como faltante)"),
+                       "Restaurar temporada (volver a contarla como faltante)."
+                       + self.ctx.missing_ignored_note(r["tmdb_id"], node.season) if ignored
+                       else "Ignorar toda la temporada para todos (no contará como faltante)"),
                 Action("search_season", "🔍", theme.ICON_AMULE,
                        "Buscar esta temporada en aMule (abre la pestaña Descargas)"),
                 Action("dl_season", "⬇", self.model.dl_state.get((r["tmdb_id"], node.season), theme.ICON_DL_IDLE),
@@ -492,8 +514,9 @@ class MissingEpisodesTab(QWidget):
                        "verde=lanzado, rojo=sin candidato/error"),
                 Action("ignore_episode", "↺" if ignored else "🚫",
                        theme.ICON_RESTORE if ignored else theme.ICON_IGNORE,
-                       "Restaurar episodio (volver a contarlo como faltante)" if ignored
-                       else "Ignorar este episodio (no contará como faltante)"),
+                       "Restaurar episodio (volver a contarlo como faltante)."
+                       + self.ctx.missing_ignored_note(r["tmdb_id"], season, ep) if ignored
+                       else "Ignorar este episodio para todos (no contará como faltante)"),
                 Action("search_episode", "🔍", theme.ICON_AMULE,
                        "Buscar este episodio en aMule (abre la pestaña Descargas)"),
             ]
@@ -569,25 +592,28 @@ class MissingEpisodesTab(QWidget):
 
     # ── Ignorar ──
 
-    def _set_series_ignored(self, tmdb_id, ignored: bool):
+    def _set_series_ignored(self, tmdb_id, ignored: bool, until: float = 0):
         """Los ignorados son comunes a todos (core/missing_ep_ignored.py):
-        se apuntan con su hora y se comparten por el servidor."""
-        self.ctx.set_missing_ignored([(tmdb_id, None, None, ignored)])
+        se apuntan con su hora y se comparten por el servidor. *until*:
+        epoch en que vuelve a contar (0 = para siempre)."""
+        self.ctx.set_missing_ignored([(tmdb_id, None, None, ignored, until)])
         for r in self._all_rows():
             if r["tmdb_id"] == tmdb_id:
                 r["ignored"] = ignored
         self.render()
 
-    def _set_seasons_ignored(self, keys: list, ignored: bool):
-        self.ctx.set_missing_ignored([(tmdb_id, season, None, ignored) for tmdb_id, season in keys])
+    def _set_seasons_ignored(self, keys: list, ignored: bool, until: float = 0):
+        self.ctx.set_missing_ignored([(tmdb_id, season, None, ignored, until)
+                                      for tmdb_id, season in keys])
         for tmdb_id, season in keys:
             r = self._base_row(tmdb_id)
             if r is not None:
                 mer.apply_season_ignored_to_row(r, season, ignored)
         self.render()
 
-    def _set_episodes_ignored(self, keys: list, ignored: bool):
-        self.ctx.set_missing_ignored([(tmdb_id, season, ep, ignored) for tmdb_id, season, ep in keys])
+    def _set_episodes_ignored(self, keys: list, ignored: bool, until: float = 0):
+        self.ctx.set_missing_ignored([(tmdb_id, season, ep, ignored, until)
+                                      for tmdb_id, season, ep in keys])
         for tmdb_id, season, ep in keys:
             r = self._base_row(tmdb_id)
             if r is not None:
@@ -771,14 +797,14 @@ class MissingEpisodesTab(QWidget):
         if eps:
             self._download_episodes(eps)
 
-    def _bulk_ignore(self, ignored: bool):
+    def _bulk_ignore(self, ignored: bool, until: float = 0):
         nodes = self._selected_nodes()
         seasons = [(n.tmdb_id, n.season) for n in nodes if n.kind == "season"]
         eps = [n.episode_key() for n in nodes if n.kind == "episode"]
         if seasons:
-            self._set_seasons_ignored(seasons, ignored)
+            self._set_seasons_ignored(seasons, ignored, until)
         if eps:
-            self._set_episodes_ignored(eps, ignored)
+            self._set_episodes_ignored(eps, ignored, until)
 
     def _bulk_copy(self):
         names = [n.line[3] for n in self._selected_nodes() if n.kind == "episode"]
@@ -810,6 +836,8 @@ class MissingEpisodesTab(QWidget):
         if len(selected) > 1 and (eps or seasons):
             add(f"⬇ Descargar selección ({len(eps) + len(seasons)})", self._bulk_download)
             add("🚫 Ignorar selección", lambda: self._bulk_ignore(True))
+            add(f"🕒 Ignorar selección {_TEMP_IGNORE_DAYS} días",
+                lambda: self._bulk_ignore(True, _temp_ignore_until()))
             add("↺ Restaurar selección", lambda: self._bulk_ignore(False))
             if eps:
                 add("📋 Copiar nombres", self._bulk_copy)
@@ -820,12 +848,19 @@ class MissingEpisodesTab(QWidget):
             ign = node.line[1] in (r.get("ignored_episodes") or {}).get(node.line[0], set())
             add("↺ Restaurar episodio" if ign else "🚫 Ignorar episodio",
                 lambda: self._set_episodes_ignored([node.episode_key()], not ign))
+            if not ign:
+                add(f"🕒 Ignorar episodio {_TEMP_IGNORE_DAYS} días",
+                    lambda: self._set_episodes_ignored([node.episode_key()], True, _temp_ignore_until()))
             menu.addSeparator()
         elif node.kind == "season":
             add("⬇ Descargar temporada", lambda: self._download_season(node))
             ign = node.season in (r.get("ignored_seasons") or set())
             add("↺ Restaurar temporada" if ign else "🚫 Ignorar temporada",
                 lambda: self._set_seasons_ignored([(node.tmdb_id, node.season)], not ign))
+            if not ign:
+                add(f"🕒 Ignorar temporada {_TEMP_IGNORE_DAYS} días",
+                    lambda: self._set_seasons_ignored([(node.tmdb_id, node.season)], True,
+                                                      _temp_ignore_until()))
             menu.addSeparator()
 
         name = r["name"]
@@ -837,6 +872,9 @@ class MissingEpisodesTab(QWidget):
                                                 self.ctx.best_known_size_bytes("tv", tid, 0)))
         add("↺ Restaurar serie" if r.get("ignored") else "🚫 Ignorar serie",
             lambda: self._set_series_ignored(tid, not r.get("ignored")))
+        if not r.get("ignored"):
+            add(f"🕒 Ignorar serie {_TEMP_IGNORE_DAYS} días",
+                lambda: self._set_series_ignored(tid, True, _temp_ignore_until()))
         src = r.get("source") or ""
         add(f"Abrir en {'Jellyfin' if src == 'jellyfin' else 'Plex'}",
             lambda: self.ctx.open_in_media_server(src, r.get("server_id")), enabled=bool(src))

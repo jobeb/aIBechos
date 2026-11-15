@@ -69,55 +69,119 @@ def merge(a: dict, b: dict) -> dict:
 
 
 def set_mark(marks: dict, tmdb_id, season=None, episode=None, on: bool = True,
-             by: str = "", now: float | None = None) -> dict:
+             by: str = "", now: float | None = None, until: float = 0) -> dict:
+    """*until* (epoch, 0 = para siempre): el ignorado deja de contar
+    solo a partir de esa hora (p. ej. "ignorar 30 días")."""
     out = dict(marks or {})
-    out[mark_key(tmdb_id, season, episode)] = {
-        "on": bool(on), "ts": now if now is not None else time.time(), "by": by or ""}
+    mark = {"on": bool(on), "ts": now if now is not None else time.time(), "by": by or ""}
+    if on and until:
+        mark["until"] = float(until)
+    out[mark_key(tmdb_id, season, episode)] = mark
     return out
 
 
-def fields_for(marks: dict, tmdb_id) -> tuple:
-    """(serie_ignorada, {temporadas}, {temporada: {episodios}}) de *tmdb_id*."""
-    prefix = f"{tmdb_id}/"
-    series = bool((marks or {}).get(str(tmdb_id), {}).get("on"))
-    seasons, episodes = set(), {}
+def is_active(m, now: float | None = None) -> bool:
+    """¿Esta marca ignora ahora mismo? (puesta y sin caducar)."""
+    if not _valid(m) or not m.get("on"):
+        return False
+    try:
+        until = float(m.get("until") or 0)
+    except (TypeError, ValueError):
+        until = 0.0
+    return not until or (now if now is not None else time.time()) < until
+
+
+def next_expiry(marks: dict, now: float | None = None) -> float:
+    """Hora de la próxima caducidad pendiente (0 si no hay ninguna)."""
+    ts = now if now is not None else time.time()
+    pending = [float(m.get("until") or 0) for m in (marks or {}).values()
+               if is_active(m, ts) and m.get("until")]
+    return min(pending) if pending else 0.0
+
+
+def get_mark(marks: dict, tmdb_id, season=None, episode=None) -> dict:
+    m = (marks or {}).get(mark_key(tmdb_id, season, episode))
+    return m if _valid(m) else {}
+
+
+def _index(marks: dict, now: float | None = None) -> dict:
+    """{tmdb: (serie, {temporadas}, {temporada: {episodios}})} de las
+    marcas activas, en una sola pasada."""
+    ts = now if now is not None else time.time()
+    out = {}
     for k, m in (marks or {}).items():
-        if not k.startswith(prefix) or not _valid(m) or not m.get("on"):
+        if not is_active(m, ts):
             continue
+        parts = str(k).split("/")
+        series, seasons, episodes = out.setdefault(parts[0], [False, set(), {}])
         try:
-            nums = [int(x) for x in k[len(prefix):].split("/")]
+            nums = [int(x) for x in parts[1:]]
         except ValueError:
             continue
-        if len(nums) == 1:
+        if not nums:
+            out[parts[0]][0] = True
+        elif len(nums) == 1:
             seasons.add(nums[0])
         elif len(nums) == 2:
             episodes.setdefault(nums[0], set()).add(nums[1])
-    return series, seasons, episodes
+    return out
 
 
-def apply_to_cache(cache: dict, marks: dict) -> dict:
+def fields_for(marks: dict, tmdb_id, now: float | None = None) -> tuple:
+    """(serie_ignorada, {temporadas}, {temporada: {episodios}}) de *tmdb_id*."""
+    series, seasons, episodes = _index(
+        {k: v for k, v in (marks or {}).items()
+         if k == str(tmdb_id) or str(k).startswith(f"{tmdb_id}/")}, now).get(
+        str(tmdb_id), (False, set(), {}))
+    return bool(series), set(seasons), {s: set(e) for s, e in episodes.items()}
+
+
+def apply_to_cache(cache: dict, marks: dict, now: float | None = None) -> dict:
     """Pone en cada serie de *cache* (in place) los campos de ignorados
     según *marks*. Devuelve *cache*."""
+    idx = _index(marks, now)
     for key, entry in (cache or {}).items():
         if key == "_meta" or not isinstance(entry, dict):
             continue
-        series, seasons, episodes = fields_for(marks, key)
-        entry["ignored"] = series
+        series, seasons, episodes = idx.get(str(key), (False, set(), {}))
+        entry["ignored"] = bool(series)
         entry["ignored_seasons"] = sorted(seasons)
         entry["ignored_episodes"] = {str(s): sorted(e) for s, e in sorted(episodes.items())}
     return cache
 
 
-def apply_to_rows(rows: list, marks: dict) -> None:
+def apply_to_rows(rows: list, marks: dict, now: float | None = None) -> None:
     """Igual que apply_to_cache pero sobre las filas de la pestaña
     (temporadas/episodios como sets e ints)."""
+    idx = _index(marks, now)
     for r in rows or []:
         if not isinstance(r, dict) or r.get("tmdb_id") is None:
             continue
-        series, seasons, episodes = fields_for(marks, r["tmdb_id"])
-        r["ignored"] = series
-        r["ignored_seasons"] = seasons
-        r["ignored_episodes"] = episodes
+        series, seasons, episodes = idx.get(str(r["tmdb_id"]), (False, set(), {}))
+        r["ignored"] = bool(series)
+        r["ignored_seasons"] = set(seasons)
+        r["ignored_episodes"] = {s: set(e) for s, e in episodes.items()}
+
+
+def describe(mark: dict) -> str:
+    """" Ignorado por X el 15/11/2026, hasta el 15/12/2026." (o "")."""
+    if not is_active(mark):
+        return ""
+    parts = []
+    by = (mark.get("by") or "").strip()
+    try:
+        ts = float(mark.get("ts") or 0)
+    except (TypeError, ValueError):
+        ts = 0.0
+    if by:
+        parts.append(f"por {by}")
+    if ts > 86400:   # las traídas de la caché antigua no tienen hora real
+        parts.append("el " + time.strftime("%d/%m/%Y", time.localtime(ts)))
+    text = (" Ignorado " + " ".join(parts) + ".") if parts else ""
+    if mark.get("until"):
+        text += " Vuelve a contar el " + time.strftime(
+            "%d/%m/%Y", time.localtime(float(mark["until"]))) + "."
+    return text
 
 
 def marks_from_cache(cache: dict, now: float = 1.0) -> dict:

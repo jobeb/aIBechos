@@ -41,6 +41,7 @@ merge_remote_into_local() son las dos funciones puras que separan esos
 campos personales del resto al subir/bajar."""
 
 import json
+import time
 
 from core.appdirs import app_data_dir
 from core.atomic_write import write_json_atomic
@@ -65,13 +66,19 @@ def _read_from_disk() -> dict:
         return {}
 
 
+_next_expiry = 0.0   # próxima caducidad de un "ignorar N días" ya aplicada
+
+
 def _with_ignored(cache: dict) -> dict:
     """Los ignorados salen SIEMPRE de core/missing_ep_ignored.py (comunes
     a todos los usuarios): quien reescriba la caché con una copia vieja
     (el escaneo, la fusión con la compartida) ya no los pierde."""
+    global _next_expiry
     try:
         from core import missing_ep_ignored as _ign
-        _ign.apply_to_cache(cache, _ign.load_marks())
+        marks = _ign.load_marks()
+        _ign.apply_to_cache(cache, marks)
+        _next_expiry = _ign.next_expiry(marks)
     except Exception:
         pass
     return cache
@@ -81,6 +88,9 @@ def load_cache() -> dict:
     global _cache
     if _cache is None:
         _cache = _with_ignored(_read_from_disk())
+    elif _next_expiry and time.time() >= _next_expiry:
+        # Un "ignorar 30 días" acaba de caducar: vuelve a contar ya.
+        _with_ignored(_cache)
     return _cache
 
 
@@ -169,5 +179,6 @@ def merge_remote_into_local(local_cache: dict, remote_cache: dict) -> dict:
 
 
 def _reset_cache_for_tests() -> None:
-    global _cache
+    global _cache, _next_expiry
     _cache = None
+    _next_expiry = 0.0
