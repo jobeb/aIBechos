@@ -130,6 +130,10 @@ class HistoryCoreMixin:
 
     def _apply_synced_reservations(self, merged: dict, on_done=None):
         from core.reservations import save_local_cache as _save_reservations_cache
+        from core import shared_pending
+        # Lo que aún no llegó al servidor (ver core/shared_pending.py) se
+        # queda puesto encima de la copia recién traída.
+        merged = shared_pending.replay("reservas", merged, shared_pending.pending("reservas"))
         changed = merged != self._reservations
         self._reservations = merged
         _save_reservations_cache(self._reservations)

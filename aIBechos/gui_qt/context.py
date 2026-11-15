@@ -185,6 +185,34 @@ class AppContext(QObject):
                 ui(lambda: on_data(data))
         run_in_thread(worker)
 
+    # ── Cambios pendientes de subir (core/shared_pending.py) ──
+
+    def _queue_shared_change(self, key: str, op: str, args, on_merged) -> None:
+        """Apunta el cambio como pendiente (en disco) y lo sube: si la
+        subida falla, la próxima sincronización lo vuelve a aplicar en vez
+        de perderlo bajo la copia del servidor."""
+        from core import shared_pending
+        shared_pending.add(key, op, args)
+        self._push_pending(key, on_merged)
+
+    def _push_pending(self, key: str, on_merged) -> None:
+        from core import shared_pending
+        items = shared_pending.pending(key)
+
+        def done(merged):
+            shared_pending.confirm(key, items)
+            on_merged(merged)
+        self._read_modify_write(key, lambda d: shared_pending.replay(key, d, items), done)
+
+    def _sync_shared_with_pending(self, key: str, on_merged) -> None:
+        """Sin pendientes, solo leer; con pendientes, aplicarlos sobre lo
+        del servidor y subirlo (lo que se quedó sin subir antes)."""
+        from core import shared_pending
+        if shared_pending.pending(key):
+            self._push_pending(key, on_merged)
+        else:
+            self._fetch_shared(key, on_merged)
+
     # ── Favoritos ──
 
     def is_favorite(self, media_type: str, tmdb_id) -> bool:
@@ -214,10 +242,14 @@ class AppContext(QObject):
         self.favorites = op(self.favorites, *args)
         save_local_cache(self.favorites)
         self.favorites_changed.emit()
-        self._read_modify_write("favoritos", lambda d: op(d, *args), self._apply_synced_favorites)
+        self._queue_shared_change("favoritos", "add" if op is add_favorite else "remove", args,
+                                  self._apply_synced_favorites)
 
     def _apply_synced_favorites(self, merged: dict) -> None:
         from core.favorites import save_local_cache
+        from core import shared_pending
+        # Lo que aún no llegó al servidor se queda puesto encima.
+        merged = shared_pending.replay("favoritos", merged, shared_pending.pending("favoritos"))
         if merged == self.favorites:
             return
         self.favorites = merged
@@ -226,7 +258,7 @@ class AppContext(QObject):
 
     def sync_favorites(self) -> None:
         if not self._throttled("favoritos"):
-            self._fetch_shared("favoritos", self._apply_synced_favorites)
+            self._sync_shared_with_pending("favoritos", self._apply_synced_favorites)
 
     # ── Reservas ──
 
@@ -292,10 +324,14 @@ class AppContext(QObject):
         self.reservations = op(self.reservations, *args)
         save_local_cache(self.reservations)
         self.reservations_changed.emit()
-        self._read_modify_write("reservas", lambda d: op(d, *args), self._apply_synced_reservations)
+        self._queue_shared_change("reservas", "add" if op is add_reservation else "remove", args,
+                                  self._apply_synced_reservations)
 
     def _apply_synced_reservations(self, merged: dict) -> None:
         from core.reservations import save_local_cache
+        from core import shared_pending
+        # Lo que aún no llegó al servidor se queda puesto encima.
+        merged = shared_pending.replay("reservas", merged, shared_pending.pending("reservas"))
         if merged == self.reservations:
             return
         self.reservations = merged
@@ -304,7 +340,7 @@ class AppContext(QObject):
 
     def sync_reservations(self) -> None:
         if not self._throttled("reservas"):
-            self._fetch_shared("reservas", self._apply_synced_reservations)
+            self._sync_shared_with_pending("reservas", self._apply_synced_reservations)
 
     # ── Episodios que faltan (caché compartida) ──
 
