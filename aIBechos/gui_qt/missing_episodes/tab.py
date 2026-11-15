@@ -236,6 +236,7 @@ class MissingEpisodesTab(QWidget):
         """Al entrar en la pestaña: traer lo que hayan compartido otros
         equipos (con freno, ver AppContext._throttled)."""
         self.ctx.sync_missing_episodes()
+        self.ctx.sync_missing_ignored()
         self.ctx.sync_favorites()
         self.ctx.sync_reservations()
         self.ctx.fetch_shared_dub_verdicts(self._apply_shared_dub_verdicts)
@@ -569,39 +570,28 @@ class MissingEpisodesTab(QWidget):
     # ── Ignorar ──
 
     def _set_series_ignored(self, tmdb_id, ignored: bool):
-        from core.missing_episodes_cache import load_cache, save_cache
-        cache = dict(load_cache())
-        if mer.set_series_ignored(cache, tmdb_id, ignored):
-            save_cache(cache)
+        """Los ignorados son comunes a todos (core/missing_ep_ignored.py):
+        se apuntan con su hora y se comparten por el servidor."""
+        self.ctx.set_missing_ignored([(tmdb_id, None, None, ignored)])
         for r in self._all_rows():
             if r["tmdb_id"] == tmdb_id:
                 r["ignored"] = ignored
         self.render()
 
     def _set_seasons_ignored(self, keys: list, ignored: bool):
-        from core.missing_episodes_cache import load_cache, save_cache
-        cache = dict(load_cache())
-        changed = False
+        self.ctx.set_missing_ignored([(tmdb_id, season, None, ignored) for tmdb_id, season in keys])
         for tmdb_id, season in keys:
-            changed |= mer.set_season_ignored(cache, tmdb_id, season, ignored)
             r = self._base_row(tmdb_id)
             if r is not None:
                 mer.apply_season_ignored_to_row(r, season, ignored)
-        if changed:
-            save_cache(cache)
         self.render()
 
     def _set_episodes_ignored(self, keys: list, ignored: bool):
-        from core.missing_episodes_cache import load_cache, save_cache
-        cache = dict(load_cache())
-        changed = False
+        self.ctx.set_missing_ignored([(tmdb_id, season, ep, ignored) for tmdb_id, season, ep in keys])
         for tmdb_id, season, ep in keys:
-            changed |= mer.set_episode_ignored(cache, tmdb_id, season, ep, ignored)
             r = self._base_row(tmdb_id)
             if r is not None:
                 mer.apply_episode_ignored_to_row(r, season, ep, ignored)
-        if changed:
-            save_cache(cache)
         self.render()
 
     # ── Copiar ──
@@ -942,6 +932,13 @@ class MissingEpisodesTab(QWidget):
     def _finish_scan(self, results: list):
         self._scanning = False
         self._set_scanning_ui(False)
+        # El escaneo leyó los ignorados al empezar: lo ignorado mientras
+        # escaneaba (aquí o en otro equipo) se vuelve a aplicar.
+        try:
+            from core import missing_ep_ignored as _ign
+            _ign.apply_to_rows(results, _ign.load_marks())
+        except Exception:
+            pass
         self._results = results
         self._refresh_cache_meta()
         self.render()

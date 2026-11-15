@@ -328,6 +328,75 @@ class AppContext(QObject):
             self.missing_cache_changed.emit()
         self._fetch_shared("episodios_que_faltan", _apply)
 
+    # ── Episodios que faltan: ignorados, comunes a todos (core/missing_ep_ignored.py) ──
+
+    def set_missing_ignored(self, changes: list) -> None:
+        """*changes*: [(tmdb_id, temporada|None, episodio|None, ignorado)].
+        Se apuntan en local (y en la caché) al momento y luego se fusionan
+        con el archivo compartido."""
+        from core import missing_ep_ignored as ign
+        from core.missing_episodes_cache import load_cache, save_cache
+        by = self.config.get("app_user_name", "").strip()
+        marks = ign.load_marks()
+        now = time.time()
+        for tmdb_id, season, episode, on in changes or []:
+            marks = ign.set_mark(marks, tmdb_id, season, episode, on=on, by=by, now=now)
+        ign.save_marks(marks)
+        try:
+            save_cache(dict(load_cache()))   # rellena los campos desde las marcas
+        except Exception:
+            _log.warning("Ignorados: no se pudo actualizar la caché local", exc_info=True)
+        self._last_sync.pop("episodios_ignorados", None)
+        self.sync_missing_ignored()
+
+    def sync_missing_ignored(self) -> None:
+        """Fusiona las marcas locales con las compartidas (gana la más
+        reciente de cada una), sube el resultado si el servidor no lo tenía
+        y avisa a la pestaña si cambió algo aquí."""
+        if self._throttled("episodios_ignorados"):
+            return
+        remote_path = self.shared_path("episodios_ignorados")
+        if not remote_path:
+            return
+
+        def worker():
+            from core import missing_ep_ignored as ign
+            ftp = self.connect_ftp()
+            if ftp is None:
+                return
+            try:
+                remote, _new = shared_data.read_shared_json(ftp, remote_path, "dict")
+                if remote is None:
+                    return   # existe pero no se pudo leer: no pisarlo
+                merged = ign.merge(remote, ign.load_marks())
+                if merged != remote:
+                    payload = json.dumps(merged, ensure_ascii=False, indent=1).encode("utf-8")
+                    up_ok, msg = ftp.upload_bytes(payload, remote_path)
+                    if not up_ok:
+                        _log.warning("Ignorados: no se pudo subir el archivo compartido (%s)", msg)
+            except Exception:
+                _log.warning("Ignorados: fallo al sincronizar", exc_info=True)
+                return
+            finally:
+                ftp.disconnect()
+            ui(lambda: self._apply_missing_ignored(merged))
+        run_in_thread(worker)
+
+    def _apply_missing_ignored(self, merged: dict) -> None:
+        from core import missing_ep_ignored as ign
+        from core.missing_episodes_cache import load_cache, save_cache
+        # Se vuelve a fusionar con lo local: pudo cambiar mientras tanto.
+        local = ign.load_marks()
+        new = ign.merge(local, merged)
+        if new == local:
+            return
+        ign.save_marks(new)
+        try:
+            save_cache(dict(load_cache()))
+        except Exception:
+            _log.warning("Ignorados: no se pudo actualizar la caché local", exc_info=True)
+        self.missing_cache_changed.emit()
+
     def push_missing_episodes(self) -> None:
         """Comparte la caché local actual, sin los campos personales."""
         remote_path = self.shared_path("episodios_que_faltan")

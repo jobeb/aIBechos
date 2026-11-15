@@ -34,7 +34,9 @@ personales y NUNCA viajan por la red: "ignored" (que esta serie concreta
 no le interesa a ESTE cliente -- otro cliente puede tener una opinión
 distinta) y "ai_verdict" (que ya tiene su propio canal de compartición
 aparte, ver core/shared_dub_verdicts.py -- incluirlo aquí también
-duplicaría esa sincronización). strip_personal_fields()/
+duplicaría esa sincronización). Los ignorados ya no son personales: son comunes a
+todos y viajan en su propio archivo (core/missing_ep_ignored.py); aquí
+solo se rellenan a partir de él al leer/guardar (_with_ignored). strip_personal_fields()/
 merge_remote_into_local() son las dos funciones puras que separan esos
 campos personales del resto al subir/bajar."""
 
@@ -63,16 +65,28 @@ def _read_from_disk() -> dict:
         return {}
 
 
+def _with_ignored(cache: dict) -> dict:
+    """Los ignorados salen SIEMPRE de core/missing_ep_ignored.py (comunes
+    a todos los usuarios): quien reescriba la caché con una copia vieja
+    (el escaneo, la fusión con la compartida) ya no los pierde."""
+    try:
+        from core import missing_ep_ignored as _ign
+        _ign.apply_to_cache(cache, _ign.load_marks())
+    except Exception:
+        pass
+    return cache
+
+
 def load_cache() -> dict:
     global _cache
     if _cache is None:
-        _cache = _read_from_disk()
+        _cache = _with_ignored(_read_from_disk())
     return _cache
 
 
 def save_cache(cache: dict) -> None:
     global _cache
-    _cache = cache
+    _cache = _with_ignored(cache)
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(path, cache)

@@ -173,8 +173,13 @@ class MissingEpScanMixin:
         # arbitrario pero determinista.
         shows = []
         seen_tmdb_ids = set()
+        source_failed = []
 
         def _add_shows(source, shows_list):
+            if shows_list is None:
+                # El servidor no respondió (None, no lista vacía): sus series
+                # no "desaparecen" -- ver el borrado de obsoletas más abajo.
+                source_failed.append(source)
             for s in shows_list or []:
                 tmdb_id = s.get("tmdb_id")
                 try:
@@ -222,9 +227,15 @@ class MissingEpScanMixin:
         # Quitar de la caché las series que ya no están en el servidor
         # (se borraron, o se desactivó esa fuente) -- si no, un hueco viejo
         # de una serie eliminada seguiría apareciendo para siempre.
+        # Solo si TODAS las fuentes respondieron: con Jellyfin caído se
+        # vaciaba la caché entera (y con ella lo ignorado de cada serie).
         current_keys = {str(s.get("tmdb_id")) for _, s in shows if s.get("tmdb_id")}
-        for stale_key in [k for k in cache if k not in current_keys and k != "_meta"]:
-            del cache[stale_key]
+        if source_failed:
+            _log.warning("Episodios que faltan: %s no respondió, no se quita ninguna serie de la caché",
+                         ", ".join(source_failed))
+        else:
+            for stale_key in [k for k in cache if k not in current_keys and k != "_meta"]:
+                del cache[stale_key]
 
         def _row(tmdb_id, name, source, missing, ignored, expected=None, unknown_seasons=None,
                  present_season_counts=None, server_id=None, folder_name=None, ai_verdict=None):
