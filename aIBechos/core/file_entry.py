@@ -36,6 +36,56 @@ def _info_key(info):
     return tuple(getattr(info, k, None) for k in ("media_type", "tmdb_id", "title", "season", "episode"))         + (id(info) if not hasattr(info, "title") else 0,)
 
 
+_BAD_NAME_CHARS = set('/\\:*?"<>|')
+
+
+def apply_manual_name(entry, stem: str) -> str:
+    """Pone a *entry* el nombre *stem* (sin extensión) escrito a mano, para
+    lo que no tiene ficha propia en TMDB. Devuelve "" si se aplicó o el
+    motivo por el que no.
+
+    - Con ficha: se queda (decide categoría y carpeta), solo cambia el
+      nombre, y la subida ya no lo toma por duplicado de lo que TMDB
+      considera la misma obra (ver has_manual_name).
+    - Sin ficha: solo películas, con una ficha mínima (tmdb_id 0) con el
+      título y el año del nombre. Una serie sin ficha no sabría a qué
+      carpeta ni temporada ir.
+    """
+    import re as _re
+
+    from core.api_client import MediaInfo
+
+    stem = " ".join(str(stem or "").split())
+    ext = entry.ext or ""
+    if ext and stem.lower().endswith(ext.lower()):
+        stem = stem[:-len(ext)].rstrip()
+    if not stem:
+        return "Escribe un nombre"
+    if any(c in _BAD_NAME_CHARS for c in stem):
+        return 'El nombre no puede llevar / \\ : * ? " < > |'
+    if entry.media_info is None:
+        if entry.is_book or (entry.detected or {}).get("media_type") in ("tv", "anime") \
+                or (entry.detected or {}).get("season") is not None:
+            return "Sin ficha solo se puede con películas: identifica antes la serie o el libro"
+        m = _re.search(r"\((\d{4})\)\s*$", stem) or _re.search(r"\b(19\d{2}|20\d{2})\b", stem)
+        year = m.group(1) if m else ""
+        title = _re.sub(r"\s*\(\d{4}\)\s*$", "", stem).strip() or stem
+        entry.media_info = MediaInfo(tmdb_id=0, media_type="movie", title=title,
+                                     original_title=title, year=year)
+        entry.confidence = 0
+    new_name = stem + ext
+    entry.new_name = new_name
+    entry.manual_name = new_name
+    if entry.status in ("pendiente", "error", "omitido", "buscando"):
+        entry.status = "listo"
+        entry.error_msg = ""
+    # Las comprobaciones de la subida se hicieron con el nombre de antes.
+    entry._duplicate_checked = False
+    entry._conflict_policy = None
+    entry._conflict_dup = None
+    return ""
+
+
 def detected_label(det) -> str:
     det = det or {}
     if det.get("season"):
@@ -84,11 +134,22 @@ class FileEntry:
         self.ftp_status   = ""
         self.confidence   = 0   # 0-100 porcentaje de confianza en la detección TMDB
         self.remote_dir_override = None   # carpeta remota elegida a mano, sustituye a la calculada por categoría/género
+        # Nombre puesto a mano (ver has_manual_name): para lo que no tiene
+        # ficha propia en TMDB (real: "Vengadores Endgame Encore", que
+        # TMDB da por Endgame 2019 y chocaba como duplicado).
+        self.manual_name = ""
         self._last_known_size_text = ""   # ver App._file_size_text -- último tamaño leído con éxito
         self._last_known_size_bytes = None   # ver App._update_status_bar -- caché para no re-stat()ear todo self.files en cada fila actualizada
         self.is_slim = False   # viene de un adelgazamiento (ver evento "slim" del watcher): la fila muestra "Adelgazando"
         now = _time.time()
         self.events = [[now, "added", "", ""], [now, "detected", detected_label(self.detected), ""]]
+
+    @property
+    def has_manual_name(self) -> bool:
+        """¿El nombre nuevo es el puesto a mano? Solo mientras siga siendo
+        ese: identificar o asignar otra vez recalcula new_name y deja de
+        valer sin tener que acordarse de limpiar nada."""
+        return bool(self.manual_name) and self.manual_name == self.new_name
 
     # ── Registro de eventos (ver docstring de la clase) ──
 
@@ -208,6 +269,7 @@ class FileEntry:
             "confidence": self.confidence,
             "media_info": _mediainfo_to_dict(self.media_info) if self.media_info else None,
             "remote_dir_override": self.remote_dir_override,
+            "manual_name": self.manual_name if self.has_manual_name else "",
             # Solo relevante para libros/cómics (self.is_book) -- persiste
             # la elección manual de _set_book_comic_type, que si no se
             # perdería al reiniciar la app (from_dict() recalcularía is_comic
@@ -235,6 +297,7 @@ class FileEntry:
         entry.error_msg  = d.get("error_msg", "") or ""
         entry.is_slim    = bool(d.get("is_slim", False))
         entry.remote_dir_override = d.get("remote_dir_override")
+        entry.manual_name = d.get("manual_name", "") or ""
         # Restaura la elección manual de _set_book_comic_type si difiere de
         # la que ya sale por extensión (is_comic_file en core/renamer.py) --
         # hay que recalcular entry.detected también, porque se calculó en

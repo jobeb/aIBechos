@@ -389,6 +389,65 @@ class EditDetectedDialog(QDialog):
         self.accept()
 
 
+class ManualNameDialog(QDialog):
+    """Nombre libre para lo que no tiene ficha propia en TMDB (ver
+    core/file_entry.py::apply_manual_name)."""
+
+    def __init__(self, parent, entry):
+        super().__init__(parent)
+        from pathlib import Path as _Path
+        self.setWindowTitle("Poner nombre a mano")
+        self.entry = entry
+        lay = QVBoxLayout(self)
+        t = QLabel(f"Nombre en el servidor para:\n{entry.name}")
+        t.setStyleSheet("font-weight: bold;")
+        t.setWordWrap(True)
+        lay.addWidget(t)
+        current = _Path(entry.new_name).stem if entry.new_name else (entry.detected or {}).get("title", "")
+        row_name = QHBoxLayout()
+        self.name = QLineEdit(current or "")
+        self.name.setMinimumWidth(380)
+        self.name.setPlaceholderText("p. ej. Vengadores Endgame Encore (2026)")
+        row_name.addWidget(self.name, 1)
+        row_name.addWidget(QLabel(entry.ext or ""))
+        lay.addLayout(row_name)
+        if entry.media_info:
+            info = entry.media_info
+            hint = (f"La carpeta sigue saliendo de la ficha «{info.title}"
+                    f"{f' ({info.year})' if info.year else ''}». No se toma por duplicado "
+                    "de esa ficha: solo choca si ya hay un archivo con este mismo nombre.")
+        else:
+            hint = ("Sin ficha de TMDB: se sube como película, con el título y el año "
+                    "que pongas en el nombre.")
+        h = QLabel(hint)
+        h.setWordWrap(True)
+        h.setStyleSheet(f"color: {theme.PENDING_COLOR};")
+        lay.addWidget(h)
+        self.error = QLabel("")
+        self.error.setStyleSheet(f"color: {theme.ERROR_COLOR};")
+        self.error.setWordWrap(True)
+        lay.addWidget(self.error)
+        row = QHBoxLayout()
+        save = QPushButton("Guardar")
+        save.setProperty("accent", True)
+        save.clicked.connect(self._save)
+        cancel = QPushButton("Cancelar")
+        cancel.clicked.connect(self.reject)
+        row.addStretch(1)
+        row.addWidget(save)
+        row.addWidget(cancel)
+        lay.addLayout(row)
+        self.name.returnPressed.connect(self._save)
+
+    def _save(self):
+        from core.file_entry import apply_manual_name
+        why = apply_manual_name(self.entry, self.name.text())
+        if why:
+            self.error.setText(why)
+            return
+        self.accept()
+
+
 class EditRemoteDirDialog(QDialog):
     """Fijar a mano la carpeta remota de destino (entry.remote_dir_override)."""
 

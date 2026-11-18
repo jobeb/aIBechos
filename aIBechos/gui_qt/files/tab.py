@@ -29,7 +29,8 @@ from gui_qt.columns import fill_columns
 from gui_qt.actions import ActionsDelegate
 from gui_qt.dialogs import AmuleTemplateDialog
 from gui_qt.files.detail_panel import FilesDetailPanel
-from gui_qt.files.dialogs import ClearDialog, EditDetectedDialog, EditRemoteDirDialog, SameSeriesDialog
+from gui_qt.files.dialogs import (ClearDialog, EditDetectedDialog, EditRemoteDirDialog, ManualNameDialog,
+                                  SameSeriesDialog)
 from gui_qt.files.model import (COL_ACTIONS, COL_BAR, COL_DEST, COL_DET, COL_FAV, COL_LOCK, COL_NAME,
                                 COL_NN, COL_SIZE, COL_SPD, COL_STAT, SORT_KEYS, FilesModel,
                                 ProgressDelegate)
@@ -594,10 +595,31 @@ class FilesTab(QWidget):
             self.host._remove_entry(entry)
 
     def edit_detected(self, entry):
-        if EditDetectedDialog(self.window(), entry).exec():
-            self.host._update_row(entry)
-            if self.host._selected_entry is entry:
-                self.detail.reset_search(entry)
+        if not EditDetectedDialog(self.window(), entry).exec():
+            return
+        self.host._update_row(entry)
+        if self.host._selected_entry is entry:
+            self.detail.reset_search(entry)
+            # El buscador con lo corregido, para ver ya los resultados.
+            title = (entry.detected or {}).get("title", "")
+            if title:
+                self.detail.query.setText(title)
+                self.detail.search()
+        # Solo cambiar entry.detected no hacía nada visible: la fila
+        # seguía con la ficha, el nombre nuevo y el estado de antes (real:
+        # "Vengadores Endgame Encore", omitido como duplicado, no cambiaba
+        # al corregirlo). Se vuelve a identificar con lo corregido, como
+        # "Buscar de nuevo" (que ya no toca renombrados ni subidos).
+        if entry.status not in ("subiendo", "en_cola", "subido", "renombrado"):
+            self.host._search_new_entries([entry])
+
+    def edit_manual_name(self, entry):
+        if not ManualNameDialog(self.window(), entry).exec():
+            return
+        self.host._update_row(entry)
+        if self.host._selected_entry is entry:
+            self.detail.show_entry(entry)
+        self.ctx.set_status(f"Nombre puesto a mano: {entry.new_name}", SUCCESS_COLOR)
 
     def edit_remote_dir(self, entry):
         auto_dir = self.host._preview_remote_path(entry).rsplit("/", 1)[0]
@@ -656,6 +678,8 @@ class FilesTab(QWidget):
             add("▲  Subir este archivo", lambda: host._upload_one(entry))
         add("✎  Editar título/episodio detectado…", lambda: self.edit_detected(entry))
         add("✎  Editar carpeta de destino…", lambda: self.edit_remote_dir(entry))
+        if entry.status not in ("subiendo", "en_cola", "subido"):
+            add("✎  Poner nombre a mano (sin ficha propia en TMDB)…", lambda: self.edit_manual_name(entry))
         series = (entry.media_info.title if entry.media_info and getattr(entry.media_info, "title", "")
                   else (entry.detected or {}).get("title", "") or entry.name)
         auto_tid = host._entry_series_tmdb_id(entry)

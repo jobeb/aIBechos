@@ -614,7 +614,10 @@ class FilesUploadMixin:
                 listing = listings[remote_dir]
                 if listing is not None:
                     listed = True
-                    dup = find_duplicate(listing, entry.media_info, remote_filename)
+                    # Nombre puesto a mano: es otra cosa a propósito aunque
+                    # TMDB diga lo mismo (solo cuenta el nombre exacto).
+                    dup = (None if getattr(entry, "has_manual_name", False)
+                           else find_duplicate(listing, entry.media_info, remote_filename))
             reasons = []
             if already_exists:
                 reasons.append("ya está completo en el servidor")
@@ -841,7 +844,8 @@ class FilesUploadMixin:
                 # esta subida (reintentable) sin marcarla.
                 return False, "No se pudo listar la carpeta del servidor para comprobar duplicados"
             entry._duplicate_checked = True
-            dup = find_duplicate(existing_files, info, remote_filename)
+            dup = (None if getattr(entry, "has_manual_name", False)
+                   else find_duplicate(existing_files, info, remote_filename))
 
         # Los diálogos de confirmación se serializan con
         # self._upload_confirm_lock: con varias subidas en paralelo, varios
