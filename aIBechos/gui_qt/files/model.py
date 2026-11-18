@@ -132,6 +132,7 @@ class FilesModel(QAbstractTableModel):
             return HEADERS[section]
         if role == Qt.ToolTipRole:
             return {COL_DET: "Lo que se dedujo del nombre del archivo -- doble clic para corregirlo",
+                    COL_NN: "Nombre con el que se subirá -- doble clic para escribirlo a mano",
                     COL_DEST: "Carpeta del servidor donde se subirá -- doble clic para cambiarla",
                     COL_FAV: "Favorito", COL_LOCK: "Reservado (protegido del borrado)"}.get(section)
         return None

@@ -195,3 +195,25 @@ def test_is_archive_file_rejects_non_archive_extensions(ext):
     # sepamos descomprimir por sí solo (sería un único archivo comprimido,
     # no un contenedor) -- solo cuenta la forma compuesta ".tar.gz".
     assert is_archive_file(f"archivo{ext}") is False
+
+
+def test_quita_comillas_tipograficas_del_titulo_de_tmdb():
+    # Real: TMDB titula la película de 2026 “Cumbres Borrascosas”.
+    from core.api_client import MediaInfo as _MI
+    from core.renamer import build_new_name as _bnn
+    info = _MI(tmdb_id=1, media_type="movie", title="“Cumbres Borrascosas”",
+               original_title="“Wuthering Heights”", year="2026")
+    assert _bnn(info, "{serie} ({año}){ext}", ".mkv") == "Cumbres Borrascosas (2026).mkv"
+
+
+def test_conserva_apostrofos_y_quita_comillas_angulares():
+    from core.api_client import MediaInfo as _MI
+    from core.renamer import build_new_name as _bnn
+    info = _MI(tmdb_id=1, media_type="movie", title="Ocean’s «Eleven»",
+               original_title="", year="2001")
+    assert _bnn(info, "{serie} ({año}){ext}", ".mkv") == "Ocean’s Eleven (2001).mkv"
+
+
+def test_carpeta_del_servidor_sin_comillas_tipograficas():
+    from core.ftp_client import _ftp_safe
+    assert _ftp_safe("“Cumbres Borrascosas”") == "Cumbres Borrascosas"

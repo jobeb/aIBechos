@@ -29,7 +29,7 @@ from gui_qt.columns import fill_columns
 from gui_qt.actions import ActionsDelegate
 from gui_qt.dialogs import AmuleTemplateDialog
 from gui_qt.files.detail_panel import FilesDetailPanel
-from gui_qt.files.dialogs import (ClearDialog, EditDetectedDialog, EditRemoteDirDialog, ManualNameDialog,
+from gui_qt.files.dialogs import (ClearDialog, EditRemoteDirDialog, FixIdentificationDialog,
                                   SameSeriesDialog)
 from gui_qt.files.model import (COL_ACTIONS, COL_BAR, COL_DEST, COL_DET, COL_FAV, COL_LOCK, COL_NAME,
                                 COL_NN, COL_SIZE, COL_SPD, COL_STAT, SORT_KEYS, FilesModel,
@@ -577,7 +577,9 @@ class FilesTab(QWidget):
         if entry is None:
             return
         if index.column() == COL_DET:
-            self.edit_detected(entry)
+            self.edit_detected(entry, manual=False)
+        elif index.column() == COL_NN and entry.status not in ("subiendo", "en_cola", "subido"):
+            self.edit_detected(entry, manual=True)
         elif index.column() == COL_DEST:
             self.edit_remote_dir(entry)
 
@@ -594,10 +596,19 @@ class FilesTab(QWidget):
         elif action_id == "remove":
             self.host._remove_entry(entry)
 
-    def edit_detected(self, entry):
-        if not EditDetectedDialog(self.window(), entry).exec():
+    def edit_detected(self, entry, manual=None):
+        """"Corregir identificación" (doble clic en Detectado o en Nuevo
+        nombre, o menú): o se corrige lo detectado y se vuelve a buscar, o
+        se fija un nombre exacto (ver FixIdentificationDialog)."""
+        dlg = FixIdentificationDialog(self.window(), entry, manual=manual)
+        if not dlg.exec():
             return
         self.host._update_row(entry)
+        if dlg.mode == "manual":
+            if self.host._selected_entry is entry:
+                self.detail.show_entry(entry)
+            self.ctx.set_status(f"Nombre puesto a mano: {entry.new_name}", SUCCESS_COLOR)
+            return
         if self.host._selected_entry is entry:
             self.detail.reset_search(entry)
             # El buscador con lo corregido, para ver ya los resultados.
@@ -612,14 +623,6 @@ class FilesTab(QWidget):
         # "Buscar de nuevo" (que ya no toca renombrados ni subidos).
         if entry.status not in ("subiendo", "en_cola", "subido", "renombrado"):
             self.host._search_new_entries([entry])
-
-    def edit_manual_name(self, entry):
-        if not ManualNameDialog(self.window(), entry).exec():
-            return
-        self.host._update_row(entry)
-        if self.host._selected_entry is entry:
-            self.detail.show_entry(entry)
-        self.ctx.set_status(f"Nombre puesto a mano: {entry.new_name}", SUCCESS_COLOR)
 
     def edit_remote_dir(self, entry):
         auto_dir = self.host._preview_remote_path(entry).rsplit("/", 1)[0]
@@ -676,10 +679,8 @@ class FilesTab(QWidget):
                     lambda: host._set_book_comic_type(entry, is_comic=True))
         if entry.media_info and entry.status not in ("subiendo", "en_cola"):
             add("▲  Subir este archivo", lambda: host._upload_one(entry))
-        add("✎  Editar título/episodio detectado…", lambda: self.edit_detected(entry))
+        add("✎  Corregir identificación…", lambda: self.edit_detected(entry))
         add("✎  Editar carpeta de destino…", lambda: self.edit_remote_dir(entry))
-        if entry.status not in ("subiendo", "en_cola", "subido"):
-            add("✎  Poner nombre a mano (sin ficha propia en TMDB)…", lambda: self.edit_manual_name(entry))
         series = (entry.media_info.title if entry.media_info and getattr(entry.media_info, "title", "")
                   else (entry.detected or {}).get("title", "") or entry.name)
         auto_tid = host._entry_series_tmdb_id(entry)

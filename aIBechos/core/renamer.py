@@ -45,9 +45,23 @@ def build_new_name(info: MediaInfo, template: str, ext: str) -> str:
     return name
 
 
+#: Comillas dobles tipográficas que TMDB pone en algunos títulos (real:
+#: “Cumbres Borrascosas” (2026), el título estilizado de la película):
+#: no son inválidas en disco, pero acababan en el nombre del archivo y de
+#: la carpeta del servidor. La recta ya va en los caracteres inválidos.
+#: Los apóstrofos (Ocean’s Eleven) se dejan: son parte del título.
+DOUBLE_QUOTES = "“”„‟«»″〝〞＂"
+
+
+def strip_double_quotes(text: str) -> str:
+    """*text* sin comillas dobles (rectas ni tipográficas). Nunca lanza."""
+    return "".join(c for c in str(text or "") if c != '"' and c not in DOUBLE_QUOTES)
+
+
 def _sanitize(text: str) -> str:
     """Elimina caracteres no válidos en nombres de archivo."""
     invalid = r'[<>:"/\\|?*\x00-\x1f]'
+    text = strip_double_quotes(text)
     text = re.sub(invalid, "", text)
     text = re.sub(r"\s{2,}", " ", text).strip()
     text = text.rstrip(".")

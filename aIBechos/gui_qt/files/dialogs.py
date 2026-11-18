@@ -20,7 +20,7 @@ cerrado (con .result), igual que construir el CTkToplevel en Tk.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QScrollArea, QVBoxLayout)
 
 from core import remote_presence as rp
@@ -338,42 +338,109 @@ class SameSeriesDialog(_ChoiceDialog):
                       ("No, identificar cada uno", False, None)])
 
 
-class EditDetectedDialog(QDialog):
-    """Corregir a mano título/temporada/episodio detectados (escribe en
-    entry.detected, igual que App._edit_detected)."""
+class FixIdentificationDialog(QDialog):
+    """"Corregir identificación": las dos maneras de arreglar un archivo
+    mal identificado, en un solo sitio.
 
-    def __init__(self, parent, entry):
+    - Arriba, lo DETECTADO del nombre (título/temporada/episodio, escribe
+      en entry.detected): lo que se busca en TMDB. Al guardar, quien lo
+      abre vuelve a identificar (self.mode == "search").
+    - Abajo, "Usar este nombre exacto": nombre final escrito a mano, sin
+      plantilla ni búsqueda, para lo que TMDB no tiene (real: "Vengadores
+      Endgame Encore", que TMDB da siempre por Endgame 2019). Ver
+      core/file_entry.py::apply_manual_name (self.mode == "manual").
+    """
+
+    def __init__(self, parent, entry, manual: bool | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Editar título/episodio")
+        from pathlib import Path as _Path
+        self.setWindowTitle("Corregir identificación")
         self.entry = entry
-        det = entry.detected
+        self.mode = "search"
+        det = entry.detected or {}
         lay = QVBoxLayout(self)
-        t = QLabel(f"Detectado a mano para:\n{entry.name}")
+        t = QLabel(entry.name)
         t.setStyleSheet("font-weight: bold;")
         t.setWordWrap(True)
         lay.addWidget(t)
-        lay.addWidget(QLabel("Título"))
-        self.title = QLineEdit(det.get("title", "") or "")
-        self.title.setMinimumWidth(380)
-        lay.addWidget(self.title)
+
+        self._search_widgets = []
+
+        def field(label, text):
+            lbl = QLabel(label)
+            edit = QLineEdit(text)
+            lay.addWidget(lbl)
+            lay.addWidget(edit)
+            self._search_widgets += [lbl, edit]
+            return edit
+
+        head = QLabel("Qué buscar en TMDB")
+        head.setStyleSheet("font-weight: bold;")
+        lay.addWidget(head)
+        self._search_widgets.append(head)
+        self.title = field("Título", det.get("title", "") or "")
+        self.title.setMinimumWidth(400)
         self.season = None
         if not entry.is_book:
-            lay.addWidget(QLabel("Temporada"))
-            self.season = QLineEdit("" if det.get("season") is None else str(det["season"]))
-            lay.addWidget(self.season)
-        lay.addWidget(QLabel("Capítulo" if entry.is_comic else "Episodio"))
-        self.episode = QLineEdit("" if det.get("episode") is None else str(det["episode"]))
-        lay.addWidget(self.episode)
+            self.season = field("Temporada", "" if det.get("season") is None else str(det["season"]))
+        self.episode = field("Capítulo" if entry.is_comic else "Episodio",
+                             "" if det.get("episode") is None else str(det["episode"]))
+
+        busy = entry.status in ("subiendo", "en_cola", "subido")
+        self.use_manual = QCheckBox("Usar este nombre exacto (sin plantilla ni búsqueda)")
+        lay.addSpacing(8)
+        lay.addWidget(self.use_manual)
+        row_name = QHBoxLayout()
+        current = _Path(entry.new_name).stem if entry.new_name else det.get("title", "")
+        self.name = QLineEdit(current or "")
+        self.name.setPlaceholderText("p. ej. Vengadores Endgame Encore (2026)")
+        row_name.addWidget(self.name, 1)
+        row_name.addWidget(QLabel(entry.ext or ""))
+        lay.addLayout(row_name)
+        if busy:
+            hint = "No se puede cambiar el nombre de algo que ya se está subiendo o ya está subido."
+        elif entry.media_info:
+            info = entry.media_info
+            hint = (f"Para lo que TMDB no tiene. La carpeta sigue saliendo de la ficha "
+                    f"«{info.title}{f' ({info.year})' if info.year else ''}», y no se toma por "
+                    "duplicado de ella: solo choca un archivo con este mismo nombre.")
+        else:
+            hint = ("Para lo que TMDB no tiene. Sin ficha se sube como película, con el "
+                    "título y el año que pongas en el nombre.")
+        self.hint = QLabel(hint)
+        self.hint.setWordWrap(True)
+        self.hint.setStyleSheet(f"color: {theme.PENDING_COLOR};")
+        lay.addWidget(self.hint)
+        self.error = QLabel("")
+        self.error.setStyleSheet(f"color: {theme.ERROR_COLOR};")
+        self.error.setWordWrap(True)
+        lay.addWidget(self.error)
+
         row = QHBoxLayout()
-        save = QPushButton("Guardar")
-        save.setProperty("accent", True)
-        save.clicked.connect(self._save)
+        self.save_btn = QPushButton()
+        self.save_btn.setProperty("accent", True)
+        self.save_btn.clicked.connect(self._save)
         cancel = QPushButton("Cancelar")
         cancel.clicked.connect(self.reject)
         row.addStretch(1)
-        row.addWidget(save)
+        row.addWidget(self.save_btn)
         row.addWidget(cancel)
         lay.addLayout(row)
+
+        self.use_manual.setEnabled(not busy)
+        start_manual = entry.has_manual_name if manual is None else manual
+        self.use_manual.setChecked(bool(start_manual) and not busy)
+        self.use_manual.toggled.connect(self._sync)
+        self._sync()
+        (self.name if self.use_manual.isChecked() else self.title).setFocus()
+
+    def _sync(self, *_):
+        manual = self.use_manual.isChecked()
+        self.name.setEnabled(manual)
+        for w in self._search_widgets:
+            w.setEnabled(not manual)
+        self.save_btn.setText("Guardar nombre" if manual else "Guardar y buscar de nuevo")
+        self.error.setText("")
 
     @staticmethod
     def _int_or_none(text: str):
@@ -381,70 +448,24 @@ class EditDetectedDialog(QDialog):
         return int(text) if text.isdigit() else None
 
     def _save(self):
+        if self.use_manual.isChecked():
+            from core.file_entry import apply_manual_name
+            why = apply_manual_name(self.entry, self.name.text())
+            if why:
+                self.error.setText(why)
+                return
+            self.mode = "manual"
+            self.accept()
+            return
         det = self.entry.detected
         det["title"] = self.title.text().strip()
         det["episode"] = self._int_or_none(self.episode.text())
         if self.season is not None:
             det["season"] = self._int_or_none(self.season.text())
-        self.accept()
-
-
-class ManualNameDialog(QDialog):
-    """Nombre libre para lo que no tiene ficha propia en TMDB (ver
-    core/file_entry.py::apply_manual_name)."""
-
-    def __init__(self, parent, entry):
-        super().__init__(parent)
-        from pathlib import Path as _Path
-        self.setWindowTitle("Poner nombre a mano")
-        self.entry = entry
-        lay = QVBoxLayout(self)
-        t = QLabel(f"Nombre en el servidor para:\n{entry.name}")
-        t.setStyleSheet("font-weight: bold;")
-        t.setWordWrap(True)
-        lay.addWidget(t)
-        current = _Path(entry.new_name).stem if entry.new_name else (entry.detected or {}).get("title", "")
-        row_name = QHBoxLayout()
-        self.name = QLineEdit(current or "")
-        self.name.setMinimumWidth(380)
-        self.name.setPlaceholderText("p. ej. Vengadores Endgame Encore (2026)")
-        row_name.addWidget(self.name, 1)
-        row_name.addWidget(QLabel(entry.ext or ""))
-        lay.addLayout(row_name)
-        if entry.media_info:
-            info = entry.media_info
-            hint = (f"La carpeta sigue saliendo de la ficha «{info.title}"
-                    f"{f' ({info.year})' if info.year else ''}». No se toma por duplicado "
-                    "de esa ficha: solo choca si ya hay un archivo con este mismo nombre.")
-        else:
-            hint = ("Sin ficha de TMDB: se sube como película, con el título y el año "
-                    "que pongas en el nombre.")
-        h = QLabel(hint)
-        h.setWordWrap(True)
-        h.setStyleSheet(f"color: {theme.PENDING_COLOR};")
-        lay.addWidget(h)
-        self.error = QLabel("")
-        self.error.setStyleSheet(f"color: {theme.ERROR_COLOR};")
-        self.error.setWordWrap(True)
-        lay.addWidget(self.error)
-        row = QHBoxLayout()
-        save = QPushButton("Guardar")
-        save.setProperty("accent", True)
-        save.clicked.connect(self._save)
-        cancel = QPushButton("Cancelar")
-        cancel.clicked.connect(self.reject)
-        row.addStretch(1)
-        row.addWidget(save)
-        row.addWidget(cancel)
-        lay.addLayout(row)
-        self.name.returnPressed.connect(self._save)
-
-    def _save(self):
-        from core.file_entry import apply_manual_name
-        why = apply_manual_name(self.entry, self.name.text())
-        if why:
-            self.error.setText(why)
-            return
+        # Vuelta a la plantilla: el nombre a mano deja de valer aunque no
+        # se pueda reidentificar (renombrado) y new_name siga igual.
+        self.entry.manual_name = ""
+        self.mode = "search"
         self.accept()
 
 

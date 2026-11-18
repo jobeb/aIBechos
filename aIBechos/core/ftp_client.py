@@ -976,8 +976,10 @@ class FTPClient:
 def _ftp_safe(text: str) -> str:
     """Elimina caracteres problemáticos para rutas FTP/filesystem."""
     import re
-    text = re.sub(r'[<>:"|?*]', "", text)
-    return text.strip()
+
+    from core.renamer import strip_double_quotes   # comillas tipográficas de TMDB
+    text = re.sub(r'[<>:"|?*]', "", strip_double_quotes(text))
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 
 def _parse_unix_list_dirs(lines: list) -> list:

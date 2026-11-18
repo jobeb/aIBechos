@@ -71,3 +71,55 @@ def test_sobrevive_a_la_sesion():
     back = FileEntry.from_dict(e.to_dict())
     assert back.has_manual_name
     assert back.new_name == "Vengadores Endgame Encore (2026).mkv"
+
+
+# ── Diálogo "Corregir identificación" (búsqueda o nombre exacto) ──
+
+def test_dialogo_modo_busqueda_corrige_detectado_y_quita_nombre_manual(qtbot):
+    from gui_qt.files.dialogs import FixIdentificationDialog
+    e = FileEntry(ENCORE)
+    e.media_info = _endgame()
+    apply_manual_name(e, "Encore (2026)")
+    d = FixIdentificationDialog(None, e, manual=False)
+    qtbot.addWidget(d)
+    assert not d.use_manual.isChecked() and not d.name.isEnabled()
+    d.title.setText("Avengers Endgame")
+    d._save()
+    assert d.mode == "search"
+    assert e.detected["title"] == "Avengers Endgame"
+    assert not e.has_manual_name
+
+
+def test_dialogo_abre_en_modo_manual_si_ya_tenia_nombre_manual(qtbot):
+    from gui_qt.files.dialogs import FixIdentificationDialog
+    e = FileEntry(ENCORE)
+    e.media_info = _endgame()
+    apply_manual_name(e, "Encore (2026)")
+    d = FixIdentificationDialog(None, e)
+    qtbot.addWidget(d)
+    assert d.use_manual.isChecked() and not d.title.isEnabled()
+    assert d.name.text() == "Encore (2026)"
+
+
+def test_dialogo_modo_manual_aplica_nombre_y_enseña_errores(qtbot):
+    from gui_qt.files.dialogs import FixIdentificationDialog
+    e = FileEntry(ENCORE)
+    e.status = "omitido"
+    d = FixIdentificationDialog(None, e, manual=True)
+    qtbot.addWidget(d)
+    d.name.setText("Endgame: x")
+    d._save()
+    assert d.error.text() and d.result() == 0
+    d.name.setText("Vengadores Endgame Encore (2026)")
+    d._save()
+    assert d.mode == "manual" and e.new_name == "Vengadores Endgame Encore (2026).mkv"
+    assert e.status == "listo"
+
+
+def test_dialogo_no_deja_nombre_manual_si_ya_esta_subido(qtbot):
+    from gui_qt.files.dialogs import FixIdentificationDialog
+    e = FileEntry(ENCORE)
+    e.status = "subido"
+    d = FixIdentificationDialog(None, e, manual=True)
+    qtbot.addWidget(d)
+    assert not d.use_manual.isEnabled() and not d.use_manual.isChecked()
