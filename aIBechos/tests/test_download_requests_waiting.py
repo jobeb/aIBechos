@@ -90,3 +90,29 @@ def test_otros_fallos_o_pelis_viejas_o_series_si_fallan():
     # el año anterior todavía cuenta como reciente
     assert dr.release(_agotada("2025"), "r1", user="Jose", error="no encontrado",
                       now=now)["r1"]["status"] == "waiting"
+
+
+def _piloto(year="2026", **kw):
+    _, e = dr.new_request(9, "tv", "Serie Nueva", "Efren", season=1, episode=1,
+                          year=year, now=100.0)
+    e.update(status="claimed", claimed_by="Jose", attempts=dr.MAX_ATTEMPTS - 1, **kw)
+    return {"r1": e}
+
+
+def test_piloto_presolicitado_sin_fuentes_vuelve_a_esperar():
+    # Presolicitado sin estrenar y pasado a la cola por la web
+    # (promoted_at): recién emitido, aMule aún no lo tiene.
+    now = _now(2026)
+    out = dr.release(_piloto(promoted_at=now - 3600), "r1", user="Jose",
+                     error="no encontrado", now=now)
+    assert out["r1"]["status"] == "waiting" and out["r1"]["waiting_reason"] == "sin_fuentes"
+
+
+def test_capitulo_normal_o_piloto_no_presolicitado_si_fallan():
+    now = _now(2026)
+    assert dr.release(_piloto(), "r1", user="Jose", error="no encontrado",
+                      now=now)["r1"]["status"] == "failed"
+    data = _piloto(promoted_at=now - 3600)
+    data["r1"]["episode"] = 2
+    assert dr.release(data, "r1", user="Jose", error="no encontrado",
+                      now=now)["r1"]["status"] == "failed"

@@ -89,7 +89,8 @@ PRUNE_AFTER_SECONDS = 30 * 86400
 
 _VALID_MEDIA_TYPES = ("tv", "movie")
 #: "waiting" = presolicitada desde la web: una peli que aún no se puede
-#: conseguir (sin estrenar o solo en cines). Ningún equipo la reclama; la
+#: conseguir (sin estrenar o solo en cines) o el piloto (1x01) de una
+#: serie sin estrenar. Ningún equipo la reclama; la
 #: web la pasa a "pending" cuando ya hay de dónde descargarla (ver
 #: sol_waiting_check en solicitudes-web/api/lib.php).
 _VALID_STATUSES = ("waiting", "pending", "claimed", "downloading", "done", "failed", "cancelled")
@@ -297,10 +298,16 @@ _NO_SOURCES_HINTS = ("no encontrado", "sin candidato", "sin resultados")
 
 def should_wait_for_sources(entry: dict, error: str = "", now: float | None = None) -> bool:
     """¿Esta solicitud agotada debe seguir esperando fuentes en vez de
-    fallar? Solo pelis de este año o el anterior, sin encontrar nada, y
-    sin pasar de SOURCES_GIVE_UP_SECONDS esperando. Nunca lanza."""
+    fallar? Solo pelis de este año o el anterior (o el piloto de una
+    serie que se presolicitó sin estrenar: recién emitido, aMule suele
+    tardar en tenerlo), sin encontrar nada, y sin pasar de
+    SOURCES_GIVE_UP_SECONDS esperando. Nunca lanza."""
     try:
-        if entry.get("media_type") != "movie" or entry.get("replace"):
+        if entry.get("replace"):
+            return False
+        pilot = (entry.get("media_type") == "tv" and entry.get("season") == 1
+                 and entry.get("episode") == 1 and bool(entry.get("promoted_at")))
+        if entry.get("media_type") != "movie" and not pilot:
             return False
         why = str(error or entry.get("last_error") or "").lower()
         if not any(h in why for h in _NO_SOURCES_HINTS):
