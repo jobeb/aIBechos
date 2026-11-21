@@ -37,6 +37,7 @@ from core.upload_progress import report as _report_upload_progress
 from core.upload_progress import discard as _discard_upload_progress
 from core.appdirs import app_data_dir
 from core.applog import get_logger
+from core.atomic_write import write_json_atomic
 from core.path_key import canon_path
 
 
@@ -128,7 +129,7 @@ def mark_discarded(path: str) -> bool:
                 return False
             db[key] = {"status": "descartado", "new_name": "", "ts": time.time()}
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json_atomic(p, db)
             _log.info("Descartado a mano desde la lista: %s", Path(path).name)
             return True
     except Exception:
@@ -180,6 +181,20 @@ _LOCKED_FILE_HINTS = (
     "resource busy", "ebusy", "device or resource busy",
     "permission denied", "acceso denegado",
 )
+
+
+def tmdb_title_confidence(detected_title: str, result: dict) -> int:
+    """Parecido (0-100) entre el título detectado y el resultado de TMDB,
+    contra el título traducido Y el original: TMDB responde en es-ES, y
+    "Promising Young Woman (2020)" contra "Una joven prometedora" daba 29 %
+    y el modo automático la rechazaba siempre aunque fuese la correcta."""
+    wanted = (detected_title or "").lower()
+    best = 0.0
+    for key in ("name", "title", "original_name", "original_title"):
+        cand = (result.get(key) or "").lower()
+        if cand:
+            best = max(best, difflib.SequenceMatcher(None, wanted, cand).ratio())
+    return round(best * 100)
 
 
 def _upload_tick_due(last_pct, last_ts, pct, now,
@@ -880,8 +895,7 @@ class AutoWatcher:
 
                 # Comprobar confianza mínima
                 result_title = (result.get("name", "") or result.get("title", "")).lower()
-                confidence   = round(difflib.SequenceMatcher(
-                    None, detected["title"].lower(), result_title).ratio() * 100)
+                confidence = tmdb_title_confidence(detected["title"], result)
                 _log.debug("TMDB match: '%s' | confianza=%d%% (mín=%d%%)", result_title, confidence, min_conf)
                 if min_conf > 0 and confidence < min_conf:
                     _log.warning("Confianza insuficiente (%d%% < %d%%): %s → '%s'",
@@ -1818,8 +1832,7 @@ class AutoWatcher:
             with _DB_LOCK:
                 db = self._load_db()
                 db[key] = entry
-                _processed_db_path().write_text(
-                    json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+                write_json_atomic(_processed_db_path(), db)
         except Exception:
             pass
 
@@ -1835,7 +1848,6 @@ class AutoWatcher:
                 db = self._load_db()
                 if key in db:
                     del db[key]
-                    _processed_db_path().write_text(
-                        json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+                    write_json_atomic(_processed_db_path(), db)
         except Exception:
             pass

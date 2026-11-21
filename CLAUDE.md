@@ -77,6 +77,7 @@ aIBechos/
 │   ├── app_cleanup_core.py  # CleanupCoreMixin — Liberar espacio: scan, per-episode files, slim (lighter copy), delete workers, delete-series flow
 │   ├── app_watch_sync_core.py # WatchSyncCoreMixin — Plex↔Jellyfin watched-state sync: collect/apply, history, scheduled run
 │   ├── app_settings_core.py # SettingsCoreMixin — _commit_settings (save + apply live), server-config sync/publish/discard, client export/import, autostart per platform, one-time rename migrations, update check
+│   ├── update_check.py / self_update.py # new-release check on GitHub; auto-update: download the asset for this install kind, helper script swaps files after exit and relaunches
 │   ├── fmt.py / status_colors.py # size/speed formatting and _set_status colors usable from core/
 │   ├── amule_download.py    # auto_download() (search aMule + best_result + launch) and typical_size_for_series(); EC_LOCK
 │   └── download_requests.py # download-request queue shared with the mobile web (solicitudes-web/): pure ops (new/claim/release/mark/merge/prune), never touches network; the desktop worker is core/app_download_requests.py
@@ -208,6 +209,10 @@ Polls the watch folder every `poll_interval` seconds (default 10), recursively (
 6. Persists the result to `auto_processed.json` so files aren't reprocessed
 
 Launches minimized to tray when started with `--minimized` argument (used by the autostart entry — Windows Registry `Run` key or macOS LaunchAgent, see below).
+
+## Auto-update
+
+`auto_update` (default on, Ajustes → General) makes the startup/6-hourly check install new releases without asking: `SettingsCoreMixin._start_auto_update` → `core/self_update.py`. `install_kind()` picks the asset by how the app is installed — `installer` (Windows, `unins000.exe` next to the exe → `aIBechos_Setup_*.exe /VERYSILENT`), `portable_win` (`*_windows.zip`), `macos` (`.dmg`, mounted and the `.app` copied), `linux` (`*_linux.tar.gz`); running from source → `None`, only the old notice. Download is verified by size and the GitHub `digest` (sha256). It waits until no upload is running and no modal dialog is open; with the window visible it warns and restarts 30 s later, from the tray it restarts at once with `--minimized`. A detached helper (PowerShell / `/bin/sh`, logs to `self_update.log`) waits for the PID to exit, swaps only the files the package brings (`_internal` + exe; old copies renamed `.old-<stamp>` and restored if the copy fails) and relaunches. Asset names are a contract with `.github/workflows/release.yml` — renaming them there breaks auto-update silently (it falls back to the notice). Any failure falls back to the old "update available" dialog, once per version per session.
 
 ## Platform notes
 

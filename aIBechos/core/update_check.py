@@ -1,7 +1,7 @@
 """
 Comprueba en GitHub Releases si hay una versión de aIBechos más nueva que
-la que se está ejecutando. Solo consulta y compara -- nunca descarga ni
-reemplaza nada, ver gui_qt/core_host.py::_show_update_dialog.
+la que se está ejecutando. Solo consulta y compara; la descarga e instalación
+automática está en core/self_update.py.
 """
 
 import requests
@@ -31,7 +31,8 @@ def _parse_version(tag: str) -> tuple:
 
 def latest_release_status(current_version: str, timeout: int = 10) -> dict:
     """Estado de la última release de GitHub frente a *current_version*:
-    {"status": "update", "tag", "url"} si hay una más nueva,
+    {"status": "update", "tag", "url", "assets"} si hay una más nueva
+    (assets: [{"name", "url", "size", "digest"}] de los adjuntos),
     {"status": "current", "tag"} si ya es la última (o una anterior), o
     {"status": "error", "error"} si la consulta falla o la respuesta no trae
     los campos esperados. No lanza nunca. La comprobación manual de Ajustes
@@ -59,7 +60,12 @@ def latest_release_status(current_version: str, timeout: int = 10) -> dict:
         return {"status": "error", "error": str(e)}
 
     _log.info("Nueva versión disponible: %s (actual: %s)", tag, current_version)
-    return {"status": "update", "tag": tag, "url": html_url}
+    assets = []
+    for a in data.get("assets") or []:
+        if isinstance(a, dict) and a.get("name") and a.get("browser_download_url"):
+            assets.append({"name": a["name"], "url": a["browser_download_url"],
+                           "size": a.get("size") or 0, "digest": a.get("digest") or ""})
+    return {"status": "update", "tag": tag, "url": html_url, "assets": assets}
 
 
 def check_for_update(current_version: str, timeout: int = 10):

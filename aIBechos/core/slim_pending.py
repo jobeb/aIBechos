@@ -42,6 +42,7 @@ import threading
 import time
 
 from core.appdirs import app_data_dir
+from core.atomic_write import write_json_atomic
 
 _FILENAME = "slim_pending.json"
 _MAX_AGE_SECS = 30 * 24 * 3600
@@ -107,10 +108,7 @@ def load_pending() -> list:
 
 
 def _save_locked(entries: list) -> None:
-    p = _path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(entries or [], ensure_ascii=False, indent=2),
-                 encoding="utf-8")
+    write_json_atomic(_path(), entries or [])
 
 
 def save_pending(entries: list) -> None:

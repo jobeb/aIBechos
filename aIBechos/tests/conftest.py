@@ -45,3 +45,15 @@ _appdirs._base_data_dir = lambda: _TEST_DATA_BASE
 from core import shared_data as _shared_data
 
 _shared_data.PARTIAL_RETRY_DELAY = 0
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clear_ai_judge_cache():
+    """El juez IA recuerda veredictos (core/ai_title_fallback.py): que un
+    test no herede los del anterior."""
+    from core import ai_title_fallback
+    ai_title_fallback._judge_cache.clear()
+    yield

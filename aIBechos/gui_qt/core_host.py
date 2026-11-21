@@ -203,6 +203,11 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         self._update_check_manual_waiting = False
         self._update_notified_tags: set = set()
         self._pending_update = None
+        # Actualización automática (SettingsCoreMixin._start_auto_update).
+        self._auto_update_tag = None          # versión descargándose o lista
+        self._auto_update_ready = None        # core.self_update.PreparedUpdate
+        self._auto_update_countdown = False   # aviso de "se reinicia en 30 s" ya dado
+        self._auto_update_failed_tags: set = set()
         # Listas de proveedores/filtros/pesos al scoring de aMule (como Tk al arrancar).
         self._apply_provider_lists(self.config_data)
 
@@ -487,6 +492,15 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         elif box.clickedButton() is skip_btn:
             self.config_data.set("skipped_update_version", tag)
             self.config_data.save()
+
+    def _ui_busy(self) -> bool:
+        """Hay un diálogo modal abierto: no cerrar la app debajo del usuario."""
+        from PySide6.QtWidgets import QApplication
+        return QApplication.activeModalWidget() is not None
+
+    def _quit_for_update(self):
+        if self.window is not None:
+            self.window.quit_app(confirmed=True)
 
     def _make_confirm_dialog(self, title, heading, body="", confirm_text="Aceptar",
                              cancel_text="Cancelar", confirm_color=None, **_kw):

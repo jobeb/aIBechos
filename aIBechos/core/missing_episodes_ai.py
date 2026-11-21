@@ -145,8 +145,41 @@ _DUB_SYSTEM_SUFFIX = (
 )
 
 
+#: Series por consulta. Con la biblioteca entera de una vez (102 series con
+#: huecos tras un escaneo) Groq respondía 413 Payload Too Large en cada
+#: escaneo y el veredicto no llegaba nunca.
+BATCH_SIZE = 20
+
+
 def analyze_missing_episodes(shows: list, api_key: str, model: str = DEFAULT_MODEL,
                               timeout: int = 30, check_spanish_dub: bool = False) -> dict:
+    """Ver _analyze_batch: lo mismo, en lotes de BATCH_SIZE series. Un lote
+    que aun así es demasiado grande (413) se parte por la mitad; un lote
+    que falla por otra cosa se salta y se sigue con los demás."""
+    if not api_key or not shows:
+        return {}
+    result = {}
+    pending = [list(shows[i:i + BATCH_SIZE]) for i in range(0, len(shows), BATCH_SIZE)]
+    while pending:
+        batch = pending.pop(0)
+        try:
+            result.update(_analyze_batch(batch, api_key, model, timeout, check_spanish_dub))
+        except _PayloadTooLarge:
+            if len(batch) > 1:
+                half = len(batch) // 2
+                pending[:0] = [batch[:half], batch[half:]]
+            else:
+                _log.warning("Veredicto de huecos: '%s' sola ya es demasiado grande para Groq",
+                             batch[0].get("name"))
+    return result
+
+
+class _PayloadTooLarge(Exception):
+    pass
+
+
+def _analyze_batch(shows: list, api_key: str, model: str = DEFAULT_MODEL,
+                   timeout: int = 30, check_spanish_dub: bool = False) -> dict:
     """*shows*: [{"tmdb_id", "name", "tmdb_seasons": {temporada: num_eps},
     "server_seasons": {temporada: num_eps}}, ...] -- solo series con alguna
     discrepancia (mandar la biblioteca entera no aporta nada, malgasta
@@ -224,6 +257,9 @@ def analyze_missing_episodes(shows: list, api_key: str, model: str = DEFAULT_MOD
         content = data["choices"][0]["message"]["content"]
         usage = data.get("usage", {})
     except Exception as e:
+        if getattr(getattr(e, "response", None), "status_code", None) == 413:
+            _log.info("Veredicto de huecos: %d series no caben en una consulta, se parte", len(shows))
+            raise _PayloadTooLarge() from e
         _log.warning("Fallo la consulta a Groq para el veredicto de huecos: %s", e)
         return {}
 

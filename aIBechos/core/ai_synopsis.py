@@ -16,6 +16,7 @@ import requests
 from core.ai_title_fallback import DEFAULT_MODEL, GROQ_URL
 from core.appdirs import app_data_dir
 from core.applog import get_logger
+from core.atomic_write import write_json_atomic
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 
@@ -54,7 +55,7 @@ def _save_cache(cache: dict) -> None:
     try:
         p = _cache_path()
         if p is not None:
-            p.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+            write_json_atomic(p, cache)
     except Exception:
         pass
 

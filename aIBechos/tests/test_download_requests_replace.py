@@ -63,6 +63,8 @@ def _cycle_app(data, launched, pushed):
     app._download_requests_publish_progress = MethodType(
         App._download_requests_publish_progress, app)
     app._download_request_cancel_amule = lambda entry, data=None: True
+    app._download_requests_done_before_launch = MethodType(
+        App._download_requests_done_before_launch, app)
     app._download_requests_sweep_ts = 9999999999.0   # barrido apagado salvo test propio
 
     def _launch(d, rid):
@@ -453,3 +455,71 @@ def test_launch_amule_no_disponible_no_gasta_intento():
     assert nd["s"]["status"] == "pending"
     assert nd["s"]["attempts"] == 2
     assert nd["s"]["last_error"] == "aMule no disponible"
+
+
+def test_ciclo_no_lanza_lo_recien_reclamado_que_ya_esta_en_el_servidor(monkeypatch):
+    """Caso real: La Odisea pedida el 20/11 con la peli subida el 17. Lo
+    recién reclamado no pasaba por check_done (solo lo de ciclos
+    anteriores): se descargaba en aMule y días después llegaba como
+    "Omitido: ya existe en el servidor". Ahora se completa sin lanzar;
+    lo que falta de verdad se sigue lanzando."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {"odisea": {"tmdb_id": 1, "media_type": "movie", "title": "La Odisea",
+                       "status": "pending", "claimed_by": "", "claimed_at": 0,
+                       "requested_at": now, "attempts": 0},
+            "falta": {"tmdb_id": 2, "media_type": "movie", "title": "Otra",
+                      "status": "pending", "claimed_by": "", "claimed_at": 0,
+                      "requested_at": now, "attempts": 0}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    avisos = []
+    app._download_requests_notify_web = lambda: avisos.append(1)
+    vistos = []
+    app._download_requests_server_index = lambda wanted: vistos.append(set(wanted)) or {"movies": {1}}
+    app._download_request_check_done = (
+        lambda entry, idx=None: "done" if entry.get("tmdb_id") in (idx or {}).get("movies", ()) else None)
+    App._download_requests_cycle(app)
+    assert launched == ["falta"]
+    assert {1, 2} in vistos, "se mira el servidor para lo recién reclamado"
+    assert pushed[-1]["odisea"]["status"] == "done"
+    assert pushed[-1]["falta"]["status"] == "downloading"
+    assert avisos == [1], "la web avisa de la completada"
+
+
+def test_sustitucion_recien_reclamada_se_lanza_aunque_ya_este(monkeypatch):
+    """Una sustitución ya estaba en el servidor por definición: no se da
+    por completada antes de descargar la copia nueva."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {"carrie": {"tmdb_id": 7, "media_type": "movie", "title": "Carrie",
+                       "status": "pending", "claimed_by": "", "claimed_at": 0,
+                       "requested_at": now, "attempts": 0, "replace": True}}
+    assert dr.is_replacement(data["carrie"])
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    app._download_requests_notify_web = lambda: None
+    app._download_requests_server_index = lambda wanted: {"movies": {7}}
+    app._download_request_check_done = lambda entry, idx=None: "done"
+    App._download_requests_cycle(app)
+    assert launched == ["carrie"]
+
+
+def test_indice_servidor_casa_por_carpeta_si_jellyfin_identifico_mal(monkeypatch):
+    """Real: Jellyfin tenía la carpeta "Veneno" (2020) como "Suave Veneno"
+    (otro tmdb_id y nombre). Por tmdb y por nombre no casa; por carpeta,
+    sí, y la solicitud de Veneno 1x01 se da por cumplida."""
+    from core import media_server_refresh as msr
+    monkeypatch.setattr(msr, "get_jellyfin_series", lambda h, k: [
+        {"id": "a", "name": "Suave Veneno", "tmdb_id": 58531, "folder_name": "Suave Veneno"},
+        {"id": "b", "name": "Suave Veneno", "tmdb_id": 58531, "folder_name": "Veneno"}])
+    monkeypatch.setattr(msr, "get_jellyfin_episodes",
+                        lambda h, k, sid: [(1, e) for e in range(1, 9)] if sid == "b" else [(1, 1)])
+    app = SimpleNamespace(config_data={"jellyfin_host": "http://j", "jellyfin_api_key": "k"})
+    idx = App._download_requests_server_index(
+        app, {100834: {"media_type": "tv", "title": "Veneno", "year": "2020"},
+              58531: {"media_type": "tv", "title": "Suave Veneno", "year": "1999"}})
+    assert idx["series"][100834] == {(1, e) for e in range(1, 9)}
+    assert idx["series"][58531] == {(1, 1)}, "el tmdb exacto sigue mandando"

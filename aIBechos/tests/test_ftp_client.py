@@ -702,7 +702,7 @@ class _FakeFtpBlob:
         remote_path = cmd.split(" ", 1)[1]
         self.files[remote_path] = fp.read()
 
-    def retrbinary(self, cmd, write_cb):
+    def retrbinary(self, cmd, write_cb, blocksize=8192):
         remote_path = cmd.split(" ", 1)[1]
         if remote_path not in self.files:
             raise ftplib.error_perm("550 no existe")

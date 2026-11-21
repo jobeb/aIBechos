@@ -26,8 +26,12 @@ def build_new_name(info: MediaInfo, template: str, ext: str) -> str:
     replacements = {
         "serie": _sanitize(info.title),
         "titulo": _sanitize(info.episode_title or ""),
-        "temporada": info.season or 1,
-        "episodio": info.episode or 1,
+        # "is None", no "or 1": la temporada 0 (especiales de TMDB) y el
+        # episodio 0 son números de verdad. Con "or 1" "Doctor Who S00E05"
+        # se renombraba "1x05" y pisaba (o se tomaba por duplicado de) el
+        # 1x05 de verdad.
+        "temporada": 1 if info.season is None else info.season,
+        "episodio": 1 if info.episode is None else info.episode,
         "año": info.year or "",
         "ext": ext,
     }

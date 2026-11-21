@@ -22,6 +22,23 @@ def _err_text(e: Exception) -> str:
     return str(e) or e.__class__.__name__
 
 
+#: Errores del disco LOCAL al escribir una descarga FTP (download_file, solo
+#: FTP: SFTP la redefine). Los errores de red de ftplib son otros OSError
+#: (ConnectionError, TimeoutError, gaierror) y no caen aquí.
+_LOCAL_FILE_ERRORS = (FileNotFoundError, PermissionError, IsADirectoryError, NotADirectoryError)
+
+
+def _local_readable(local_path: str) -> bool:
+    """¿Se puede seguir leyendo el archivo local? Distingue, tras un
+    OSError subiendo, un fallo del archivo local de uno de red/servidor."""
+    try:
+        with open(local_path, "rb") as f:
+            f.read(1)
+        return True
+    except OSError:
+        return False
+
+
 def _tmp_name(remote_path: str) -> str:
     """Temporal oculto y único en la MISMA carpeta que *remote_path* (el
     rename final tiene que quedarse en el mismo disco para ser atómico)."""
@@ -114,7 +131,9 @@ class FTPClient:
         """
         replacements = {
             "serie": _ftp_safe(serie),
-            "temporada": season or 1,
+            # Temporada 0 = especiales: su carpeta, no la de la 1 (ver
+            # core/renamer.py::build_new_name).
+            "temporada": 1 if season is None else season,
             "año": year or "",
             "tipo": {"tv": "Series", "movie": "Películas", "libro": "Libros"}.get(media_type, "Películas"),
         }
@@ -833,11 +852,19 @@ class FTPClient:
             if "452" in str(e) or "quota" in str(e).lower() or "no space" in str(e).lower():
                 return False, "disco_lleno"
             return False, f"Error FTP: {_err_text(e)}"
+        except OSError as e:
+            # Antes de ftplib.all_errors (que incluye OSError): el archivo
+            # local borrado/bloqueado a mitad salía como "Error FTP" y
+            # tiraba una conexión que estaba bien. No se decide por el tipo
+            # (por SFTP paramiko lanza PermissionError/FileNotFoundError por
+            # errores del SERVIDOR) sino mirando si el local sigue legible.
+            if not isinstance(e, ftplib.Error) and not _local_readable(local_path):
+                return False, f"Error de archivo: {e}"
+            self.ftp = None  # Marcar como desconectado para forzar reconexión
+            return False, f"Error FTP: {_err_text(e)}"
         except ftplib.all_errors as e:
             self.ftp = None  # Marcar como desconectado para forzar reconexión
             return False, f"Error FTP: {_err_text(e)}"
-        except OSError as e:
-            return False, f"Error de archivo: {e}"
 
     def upload_bytes(self, data: bytes, remote_path: str) -> tuple[bool, str]:
         """Sube un blob pequeño (p.ej. el JSON de favoritos compartidos)
@@ -930,23 +957,26 @@ class FTPClient:
             return False, "No conectado al servidor FTP."
         try:
             received = [0]
-            def _write(chunk):
-                Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-                with open(local_path, "ab") as f:
-                    f.write(chunk)
-                received[0] += len(chunk)
-                if progress_cb:
-                    progress_cb(received[0])
-            # Empezar en blanco: si ya existía un intento anterior a medias,
-            # no se debe seguir escribiendo detrás de esos bytes.
+            # Un solo open() para toda la descarga ("wb": empezar en blanco
+            # si quedaba un intento anterior a medias). Antes se abría y
+            # cerraba el archivo por cada bloque de 8 KB: cientos de miles
+            # de aperturas en un archivo de varios GB.
             Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-            open(local_path, "wb").close()
-            self.ftp.retrbinary(f"RETR {remote_file}", _write)
+            with open(local_path, "wb") as f:
+                def _write(chunk):
+                    f.write(chunk)
+                    received[0] += len(chunk)
+                    if progress_cb:
+                        progress_cb(received[0])
+                self.ftp.retrbinary(f"RETR {remote_file}", _write, blocksize=1024 * 1024)
             return True, local_path
+        except OSError as e:
+            import errno
+            if isinstance(e, _LOCAL_FILE_ERRORS) or e.errno == errno.ENOSPC:
+                return False, f"Error de archivo: {e}"
+            return False, f"Error FTP: {_err_text(e)}"
         except ftplib.all_errors as e:
             return False, f"Error FTP: {_err_text(e)}"
-        except OSError as e:
-            return False, f"Error de archivo: {e}"
 
     def delete_file(self, remote_file: str, progress_cb: Optional[Callable[[str], None]] = None) -> tuple[bool, str]:
         """Borra un archivo del servidor FTP. progress_cb: igual que en

@@ -76,15 +76,13 @@ class MoviesCoreMixin:
                     _log.warning(
                         "Películas: no se pudo conectar al FTP para compartir la caché (%s)", _msg)
                     return
-                remote_cache = {}
-                raw = own_ftp.download_bytes(remote_path)
-                if raw:
-                    try:
-                        parsed = _json.loads(raw.decode("utf-8"))
-                        if isinstance(parsed, dict):
-                            remote_cache = parsed
-                    except ValueError:
-                        remote_cache = {}
+                # read_shared_json y no download_bytes: una lectura fallida
+                # (red, archivo a medias) se tomaba por "vacío" y se subía
+                # solo lo de este equipo encima, perdiendo lo de los demás.
+                remote_cache, _is_new = shared_data.read_shared_json(own_ftp, remote_path, "dict")
+                if remote_cache is None:
+                    _log.warning("Películas: no se pudo leer la caché compartida, no se toca")
+                    return
                 payload = merge_movies_cache(load_cache(), remote_cache)
                 data = _json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
                 up_ok, _up_msg = own_ftp.upload_bytes(data, remote_path)

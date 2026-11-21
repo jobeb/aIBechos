@@ -192,6 +192,13 @@ DEFAULTS = {
     # = ninguna descartada todavía. No se vuelve a avisar de esa MISMA
     # versión, pero sí de una posterior.
     "skipped_update_version": "",
+    # Descargar e instalar sola la versión nueva (core/self_update.py) y
+    # reiniciarse, sin preguntar. Apagado: solo avisa, como antes.
+    "auto_update": True,
+    # Última versión que la actualización automática intentó instalar. Si
+    # al arrancar seguimos por debajo de ella, falló: no se reintenta sola
+    # (ver SettingsCoreMixin._start_auto_update).
+    "auto_update_attempted_tag": "",
     # Ruta FTP (explícita, no deducida de ninguna categoría) donde se guarda
     # el JSON de favoritos compartido entre todos los clientes que apuntan
     # al mismo servidor -- ver core/favorites.py. Vacío = favoritos

@@ -156,13 +156,11 @@ class AutoCompleteMixin:
                     self.config_data.get("ftp_use_tls", False))
                 if not ok:
                     return
-                raw = own_ftp.download_bytes(remote_path)
-                try:
-                    remote_data = _json.loads(raw.decode("utf-8")) if raw else {}
-                except ValueError:
-                    remote_data = {}
-                if not isinstance(remote_data, dict):
-                    remote_data = {}
+                # read_shared_json: un fallo de lectura no es "lista vacía"
+                # (ver _push_reservations_to_ftp, mismo fallo).
+                remote_data, _is_new = shared_data.read_shared_json(own_ftp, remote_path, "dict")
+                if remote_data is None:
+                    return
                 merged = transform(remote_data)
                 data = _json.dumps(merged, ensure_ascii=False, indent=2).encode("utf-8")
                 up_ok, _up_msg = own_ftp.upload_bytes(data, remote_path)

@@ -60,6 +60,10 @@ class GeneralPage(Page):
                      "(al lado del reloj) y la app sigue funcionando en segundo plano.\n"
                      "Para salir del todo, usa \"Salir\" en el menú de la bandeja.")
         c.switch("Notificaciones de escritorio al completar subidas", "desktop_notifications", True)
+        c.switch("Actualizar automáticamente (instalar las versiones nuevas sin preguntar)",
+                 "auto_update", True,
+                 tip="Descarga la versión nueva, espera a que no haya subidas en curso,\n"
+                     "la instala y reinicia la app sola. Apagado: solo avisa.")
         c.switch("Descargar capítulos sin doblaje castellano confirmado", "download_undubbed", False,
                  tip="Si está apagado (recomendado), el autocompletado solo descarga capítulos con\n"
                      "doblaje confirmado. Si lo enciendes, también baja los aún sin doblar.\n"

@@ -47,6 +47,7 @@ from core.app_files_identify import FilesIdentifyMixin
 from core.app_files_upload import FilesUploadMixin
 from core.appdirs import app_data_dir as _appdata_dir, is_macos, is_windows
 from core.applog import get_logger
+from core.atomic_write import write_json_atomic
 from core.file_entry import FileEntry, _dedupe_entries, _entries_from_dicts
 from core.fmt import fmt_size as _fmt_size
 from core.renamer import is_archive_file, is_book_file, is_video_file
@@ -501,7 +502,7 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                         entry["prev_status"]   = prev_status
                         entry["prev_new_name"] = prev.get("new_name", "")
                 db[key] = entry
-                p.write_text(_json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+                write_json_atomic(p, db)
         except Exception:
             pass
 
@@ -525,7 +526,7 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                 key = self._db_key(original_path)
                 if key in db:
                     self._restore_or_delete_entry(db, key)
-                    p.write_text(_json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+                    write_json_atomic(p, db)
         except Exception:
             pass
 
@@ -1476,6 +1477,6 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                     return
                 for k in stale:
                     self._restore_or_delete_entry(db, k)
-                p.write_text(_json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+                write_json_atomic(p, db)
         except Exception:
             pass

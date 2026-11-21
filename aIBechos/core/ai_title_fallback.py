@@ -9,6 +9,8 @@ quede constancia de cuándo y cuántas veces se usa la IA.
 """
 
 import json
+import threading
+import time
 from typing import Optional
 
 import requests
@@ -196,6 +198,15 @@ JUDGE_SYSTEM_PROMPT = (
 )
 
 
+#: Veredictos ya dados, por (modelo, pedido, nombre y tamaño del candidato)
+#: -- sin las fuentes, que cambian en cada búsqueda. Sin esto cada reintento
+#: del autocompletado/solicitudes volvía a preguntar por los mismos archivos
+#: (56 de 59 consultas de un día, hasta 7 veces el mismo candidato).
+JUDGE_CACHE_TTL = 24 * 3600
+_judge_cache: dict = {}
+_judge_cache_lock = threading.Lock()
+
+
 def judge_download_candidate(wanted: dict, candidate: dict, api_key: str,
                              model: str = DEFAULT_MODEL, timeout: int = 20) -> Optional[dict]:
     """Juez IA de un candidato de aMule antes de descargarlo (ver
@@ -213,6 +224,13 @@ def judge_download_candidate(wanted: dict, candidate: dict, api_key: str,
                  (f", tamaño esperado {expected_size}" if expected_size else "") +
                  f"\nCandidato: '{candidate.get('name', '')}' " +
                  f"({candidate.get('size_human', '?')}, {candidate.get('sources', '?')} fuentes)")
+    cache_key = (model, kind, title, year, expected_size,
+                 str(candidate.get("name", "")), str(candidate.get("size_human", "")))
+    now = time.time()
+    with _judge_cache_lock:
+        hit = _judge_cache.get(cache_key)
+    if hit and now - hit[0] < JUDGE_CACHE_TTL:
+        return dict(hit[1])
     _log.info("Juez Groq (modelo=%s): %s", model, user_text.replace("\n", " | "))
     try:
         resp = requests.post(
@@ -245,7 +263,12 @@ def judge_download_candidate(wanted: dict, candidate: dict, api_key: str,
         _log.warning("Juez Groq veredicto desconocido %r — %r", verdict, content)
         return None
     _log.info("Juez Groq: %s (%s)", verdict, reason)
-    return {"verdict": verdict, "reason": reason or verdict}
+    result = {"verdict": verdict, "reason": reason or verdict}
+    with _judge_cache_lock:
+        if len(_judge_cache) > 2000:
+            _judge_cache.clear()
+        _judge_cache[cache_key] = (now, dict(result))
+    return result
 
 
 def validate_api_key(api_key: str, timeout: int = 10) -> bool:

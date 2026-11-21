@@ -12,6 +12,7 @@ import time as _time
 from pathlib import Path
 
 from core.applog import get_logger
+from core.atomic_write import write_json_atomic
 from core.fmt import fmt_size as _fmt_size
 from core.ftp_categories import choose_category
 from core.ftp_client import _ftp_safe
@@ -179,7 +180,7 @@ class FilesUploadMixin:
                         entry["prev_status"] = prev_status
                         entry["prev_new_name"] = prev.get("new_name", "")
                     db[key] = entry
-                p.write_text(_json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+                write_json_atomic(p, db)
         except Exception:
             pass
 
@@ -212,7 +213,7 @@ class FilesUploadMixin:
                         self._restore_or_delete_entry(db, key)
                         touched = True
                 if touched:
-                    p.write_text(_json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+                    write_json_atomic(p, db)
         except Exception:
             pass
 

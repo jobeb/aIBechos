@@ -353,6 +353,24 @@ class DownloadRequestsMixin:
             else:
                 self._download_requests_carry = _dr.merge(
                     getattr(self, "_download_requests_carry", None) or {}, data)
+        # Lo recién reclamado no ha pasado por check_done (eso solo mira
+        # my_ids, de antes de reclamar): sin esto se lanzaba en aMule algo
+        # que ya estaba en el servidor y días después llegaba como
+        # "Omitido: ya existe en el servidor" (real: La Odisea pedida el
+        # 20/11 con la peli subida el 17; Beastars 1x12, Pequeños
+        # profetas 1x04).
+        if claimed_now:
+            try:
+                data, _pre_done = self._download_requests_done_before_launch(
+                    data, claimed_now, user)
+            except Exception:
+                _log.debug("Solicitudes: no se pudo comprobar lo reclamado antes de lanzar",
+                           exc_info=True)
+                _pre_done = []
+            if _pre_done:
+                changed = True
+                done_now += len(_pre_done)
+                claimed_now = [r for r in claimed_now if r not in _pre_done]
         amule_down = False
         for rid in list(claimed_now) + [rid for rid in my_ids
                                         if isinstance(data.get(rid), dict)
@@ -409,6 +427,45 @@ class DownloadRequestsMixin:
             else:
                 self._download_requests_carry = _dr.merge(
                     getattr(self, "_download_requests_carry", None) or {}, data)
+
+    def _download_requests_done_before_launch(self, data: dict, rids: list, user: str):
+        """Marca "done" (sin lanzar nada en aMule) las solicitudes de *rids*
+        que ya están en el servidor. Devuelve (data, ids_completadas).
+        Las sustituciones no cuentan: ya estaba, y se pide otra copia."""
+        from core import download_requests as _dr
+        wanted = {}
+        for rid in rids:
+            entry = data.get(rid) or {}
+            if _dr.is_replacement(entry):
+                continue
+            try:
+                tid = int(entry.get("tmdb_id"))
+            except (TypeError, ValueError):
+                continue
+            wanted[tid] = {"media_type": entry.get("media_type"),
+                           "title": entry.get("title"),
+                           "year": entry.get("year")}
+        if not wanted:
+            return data, []
+        try:
+            server_index = self._download_requests_server_index(wanted)
+        except Exception:
+            server_index = {}
+        done = []
+        for rid in rids:
+            entry = data.get(rid) or {}
+            if _dr.is_replacement(entry):
+                continue
+            if self._download_request_check_done(entry, server_index) != "done":
+                continue
+            nd = _dr.mark_status(data, rid, "done", user=user)
+            if nd is None:
+                continue
+            data = nd
+            done.append(rid)
+            _log.info("Solicitudes: %s ya está en el servidor, completada sin descargar",
+                      _dr.describe(data.get(rid) or {}))
+        return data, done
 
     def _download_request_cancel_amule(self, entry: dict, data: dict | None = None) -> bool:
         """Quita de aMule la descarga de una solicitud cancelada desde la
@@ -1171,6 +1228,20 @@ class DownloadRequestsMixin:
                     return it
             return None
 
+        def _find_by_folder(items, title, year):
+            # Último recurso, solo series: la carpeta del servidor cuando
+            # Jellyfin identificó mal la ficha. Caso real: la carpeta
+            # "Veneno" (2020) figuraba en Jellyfin como "Suave Veneno"
+            # (otro tmdb_id y otro nombre); la solicitud de "Veneno 1x01"
+            # no se daba nunca por cumplida y se relanzaba cada 4 horas.
+            # Por episodio, el done sigue exigiendo el (temporada, episodio).
+            for it in items or []:
+                if not isinstance(it, dict) or not it.get("folder_name"):
+                    continue
+                if _dr.names_match(title, year, it.get("folder_name") or "", None):
+                    return it
+            return None
+
         jhost = (self.config_data.get("jellyfin_host", "") or "").strip()
         jkey = (self.config_data.get("jellyfin_api_key", "") or "").strip()
         if jhost and jkey:
@@ -1189,8 +1260,10 @@ class DownloadRequestsMixin:
                     for tmdb, info in wanted_tv.items():
                         if tmdb in index["series"]:
                             continue
-                        item = _find_item(jseries, tmdb, info.get("title"),
-                                          info.get("year"))
+                        item = (_find_item(jseries, tmdb, info.get("title"),
+                                           info.get("year"))
+                                or _find_by_folder(jseries, info.get("title"),
+                                                   info.get("year")))
                         if item is None:
                             continue
                         try:
@@ -1220,9 +1293,11 @@ class DownloadRequestsMixin:
                         pseries = _msr2.get_plex_series(phost, ptoken) or []
                         for tmdb in missing_tv:
                             info = wanted_tv[tmdb]
-                            item = _find_item(pseries, tmdb,
-                                              info.get("title"),
-                                              info.get("year"))
+                            item = (_find_item(pseries, tmdb,
+                                               info.get("title"),
+                                               info.get("year"))
+                                    or _find_by_folder(pseries, info.get("title"),
+                                                       info.get("year")))
                             if item is None:
                                 continue
                             try:

@@ -19,6 +19,7 @@ log y pareciera un fallo del registro de subidas.
 """
 
 import logging
+import re
 import threading
 from logging.handlers import RotatingFileHandler
 
@@ -29,6 +30,22 @@ from core.version import __version__
 # compartido por todos los loggers que escriban en él.
 _handlers: dict[str, RotatingFileHandler] = {}
 _lock = threading.Lock()
+
+# Credenciales que acaban en el texto de las excepciones de requests (la URL
+# entera va en "Max retries exceeded with url: ...?X-Plex-Token=..."): antes
+# el token de Plex salía en claro en media_refresh.log miles de veces.
+_SECRET_RE = re.compile(
+    r"((?<![\w-])(?:X-Plex-Token|api_key|apikey|api-key|access_token|token|key)=)[^&\s'\")]+",
+    re.IGNORECASE)
+
+
+def redact(text: str) -> str:
+    return _SECRET_RE.sub(r"\1***", text)
+
+
+class _RedactingFormatter(logging.Formatter):
+    def format(self, record):
+        return redact(super().format(record))
 
 
 def get_logger(name: str, filename: str, level: int = logging.INFO) -> logging.Logger:
@@ -46,7 +63,7 @@ def get_logger(name: str, filename: str, level: int = logging.INFO) -> logging.L
             fh = RotatingFileHandler(app_data_dir() / filename,
                                      maxBytes=2 * 1024 * 1024, backupCount=2,
                                      encoding="utf-8")
-            fh.setFormatter(logging.Formatter(
+            fh.setFormatter(_RedactingFormatter(
                 "%(asctime)s [%(levelname)s] %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S"))
             _handlers[filename] = fh

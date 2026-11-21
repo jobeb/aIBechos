@@ -19,7 +19,8 @@ import traceback
 
 #: Módulos que se importan dentro de funciones (no al arrancar) y que,
 #: si PyInstaller no los empaqueta, solo fallan al usarlos.
-LATE_IMPORTS = ("keyring", "paramiko", "py7zr", "rarfile", "requests", "PIL")
+LATE_IMPORTS = ("keyring", "paramiko", "py7zr", "rarfile", "requests", "PIL",
+                "core.self_update", "core.update_check")
 
 #: La interfaz entera: cada pestaña importa sus módulos de core/.
 UI_MODULES = ("gui_qt.app", "gui_qt.main_window", "gui_qt.core_host", "gui_qt.context",

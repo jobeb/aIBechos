@@ -29,7 +29,8 @@ binaries = []
 # una función no lo ve el analizador de PyInstaller, así que en el ejecutable
 # faltaría y SFTP fallaría solo en la versión instalada, no ejecutando el
 # código fuente.
-hiddenimports = ['paramiko']
+# core.self_update se importa dentro de una función (como paramiko): explícito.
+hiddenimports = ['paramiko', 'core.self_update']
 
 # PySide6 no necesita nada aquí: el hook que trae PyInstaller (vía
 # pyinstaller-hooks-contrib) ya empaqueta los módulos Qt importados y sus

@@ -9,7 +9,7 @@ aviso de versión nueva. Mixin que hereda QtAppCore
 Ganchos de interfaz: _error_dialog/_warn_dialog/_ask_yes_no, _ask_save_path/
 _ask_open_path, _make_rename_reservations_dialog, _make_confirm_dialog,
 _on_server_config_applied, _on_config_imported, _show_update_dialog,
-_invalidate_missing_ep_detail_frames.
+_invalidate_missing_ep_detail_frames, _ui_busy, _quit_for_update.
 """
 
 import json
@@ -340,12 +340,18 @@ class SettingsCoreMixin:
     def _check_for_updates_at_startup(self):
         """Al arrancar y cada UPDATE_CHECK_INTERVAL_MS (la app vive días en
         la bandeja: solo al abrir no se enteraba de una versión nueva)."""
+        if self._auto_update_tag is None:
+            # Lo descargado para una actualización ya instalada (o
+            # abandonada) no se queda ocupando 50-100 MB para siempre.
+            from core import self_update
+            threading.Thread(target=self_update.cleanup_leftovers, daemon=True).start()
         self._check_for_updates(manual=False)
 
     def _check_for_updates(self, manual: bool = False):
         """Comprueba en segundo plano si hay una versión más nueva publicada
-        en GitHub Releases (core/update_check.py). Nunca descarga ni
-        reemplaza el ejecutable en sitio.
+        en GitHub Releases (core/update_check.py). Con "auto_update"
+        (por defecto) la descarga, instala y reinicia sin preguntar
+        (_start_auto_update); si no se puede, avisa como se describe aquí.
 
         Automática (*manual* False): silenciosa si falla o si ya es la
         última; respeta "Saltar esta versión" y avisa una sola vez por
@@ -378,22 +384,9 @@ class SettingsCoreMixin:
         self._update_check_manual_waiting = False
         status = st.get("status")
         if status == "update":
-            tag, url = st.get("tag", ""), st.get("url", "")
-            if manual:
-                self.settings_view.on_update_check_done(f"Disponible {tag}")
-                self._show_update_dialog(tag, url)
+            if self.config_data.get("auto_update", True) and self._start_auto_update(st, manual):
                 return
-            if tag == self.config_data.get("skipped_update_version", "") \
-                    or tag in self._update_notified_tags:
-                return
-            self._update_notified_tags.add(tag)
-            if self._window_is_visible():
-                self._show_update_dialog(tag, url)
-            else:
-                self._pending_update = (tag, url)
-                self._send_notification("aIBechos — actualización disponible",
-                                        f"Ya está publicada la versión {tag}. "
-                                        "Abre la app para descargarla.")
+            self._notify_update_available(st.get("tag", ""), st.get("url", ""), manual)
             return
         if not manual:
             return
@@ -404,6 +397,119 @@ class SettingsCoreMixin:
             msg = "No se pudo comprobar si hay actualizaciones"
             self._set_status(f"{msg}: {st.get('error', '')}"[:200], ERROR_COLOR)
         self.settings_view.on_update_check_done(msg)
+
+    def _notify_update_available(self, tag: str, url: str, manual: bool):
+        """Sin actualización automática (desactivada, ejecutándose desde el
+        código fuente, release sin paquete para esta plataforma o descarga
+        fallida): el aviso de siempre con el enlace a la release."""
+        if manual:
+            self.settings_view.on_update_check_done(f"Disponible {tag}")
+            self._show_update_dialog(tag, url)
+            return
+        if tag == self.config_data.get("skipped_update_version", "")                 or tag in self._update_notified_tags:
+            return
+        self._update_notified_tags.add(tag)
+        if self._window_is_visible():
+            self._show_update_dialog(tag, url)
+        else:
+            self._pending_update = (tag, url)
+            self._send_notification("aIBechos — actualización disponible",
+                                    f"Ya está publicada la versión {tag}. "
+                                    "Abre la app para descargarla.")
+
+    # ── Actualización automática (core/self_update.py) ──
+
+    def _start_auto_update(self, st: dict, manual: bool) -> bool:
+        """Descarga en segundo plano el paquete de la versión nueva y, en
+        cuanto la app está libre, la instala y se reinicia sola, sin
+        preguntar. False si esta instalación no puede actualizarse sola
+        (entonces se avisa como antes)."""
+        from core import self_update
+        tag, url = st.get("tag", ""), st.get("url", "")
+        kind = self_update.install_kind()
+        if kind is None or tag in self._auto_update_failed_tags:
+            return False
+        if not manual and tag == self.config_data.get("auto_update_attempted_tag", ""):
+            # Ya se intentó instalar esta versión y seguimos en la vieja: la
+            # instalación falló (UAC rechazado en una instalación para todos
+            # los usuarios, archivos bloqueados...). Reintentarlo solo
+            # reiniciaría la app cada vez que arranca: se avisa como antes y
+            # el botón de Ajustes sigue pudiendo reintentar a mano.
+            _log.info("Actualización a %s ya intentada sin éxito: solo se avisa", tag)
+            return False
+        asset = self_update.pick_asset(st.get("assets"), kind)
+        if asset is None:
+            _log.info("Release %s sin paquete para '%s': solo se avisa", tag, kind)
+            return False
+        if self._auto_update_tag == tag:          # ya descargándose o lista
+            if manual:
+                self.settings_view.on_update_check_done(f"Instalando {tag}…")
+            return True
+        self._auto_update_tag = tag
+        if manual:
+            self.settings_view.on_update_check_done(f"Descargando {tag}…")
+        self._set_status(f"Descargando la versión {tag} para actualizar…", PENDING_COLOR)
+
+        def worker():
+            try:
+                prep = self_update.prepare(tag, asset, kind)
+            except Exception as e:
+                _log.warning("Actualización automática a %s fallida: %s", tag, e, exc_info=True)
+                err = str(e)
+                self.after(0, lambda: self._on_auto_update_failed(tag, url, err, manual))
+                return
+            self.after(0, lambda: self._on_auto_update_ready(prep))
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def _on_auto_update_failed(self, tag: str, url: str, err: str, manual: bool):
+        self._auto_update_tag = None
+        self._auto_update_failed_tags.add(tag)
+        self._set_status(f"No se pudo actualizar a {tag}: {err}"[:200], ERROR_COLOR)
+        self._notify_update_available(tag, url, manual)
+
+    def _on_auto_update_ready(self, prep):
+        self._auto_update_ready = prep
+        self._try_apply_auto_update()
+
+    def _try_apply_auto_update(self):
+        """Espera a que no haya subidas ni un diálogo abierto. Con la
+        ventana a la vista avisa y deja 30 s antes de reiniciar; en la
+        bandeja se reinicia ya (y vuelve a la bandeja)."""
+        prep = self._auto_update_ready
+        if prep is None:
+            return
+        if self._upload_running or self._ui_busy():
+            self.after(60_000, self._try_apply_auto_update)
+            return
+        if self._window_is_visible() and not self._auto_update_countdown:
+            self._auto_update_countdown = True
+            msg = f"aIBechos se actualizará a {prep.tag} y se reiniciará en 30 segundos."
+            self._set_status(msg, WARNING_COLOR)
+            self._send_notification("aIBechos — actualizando", msg)
+            self.after(30_000, self._try_apply_auto_update)
+            return
+        self._apply_auto_update(prep)
+
+    def _apply_auto_update(self, prep):
+        from core import self_update
+        launch_args = [] if self._window_is_visible() else ["--minimized"]
+        try:
+            # Antes de cerrar: si al volver a abrir seguimos en la versión
+            # vieja, _start_auto_update sabrá que falló y no lo repetirá.
+            self.config_data.set("auto_update_attempted_tag", prep.tag)
+            self.config_data.save()
+            self_update.launch_helper(prep, os.getpid(), launch_args)
+        except Exception as e:
+            _log.warning("No se pudo lanzar el auxiliar de actualización: %s", e, exc_info=True)
+            self._auto_update_ready = None
+            self._auto_update_countdown = False
+            from core.update_check import GITHUB_REPO
+            url = f"https://github.com/{GITHUB_REPO}/releases/tag/{prep.tag}"
+            self._on_auto_update_failed(prep.tag, url, str(e), False)
+            return
+        _log.info("Cerrando para actualizar a %s", prep.tag)
+        self._quit_for_update()
 
     def _show_pending_update(self):
         """Al abrir la ventana desde la bandeja: el diálogo de una versión

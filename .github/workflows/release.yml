@@ -187,14 +187,18 @@ jobs:
             ## aIBechos ${{ github.ref_name }}
 
             ### Novedades
-            - Episodios que faltan: lo ignorado (series, temporadas o episodios) ya no se pierde al escanear, si Jellyfin/Plex no responden o al sincronizar con otros equipos, y ahora es común a todos los usuarios. El botón 🚫 dice quién lo ignoró y cuándo, y el menú contextual tiene "Ignorar 30 días" (vuelve a contar solo).
-            - Episodios que faltan: un escaneo ya no deshace lo que pasó mientras escaneaba (un episodio subido ya no vuelve a salir como faltante).
-            - Solicitudes web: una solicitud fallida vuelve sola a la cola pasados 3 días, hasta 2 veces, y la web dice cuándo se reintentará.
-            - Favoritos y reservas: un cambio que no se pudo subir (sin red, FTP caído) ya no se pierde en la siguiente sincronización; se sube en cuanto se puede.
-            - Recomendado y Liberar espacio: con Jellyfin/Plex o el FTP sin responder, el análisis se cancela y se mantiene el anterior (antes Recomendado sugería lo que ya estaba en el servidor y Liberar espacio daba todo por "nunca visto").
-            - Archivos: la columna "Peso" ya no se queda en blanco cuando el archivo se movió o borró después de subirlo; las filas antiguas lo toman del historial.
-            - Archivos: al volver a la ventana, resumen de lo que hizo el modo automático mientras estaba en la bandeja ("12 subidos, 1 con error").
-            - Historial: resumen de lo subido (total, hoy y últimos 7 días) y peso en GB/TB.
+            - Actualización automática: las versiones nuevas se descargan e instalan solas (sin preguntar), cuando no hay subidas en marcha; con la ventana abierta avisa 30 s antes de reiniciar. Se puede desactivar en Ajustes → General. Funciona a partir de esta versión: desde la 2.1.0 hay que actualizar a mano una última vez.
+            - Archivos: poner un nombre a mano ("Usar este nombre exacto") y un solo diálogo "Corregir identificación" que vuelve a identificar el archivo al editar lo detectado.
+            - Archivos: los nombres ya no llevan comillas tipográficas de TMDB.
+            - Especiales: la temporada 0 y el episodio 0 se respetan (antes "S00E05" se renombraba 1x05 y pisaba el capítulo de verdad).
+            - Solicitudes web: lo que ya está en el servidor se da por completado sin descargarlo otra vez en aMule (antes llegaba días después como "Omitido: ya existe en el servidor").
+            - Solicitudes web: se reconoce una serie aunque Jellyfin/Plex la tenga mal identificada (se mira el nombre de la carpeta).
+            - Solicitudes web: un piloto pedido por adelantado espera a que haya fuentes en vez de fallar.
+            - Sincronización: si un archivo compartido del servidor no se puede leer, ya no se sobrescribe (reservas, autocompletado ⚡ y Recomendado podían perder los datos de los demás).
+            - Fiabilidad: los archivos de datos (procesados del modo automático, pendientes de aligerar, caché de sinopsis) se guardan de forma atómica y un corte ya no los corrompe.
+            - FTP: descargas más rápidas y errores del disco local (lleno, archivo bloqueado) que ya no se confunden con fallos del servidor.
+            - IA: el análisis de episodios que faltan se hace por tandas (ya no falla con listas largas) y el juez IA recuerda sus veredictos 24 h.
+            - Registros: los tokens y claves ya no se escriben en los logs.
 
             ### Instalación
             - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).
