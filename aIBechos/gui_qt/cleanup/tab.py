@@ -128,7 +128,10 @@ class CleanupModel(QAbstractItemModel):
         if parent.column() != 0:
             return False
         if n.kind == "item":
-            return not getattr(n.item, "loose_file_paths", None)   # carpeta: desplegable
+            # Carpeta: desplegable. Película suelta (sin carpeta): también,
+            # si el análisis trae el tamaño de sus archivos (adelgazar).
+            return (not getattr(n.item, "loose_file_paths", None)
+                    or bool(getattr(n.item, "loose_files", None)))
         return bool(n.children) or n.kind == "season"
 
     def columnCount(self, parent=QModelIndex()):
@@ -378,12 +381,12 @@ class CleanupTab(QWidget):
         note("El mismo contenido identificado en 2 o más sitios del servidor.")
         title("Adelgazar")
         self.slim_only = QCheckBox("Solo adelgazables")
-        self.flat = QCheckBox("Por capítulo")
+        self.flat = QCheckBox("Por capítulo/película")
         self.flat.toggled.connect(lambda _c: self.apply_filters())
         f.addWidget(self.slim_only)
         f.addWidget(self.flat)
         _cb, self.slim_ratio_e = num_row("", "2", "× el objetivo")
-        note("Capítulos muy por encima de su peso objetivo (deseado, mediana de la serie o techo por resolución).")
+        note("Capítulos y películas muy por encima de su peso objetivo (deseado, mediana de la serie o techo por resolución).")
         title("Protegidas")
         self.show_fav = QCheckBox("Mostrar favoritos")
         self.show_res = QCheckBox("Mostrar reservados")
@@ -509,7 +512,7 @@ class CleanupTab(QWidget):
                 self.flat.blockSignals(True)
                 self.flat.setChecked(False)
                 self.flat.blockSignals(False)
-                self.ctx.set_status("«Por capítulo» necesita un análisis reciente: pulsa «Analizar servidor».",
+                self.ctx.set_status("«Por capítulo/película» necesita un análisis reciente: pulsa «Analizar servidor».",
                                     WARNING_COLOR)
                 h._cleanup_flat_rows = []
             else:
@@ -578,7 +581,12 @@ class CleanupTab(QWidget):
             out.append(n)
             return n
 
+        is_movie = item.media_type != "tv"
+        unit = "la película" if is_movie else "ningún capítulo"
         files = h._cleanup_ep_files(item)
+        if files is None and getattr(item, "loose_file_paths", None):
+            add("info", "Sin tamaños por archivo: vuelve a pulsar «Analizar servidor» para poder adelgazarla.")
+            return out
         if files is None:
             if item.ftp_path in h._cleanup_slim_loading:
                 add("info", "Listando capítulos…")
@@ -600,7 +608,7 @@ class CleanupTab(QWidget):
             data={"cands": list(cands), "want_mb": f"{want / 1024 / 1024:g}" if want else ""})
         if not cands:
             src = "deseado" if want else "mediana/resolución"
-            add("info", f"Nada que adelgazar: ningún capítulo supera {h._cleanup_slim_ratio():g}× su objetivo ({src}).")
+            add("info", f"Nada que adelgazar: {unit} no supera {h._cleanup_slim_ratio():g}× su objetivo ({src}).")
             return out
         from core.slim_candidates import group_by_season
         grouped = group_by_season(cands)
@@ -805,7 +813,8 @@ class CleanupTab(QWidget):
                                enabled=not prot and not deleting))
             return acts
         if n.kind in ("file", "flat"):
-            return [Action("search", "🔍", theme.ICON_AMULE, "Buscar este capítulo en eMule para elegir la versión a mano."),
+            what = "esta película" if it.media_type != "tv" else "este capítulo"
+            return [Action("search", "🔍", theme.ICON_AMULE, f"Buscar {what} en eMule para elegir la versión a mano."),
                     Action("slim_one", "🪶", theme.ICON_DL_IDLE,
                            "Descarga automática de una versión más ligera (<85% del peso actual). Cuando "
                            "llegue, el gordo se borra solo del servidor.")]
@@ -813,10 +822,13 @@ class CleanupTab(QWidget):
             return [Action("slim_many", "🪶", theme.ICON_DL_IDLE,
                            f"Adelgazar esta temporada ({len(n.data['cands'])})")]
         if n.kind == "desired":
+            movie = it.media_type != "tv"
             acts = [Action("desired", "✎", theme.ICON_NEUTRAL,
-                           "Peso objetivo por capítulo de ESTA serie (MB). Manda sobre mediana y resolución. "
-                           "Vacío/0 = automático.")]
-            if n.data.get("cands"):
+                           ("Peso objetivo de ESTA película (MB). Manda sobre el techo por resolución. "
+                            if movie else
+                            "Peso objetivo por capítulo de ESTA serie (MB). Manda sobre mediana y resolución. ")
+                           + "Vacío/0 = automático.")]
+            if n.data.get("cands") and not movie:
                 acts.append(Action("slim_many", "🪶", theme.ICON_DL_IDLE,
                                    f"Adelgazar serie ({len(n.data['cands'])})"))
             return acts
@@ -871,9 +883,11 @@ class CleanupTab(QWidget):
 
     @staticmethod
     def _action_label(action_id: str, n) -> str:
+        movie = getattr(getattr(n, "item", None), "media_type", "tv") != "tv"
         return {"rescan": "Volver a listar", "open_server": "Abrir en servidor",
                 "delete": "Borrar del servidor", "search": "Buscar en eMule",
-                "slim_one": "Adelgazar capítulo", "slim_many": "Adelgazar",
+                "slim_one": "Adelgazar película" if movie else "Adelgazar capítulo",
+                "slim_many": "Adelgazar",
                 "desired": "Peso objetivo", "retry": "Reintentar listado"}.get(action_id, action_id)
 
     def _copy(self, text: str):

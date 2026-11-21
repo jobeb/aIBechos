@@ -41,6 +41,7 @@ class CleanupItem:
     last_played_ts: Optional[float] = None   # epoch segundos, None = nunca reproducida
     date_added_ts: Optional[float] = None    # epoch segundos, None = fecha desconocida
     loose_file_paths: Optional[list] = None  # rutas completas si es un grupo de archivos sueltos, no una carpeta (ver group_loose_files_by_name)
+    loose_files: Optional[list] = None       # [[nombre, tamaño], ...] del grupo suelto: para adelgazar películas sueltas
     source: str = ""      # "jellyfin" | "plex" | "" si no se encontró en ningún servidor de medios
     server_id: str = ""   # Id de Jellyfin o ratingKey de Plex -- para "abrir en Jellyfin/Plex" (ver gui/app.py::_open_in_media_server)
 
@@ -222,15 +223,20 @@ def group_loose_files_by_name(files: list) -> dict:
     devuelven grupos con AL MENOS un archivo de vídeo: una imagen o .nfo
     huérfano (sin su vídeo) no es un candidato borrable por sí solo, y
     tratarlo como uno arriesgaría explicaciones erróneas de qué se libera.
-    Devuelve {nombre_base: {"size_bytes": int, "file_names": [...]}, ...}."""
+    Devuelve {nombre_base: {"size_bytes": int, "file_names": [...],
+    "files": [[nombre, tamaño], ...]}, ...} -- "files" con el tamaño de
+    cada uno, para poder adelgazar el vídeo de una película suelta."""
     from core.renamer import is_video_file
     groups: dict = {}
     for name, size in files:
         base = _file_base_name(name)
-        g = groups.setdefault(base, {"size_bytes": 0, "file_names": [], "has_video": False})
+        g = groups.setdefault(base, {"size_bytes": 0, "file_names": [], "files": [],
+                                     "has_video": False})
         g["size_bytes"] += size
         g["file_names"].append(name)
+        g["files"].append([name, size])
         if is_video_file(name):
             g["has_video"] = True
-    return {base: {"size_bytes": g["size_bytes"], "file_names": g["file_names"]}
+    return {base: {"size_bytes": g["size_bytes"], "file_names": g["file_names"],
+                   "files": g["files"]}
             for base, g in groups.items() if g["has_video"]}

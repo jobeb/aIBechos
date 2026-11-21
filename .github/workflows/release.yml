@@ -187,11 +187,8 @@ jobs:
             ## aIBechos ${{ github.ref_name }}
 
             ### Novedades
-            - Identificación: un título idéntico (con artículo) va antes que uno que solo coincide quitándole "The": "Beast (La bestia)" ya no se identifica como otra película llamada "The Beast".
-            - Solicitudes web: la web avisa cada 30 minutos aunque no haya presolicitudes, para pedir los capítulos de las series seguidas ("⚡ Seguir serie").
-            - Autocompletado ⚡: cada pasada publica un latido, y la web confía en el ⚡ de un PC (sin gastar el tope de nadie) solo si pasó en las últimas 24 h con aMule respondiendo.
-            - Autocompletado ⚡: se salta los capítulos que ya tienen una solicitud web en curso; los baja la solicitud y no llegan dos copias.
-            - Subidas: el historial de actividad compartido apunta qué capítulo es cada subida, para que la web avise a quien sigue la serie aunque lo haya bajado el ⚡ o se haya subido a mano.
+            - Liberar espacio: adelgazar películas, también las sueltas (sin carpeta propia, con su .nfo y carteles en la raíz de la categoría): se despliegan con su peso y objetivo, con 🔍 para buscarla en eMule y 🪶 para bajar una versión más ligera que sustituye a la gorda al llegar. "Solo adelgazables" y la vista "Por capítulo/película" las incluyen. Hace falta volver a pulsar "Analizar servidor" una vez.
+            - Adelgazar: la versión ligera de una película se empareja con la gorda por TMDB y sin el año del nombre ("La Odisea (2026)"); antes no casaban y la gorda no se sustituía.
 
             ### Instalación
             - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).

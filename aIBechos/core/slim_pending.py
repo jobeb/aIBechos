@@ -171,8 +171,10 @@ def find_match(entries: list, media_type: str, title: str,
     testeable. Exige identidad (título normalizado + temporada/episodio
     o año) Y que pese <= max_light_size del pendiente. Las sustituciones
     de la web ("kind": "request") no tienen tope de tamaño ni gordo
-    conocido, y si ambos lados traen *tmdb_id* casan por él en vez de
-    por título."""
+    conocido. Si ambos lados traen *tmdb_id* casan por él en vez de por
+    título (sustituciones y adelgazamientos: el nombre del servidor no
+    tiene por qué ser el título TMDB, p. ej. "The Beast (2026)" frente a
+    "Beast (La bestia)")."""
     if media_type not in ("tv", "movie"):
         return None
     try:
@@ -196,7 +198,7 @@ def find_match(entries: list, media_type: str, title: str,
             e_tmdb = int(e.get("tmdb_id")) if e.get("tmdb_id") is not None else None
         except (TypeError, ValueError):
             e_tmdb = None
-        if request and want_tmdb is not None and e_tmdb is not None:
+        if want_tmdb is not None and e_tmdb is not None:
             if e_tmdb != want_tmdb:
                 continue
         elif not want or (e.get("key_norm") or "") != want:

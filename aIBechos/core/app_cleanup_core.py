@@ -538,6 +538,7 @@ class CleanupCoreMixin:
                     last_played_ts=parse_media_date((usage or {}).get("last_played")),
                     date_added_ts=parse_media_date((usage or {}).get("date_added")),
                     loose_file_paths=[f"{root}/{fn}" for fn in group["file_names"]],
+                    loose_files=[list(x) for x in (group.get("files") or [])],
                     source=(usage or {}).get("source", ""),
                     server_id=(usage or {}).get("server_id", ""),
                 ))
@@ -603,11 +604,26 @@ class CleanupCoreMixin:
 
     def _cleanup_ep_files(self, item) -> list | None:
         """[(nombre, tamaño, carpeta), ...] de TODO el árbol bajo
-        item.ftp_path, o None si aún no se conoce (hay que listar). Los
-        archivos sueltos (sin carpeta propia) no tienen tamaños por
-        archivo -- también None (no expandibles)."""
+        item.ftp_path, o None si aún no se conoce (hay que listar). Un
+        grupo suelto (película sin carpeta propia, "Peli (2020).mkv" con
+        su .nfo y carteles en la raíz de la categoría): sus VÍDEOS con el
+        tamaño de cada uno, si el análisis lo trae (análisis anteriores no
+        lo guardaban: None hasta volver a analizar)."""
         if getattr(item, "loose_file_paths", None):
-            return None
+            loose = getattr(item, "loose_files", None)
+            if not loose:
+                return None
+            from core.renamer import is_video_file
+            root = (item.ftp_path or "").rstrip("/").rpartition("/")[0]
+            out = []
+            for pair in loose:
+                try:
+                    name, size = pair[0], int(pair[1] or 0)
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if name and is_video_file(name):
+                    out.append((name, size, root))
+            return out or None
         # 1) Árbol del propio análisis (LIST -R, sin coste extra).
         trees = getattr(self, "_cleanup_trees", {}) or {}
         prefix = (item.ftp_path or "").rstrip("/") + "/"
@@ -668,7 +684,9 @@ class CleanupCoreMixin:
         else:
             for d in find_slim_candidates(
                     [(n, s) for n, s, _f in files], item.name, True, desired, ratio):
-                d["folder"] = item.ftp_path
+                # Carpeta real del archivo: en una película suelta es la
+                # raíz de la categoría, no item.ftp_path ("raíz/Peli (2020)").
+                d["folder"] = next((f for n, _s, f in files if n == d["name"]), item.ftp_path)
                 cands.append(d)
         target = None
         if cands:
@@ -743,6 +761,8 @@ class CleanupCoreMixin:
         kept = []
         for it in items:
             files = by_series.get((it.ftp_path or "").rstrip("/"))
+            if not files and getattr(it, "loose_file_paths", None):
+                files = self._cleanup_ep_files(it)
             if not files:
                 cached = ep_cache.get(it.ftp_path)
                 if cached and _time.time() - cached[0] < getattr(self, "_cleanup_ep_cache_ttl", 600):
@@ -778,7 +798,7 @@ class CleanupCoreMixin:
         trees = getattr(self, "_cleanup_trees", {}) or {}
         ep_cache = getattr(self, "_cleanup_ep_cache", {}) or {}
         if not trees and not ep_cache:
-            self._set_status("«Por capítulo» necesita un análisis reciente: "
+            self._set_status("«Por capítulo/película» necesita un análisis reciente: "
                              "pulsa «Analizar servidor» primero.", WARNING_COLOR)
             return None
         by_series = self._cleanup_files_by_owner(items)
@@ -786,8 +806,9 @@ class CleanupCoreMixin:
         rows = []
         for it in items:
             if getattr(it, "loose_file_paths", None):
-                continue
-            files = by_series.get((it.ftp_path or "").rstrip("/")) or []
+                files = self._cleanup_ep_files(it) or []
+            else:
+                files = by_series.get((it.ftp_path or "").rstrip("/")) or []
             if not files:
                 cached = ep_cache.get(it.ftp_path)
                 if cached and _time.time() - cached[0] < getattr(self, "_cleanup_ep_cache_ttl", 600):
@@ -945,8 +966,17 @@ class CleanupCoreMixin:
             is_movie = item.media_type != "tv"
             season = episode = None
             year = ""
+            name = getattr(item, "name", "") or ""
             if is_movie:
                 year = str(getattr(item, "year", "") or "").strip()
+                # "La Odisea (2026)" (archivo suelto o carpeta): el año
+                # fuera del título, o la clave ("odisea 2026") no casaba
+                # con el título TMDB que trae la ligera ("odisea").
+                import re as _re
+                m = _re.match(r"^(.*?)\s*\((\d{4})\)\s*$", name)
+                if m:
+                    name = m.group(1)
+                    year = year or m.group(2)
             else:
                 try:
                     se = _parse_season_episode(filename or "")
@@ -955,7 +985,7 @@ class CleanupCoreMixin:
                 if not se:
                     return  # sin T/E no se puede emparejar con seguridad
                 season, episode = se
-            key = norm_key(getattr(item, "name", "") or "")
+            key = norm_key(name)
             if not key or not filename or not size or int(size) <= 0:
                 return
             base = (folder or getattr(item, "ftp_path", "") or "").rstrip("/")
@@ -966,6 +996,8 @@ class CleanupCoreMixin:
             _record_pending({
                 "media_type": "movie" if is_movie else "tv",
                 "key_norm": key,
+                # Con TMDB se casa por él (ver slim_pending.find_match).
+                "tmdb_id": int(item.tmdb_id) if getattr(item, "tmdb_id", None) else None,
                 "season": season, "episode": episode, "year": year,
                 "heavy_remote_file": f"{base}/{filename}",
                 "heavy_size": int(size),
