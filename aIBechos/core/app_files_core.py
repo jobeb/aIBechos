@@ -260,7 +260,7 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                 # se le puso al renombrar; el nombre final sigue visible en
                 # la columna "destino" (remote incluye el nombre remoto).
                 self._save_history_entry(entry.name, remote_full or path, "ok", size or 0,
-                                          local_path=path)
+                                          local_path=path, media_info=entry.media_info)
                 self._remove_uploaded_episode_from_missing_list(entry.media_info)
                 self._remove_uploaded_movie_from_movies_list(entry.media_info)
                 self._refresh_ftp_space()
@@ -581,7 +581,7 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
         return rp.stale_remote_from_history(self._load_history(), local_path, filename, new_remote)
 
     def _save_history_entry(self, filename: str, remote: str, status: str, size: int, error_msg: str = "",
-                             local_path: str = ""):
+                             local_path: str = "", media_info=None):
         entry = {
             "ts":        _time.time(),
             "filename":  filename,
@@ -601,6 +601,19 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
             # útil ya en local si en el futuro hace falta distinguir.
             "person":    self.config_data.get("app_user_name", ""),
         }
+        # Qué capítulo es (TMDB, temporada, episodio): la web avisa con esto
+        # a quien sigue la serie (⚡ Seguir serie) de lo que llega al
+        # servidor por cualquier vía -- el ⚡ de un PC, una solicitud o a
+        # mano --, leyendo el historial de actividad compartido.
+        try:
+            _mi = media_info
+            if (status == "ok" and _mi is not None and int(_mi.tmdb_id or 0) > 0
+                    and _mi.media_type in ("tv", "anime") and _mi.season is not None
+                    and _mi.episode is not None):
+                entry.update({"tmdb_id": int(_mi.tmdb_id), "media_type": "tv",
+                              "season": int(_mi.season), "episode": int(_mi.episode)})
+        except (TypeError, ValueError, AttributeError):
+            pass
         with self._history_lock:
             history = self._load_history()
             history.append(entry)

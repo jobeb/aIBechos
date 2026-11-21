@@ -187,18 +187,11 @@ jobs:
             ## aIBechos ${{ github.ref_name }}
 
             ### Novedades
-            - Actualización automática: las versiones nuevas se descargan e instalan solas (sin preguntar), cuando no hay subidas en marcha; con la ventana abierta avisa 30 s antes de reiniciar. Se puede desactivar en Ajustes → General. Funciona a partir de esta versión: desde la 2.1.0 hay que actualizar a mano una última vez.
-            - Archivos: poner un nombre a mano ("Usar este nombre exacto") y un solo diálogo "Corregir identificación" que vuelve a identificar el archivo al editar lo detectado.
-            - Archivos: los nombres ya no llevan comillas tipográficas de TMDB.
-            - Especiales: la temporada 0 y el episodio 0 se respetan (antes "S00E05" se renombraba 1x05 y pisaba el capítulo de verdad).
-            - Solicitudes web: lo que ya está en el servidor se da por completado sin descargarlo otra vez en aMule (antes llegaba días después como "Omitido: ya existe en el servidor").
-            - Solicitudes web: se reconoce una serie aunque Jellyfin/Plex la tenga mal identificada (se mira el nombre de la carpeta).
-            - Solicitudes web: un piloto pedido por adelantado espera a que haya fuentes en vez de fallar.
-            - Sincronización: si un archivo compartido del servidor no se puede leer, ya no se sobrescribe (reservas, autocompletado ⚡ y Recomendado podían perder los datos de los demás).
-            - Fiabilidad: los archivos de datos (procesados del modo automático, pendientes de aligerar, caché de sinopsis) se guardan de forma atómica y un corte ya no los corrompe.
-            - FTP: descargas más rápidas y errores del disco local (lleno, archivo bloqueado) que ya no se confunden con fallos del servidor.
-            - IA: el análisis de episodios que faltan se hace por tandas (ya no falla con listas largas) y el juez IA recuerda sus veredictos 24 h.
-            - Registros: los tokens y claves ya no se escriben en los logs.
+            - Identificación: un título idéntico (con artículo) va antes que uno que solo coincide quitándole "The": "Beast (La bestia)" ya no se identifica como otra película llamada "The Beast".
+            - Solicitudes web: la web avisa cada 30 minutos aunque no haya presolicitudes, para pedir los capítulos de las series seguidas ("⚡ Seguir serie").
+            - Autocompletado ⚡: cada pasada publica un latido, y la web confía en el ⚡ de un PC (sin gastar el tope de nadie) solo si pasó en las últimas 24 h con aMule respondiendo.
+            - Autocompletado ⚡: se salta los capítulos que ya tienen una solicitud web en curso; los baja la solicitud y no llegan dos copias.
+            - Subidas: el historial de actividad compartido apunta qué capítulo es cada subida, para que la web avise a quien sigue la serie aunque lo haya bajado el ⚡ o se haya subido a mano.
 
             ### Instalación
             - **Windows**: `aIBechos_Setup_*.exe` (instalador) o `aIBechos_*_windows.zip` (portable).

@@ -63,6 +63,7 @@ def _cycle_app(data, launched, pushed):
     app._download_requests_publish_progress = MethodType(
         App._download_requests_publish_progress, app)
     app._download_request_cancel_amule = lambda entry, data=None: True
+    app._download_requests_waiting_check_web = lambda: None   # ping a la web (sin red)
     app._download_requests_done_before_launch = MethodType(
         App._download_requests_done_before_launch, app)
     app._download_requests_sweep_ts = 9999999999.0   # barrido apagado salvo test propio
@@ -523,3 +524,19 @@ def test_indice_servidor_casa_por_carpeta_si_jellyfin_identifico_mal(monkeypatch
               58531: {"media_type": "tv", "title": "Suave Veneno", "year": "1999"}})
     assert idx["series"][100834] == {(1, e) for e in range(1, 9)}
     assert idx["series"][58531] == {(1, 1)}, "el tmdb exacto sigue mandando"
+
+
+def test_ciclo_avisa_a_la_web_aunque_no_haya_presolicitadas(monkeypatch):
+    """La pasada horaria de la web también pide los capítulos de las
+    series seguidas (⚡ Seguir serie): el aviso va siempre, no solo con
+    alguna presolicitada en la cola."""
+    import core.shared_data as sd
+    data = {"r1": {"tmdb_id": 1, "media_type": "movie", "title": "P", "status": "done",
+                   "claimed_by": "Jose", "requested_at": time.time(), "attempts": 0}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    avisos = []
+    app._download_requests_waiting_check_web = lambda: avisos.append(1)
+    App._download_requests_cycle(app)
+    assert avisos == [1]

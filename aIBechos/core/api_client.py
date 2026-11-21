@@ -170,23 +170,41 @@ class TMDBClient:
         la query, normalizado) va antes que la popularidad: caso real,
         "Veneno 1x02" (serie de 2020) se identificaba como "Suave Veneno"
         (1999, más popular), se subía a otra carpeta y la solicitud web de
-        "Veneno" nunca se daba por cumplida (se relanzó durante horas)."""
+        "Veneno" nunca se daba por cumplida (se relanzó durante horas).
+
+        Y dentro de los exactos, el idéntico CON artículo va antes que el
+        que solo casa al quitárselo: caso real, "Beast.(La.bestia).(2026)"
+        (la de MMA, original "Beast") se identificó como "The Beast"
+        (2026, otra película, más popular), porque normalizado "the beast"
+        y "beast" son lo mismo."""
+        import unicodedata
         from core.series_match import normalize_series_name
         data = self._get("/search/multi", query=query)
         results = [r for r in data.get("results", []) if r.get("media_type") in ("tv", "movie")]
         preferred = self._TMDB_TYPE.get(prefer_type, "")
         q_norm = normalize_series_name(query)
+        _keys = ("name", "title", "original_name", "original_title")
+
+        def _words(text) -> str:
+            text = unicodedata.normalize("NFKD", text or "")
+            text = "".join(c for c in text if not unicodedata.combining(c)).lower()
+            return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
+
+        q_words = _words(query)
 
         def _exact(r) -> bool:
             if not q_norm:
                 return False
-            return any(normalize_series_name(r.get(k) or "") == q_norm
-                       for k in ("name", "title", "original_name", "original_title"))
+            return any(normalize_series_name(r.get(k) or "") == q_norm for k in _keys)
+
+        def _identical(r) -> bool:
+            return bool(q_words) and any(_words(r.get(k)) == q_words for k in _keys)
 
         return sorted(
             results,
             key=lambda r: (bool(preferred) and r.get("media_type") == preferred,
                            _exact(r),
+                           _identical(r),
                            r.get("popularity", 0)),
             reverse=True)
 

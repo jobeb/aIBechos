@@ -1090,7 +1090,7 @@ class FilesUploadMixin:
             # archivo, el nombre final queda en la columna "destino".
             self._save_history_entry(
                 entry.name,
-                remote_file, "ok", size, local_path=entry.path)
+                remote_file, "ok", size, local_path=entry.path, media_info=entry.media_info)
             _log.info("Subida: OK %r (%s)", remote_filename, _fmt_size(size))
             from core.media_server_refresh import trigger_refresh
             trigger_refresh(self.config_data)

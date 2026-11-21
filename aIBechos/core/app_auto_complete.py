@@ -618,6 +618,56 @@ class AutoCompleteMixin:
                 self._auto_complete_series_single(int(tmdb_id_str))
             except Exception:
                 _log.exception("Autocompletado: fallo en serie %s", tmdb_id_str)
+        self._publish_auto_pass(series)
+
+    #: La cola leída por el worker de solicitudes vale para el ⚡ durante
+    #: este tiempo; más vieja no se usa (sin dato, el ⚡ sigue como antes).
+    _AUTO_REQUESTS_MAX_AGE = 2 * 3600
+
+    def _auto_requested_episodes(self, tmdb_id: int) -> set:
+        """{(temporada, episodio)} de *tmdb_id* con solicitud web en curso
+        (pending/claimed/downloading) según la última cola que leyó el
+        worker de solicitudes (core/app_download_requests.py). Nunca lanza."""
+        try:
+            snap = getattr(self, "_download_requests_last_data", None)
+            if not snap or _time.time() - float(snap[0]) > self._AUTO_REQUESTS_MAX_AGE:
+                return set()
+            out = set()
+            for e in (snap[1] or {}).values():
+                if (isinstance(e, dict) and e.get("media_type") == "tv"
+                        and str(e.get("tmdb_id")) == str(tmdb_id)
+                        and e.get("status") in ("pending", "claimed", "downloading")
+                        and not e.get("replace")
+                        and e.get("season") is not None and e.get("episode") is not None):
+                    out.add((int(e["season"]), int(e["episode"])))
+            return out
+        except Exception:
+            return set()
+
+    def _publish_auto_pass(self, series):
+        """Latido del ⚡ en el JSON compartido (core/auto_series.py
+        touch_auto_pass) tras una pasada, solo si este equipo tiene aMule
+        respondiendo: un ⚡ con aMule cerrado no descarga nada y la web
+        (⚡ Seguir serie) debe pedir ella los capítulos. Nunca lanza."""
+        try:
+            user = (self.config_data.get("app_user_name", "") or "").strip()
+            if not user or not series:
+                return
+            if not self._download_requests_amule_reachable():
+                _log.info("Autocompletado: aMule no responde, no se publica el latido del ⚡")
+                return
+            from core.auto_series import touch_auto_pass, save_local_cache as _save
+            names = {}
+            for tid in series:
+                row = next((r for r in (self._missing_ep_results or [])
+                            if str(r.get("tmdb_id")) == str(tid)), None)
+                names[str(tid)] = (row or {}).get("name", "")
+            now = int(_time.time())
+            self._auto_series_shared = touch_auto_pass(self._auto_series_shared, user, names, now)
+            _save(self._auto_series_shared)
+            self._push_auto_series_to_ftp(lambda data: touch_auto_pass(data, user, names, now))
+        except Exception:
+            _log.debug("Autocompletado: no se pudo publicar el latido", exc_info=True)
 
     def _auto_complete_series_single(self, tmdb_id: int, force: bool = False):
         """Descarga los capítulos pendientes de UNA serie con autocompletado.
@@ -806,6 +856,20 @@ class AutoCompleteMixin:
                     self._unset_auto_checked_episode(tmdb_id, season, ep)
                 if action == auto_complete_state.ATTEMPT:
                     pending.append((season, ep))
+
+        # Capítulos con una solicitud web en curso (suelta o de "⚡ Seguir
+        # serie"): los baja quien la reclame. Si el ⚡ también los lanzaba,
+        # a menudo desde otro PC, llegaban dos copias y una acababa en
+        # "Omitido: ya existe en el servidor".
+        if pending:
+            _req = self._auto_requested_episodes(tmdb_id)
+            if _req:
+                _skip = [(s, e) for (s, e) in pending if (int(s), int(e)) in _req]
+                if _skip:
+                    _log.info("Autocompletado: '%s' %d capítulo(s) ya pedidos en la web, los baja "
+                              "la solicitud (%s)", series_name, len(_skip),
+                              ", ".join(f"{s}x{e:02d}" for s, e in _skip[:8]))
+                    pending = [(s, e) for (s, e) in pending if (int(s), int(e)) not in _req]
 
         # Descargas y doblaje: SOLO manda la opción de cliente
         # "download_undubbed" (Configuración → Cliente → Modo Automático).

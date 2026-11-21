@@ -85,10 +85,12 @@ def add_auto_owner(data: dict, media_type: str, tmdb_id: int, name: str,
     pisa el de otro equipo. *at* (epoch) es para el tooltip."""
     result = dict(data)
     key = _auto_key(media_type, tmdb_id)
-    owners = _owners_of(result.get(key))
+    prev = result.get(key) if isinstance(result.get(key), dict) else {}
+    owners = _owners_of(prev)
     owners[user] = int(at or 0)
-    result[key] = {
-        "media_type": media_type, "tmdb_id": tmdb_id, "name": name,
+    # Se conserva lo demás de la entrada (last_pass de otros equipos).
+    result[key] = {**prev,
+        "media_type": media_type, "tmdb_id": tmdb_id, "name": name or prev.get("name", ""),
         "owners": owners,
     }
     return result
@@ -106,6 +108,9 @@ def remove_auto_owner(data: dict, media_type: str, tmdb_id: int, user: str) -> d
         entry = result.get(key)
         entry = dict(entry) if isinstance(entry, dict) else {}
         entry["owners"] = owners
+        passes = _passes_of(entry)
+        passes.pop(user, None)
+        entry["last_pass"] = passes
         result[key] = entry
     else:
         result.pop(key, None)
@@ -163,4 +168,46 @@ def remove_all_auto_by_owner(data: dict, owner: str) -> dict:
         entry = dict(entry)
         entry["owners"] = owners
         result[key] = entry
+    return result
+
+
+def _passes_of(entry) -> dict:
+    """{dueño: epoch} de la última pasada del ⚡ de cada equipo ("latido",
+    ver touch_auto_pass); {} si no hay."""
+    raw = entry.get("last_pass") if isinstance(entry, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for owner, ts in raw.items():
+        try:
+            out[str(owner)] = int(ts or 0)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def touch_auto_pass(data: dict, user: str, series: dict, at: int) -> dict:
+    """Devuelve un dict NUEVO con el latido de *user*: "su ⚡ ha pasado a
+    las *at*" en cada serie de *series* ({tmdb_id: nombre}, las que tiene
+    activas este equipo). La web (⚡ Seguir serie) solo da por vivo un ⚡
+    con latido reciente: si el PC lleva días apagado, pide ella los
+    capítulos. Si la serie no constaba a su nombre (subida fallida al
+    activar) se apunta como dueño."""
+    if not user:
+        return dict(data)
+    result = dict(data)
+    for tmdb_id, name in (series or {}).items():
+        try:
+            tid = int(tmdb_id)
+        except (TypeError, ValueError):
+            continue
+        key = _auto_key("tv", tid)
+        entry = result.get(key) if isinstance(result.get(key), dict) else {}
+        owners = _owners_of(entry)
+        owners.setdefault(user, 0)
+        passes = _passes_of(entry)
+        passes[user] = int(at)
+        result[key] = {**entry, "media_type": "tv", "tmdb_id": tid,
+                       "name": entry.get("name") or name or "",
+                       "owners": owners, "last_pass": passes}
     return result

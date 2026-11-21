@@ -699,3 +699,21 @@ def test_detect_titulo_con_numero_de_anio_y_anio_real():
     # Lo de siempre sigue igual.
     assert detect_episode("Peli 2019 1080p.mkv")["title"] == "Peli"
     assert detect_episode("One Piece - 1078.mkv")["episode"] == 1078
+
+
+def test_search_multi_identico_con_articulo_antes_que_sin_el(monkeypatch):
+    """Real: "Beast.(La.bestia).(2026)" (original "Beast") se identificó
+    como "The Beast" (2026, otra película más popular): sin artículo, las
+    dos casaban "exacto" y decidía la popularidad."""
+    from core.api_client import TMDBClient
+    client = TMDBClient("x")
+    monkeypatch.setattr(client, "_get", lambda *a, **k: {"results": [
+        {"media_type": "movie", "id": 1185344, "title": "The Beast", "original_title": "The Beast", "popularity": 83.1},
+        {"media_type": "movie", "id": 1292415, "title": "Beast (La bestia)", "original_title": "Beast", "popularity": 9.3},
+        {"media_type": "movie", "id": 1263337, "title": "En el corazón de la bestia",
+         "original_title": "Heart of the Beast", "popularity": 397.9},
+    ]})
+    ids = [r["id"] for r in client.search_multi("Beast", prefer_type="movie")]
+    assert ids == [1292415, 1185344, 1263337]
+    # Y al revés: buscando "The Beast" gana "The Beast".
+    assert client.search_multi("The Beast", prefer_type="movie")[0]["id"] == 1185344

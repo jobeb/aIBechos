@@ -171,8 +171,14 @@ class DownloadRequestsMixin:
         if carry:
             data = _dr.merge(data, carry)
         data = _dr.prune(data)
-        if _dr.has_waiting(data):
-            self._download_requests_waiting_check_web()
+        # Para el ⚡ (core/app_auto_complete.py::_auto_requested_episodes):
+        # qué capítulos tienen ya solicitud en curso.
+        self._download_requests_last_data = (_time.time(), data)
+        # La web, en esa misma pasada horaria, pasa a la cola las
+        # presolicitadas que ya se pueden conseguir Y pide los capítulos
+        # de las series seguidas (⚡ Seguir serie, sol_follow_run): se le
+        # avisa siempre, no solo con presolicitadas (con su tope de 30 min).
+        self._download_requests_waiting_check_web()
         my_ids = [rid for rid, e in data.items()
                   if isinstance(e, dict) and e.get("claimed_by") == user
                   and e.get("status") in ("claimed", "downloading")]
