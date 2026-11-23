@@ -319,6 +319,11 @@ class CleanupCoreMixin:
         # del FTP acabaran con el mismo tmdb_id/visionado aunque fueran
         # contenidos distintos.
         usage_by_key = {}
+        # Entradas sueltas con ruta (Jellyfin) y qué ids hay bajo cada
+        # clave de nombre: para emparejar por ruta antes que por nombre
+        # (ver match_usage_by_path).
+        usage_by_id = {}
+        ids_by_key = {}
 
         def _usage_bucket(media_type):
             return "tv" if media_type == "tv" else "movie"
@@ -343,6 +348,8 @@ class CleanupCoreMixin:
                 entry["source"] = "jellyfin"
                 entry["server_id"] = key
                 _merge_usage(entry["name"], entry.get("media_type"), entry)
+                usage_by_id[key] = entry
+                ids_by_key.setdefault((entry["name"], _usage_bucket(entry.get("media_type"))), set()).add(key)
             _log.info("Liberar espacio: Jellyfin -> %d elemento(s) en %.1fs",
                       len(stats), _time.monotonic() - t_jf)
         if self.config_data.get("plex_enabled"):
@@ -457,13 +464,44 @@ class CleanupCoreMixin:
             # se quedaron sin pareja y solo contra targets libres, sin
             # reabrir el caso "Animal"/"Animal Crackers" (ver docstring de
             # match_names_exclusively).
+            # 1) Por RUTA: Jellyfin sabe qué archivo es cada entrada, así
+            # que "Robots (2023)" no puede llevarse los datos de "Robots"
+            # (2005) por parecerse el título. 2) Por nombre, solo para lo
+            # que quede (Plex, o entradas sin ruta).
+            from core.cleanup_candidates import match_usage_by_path
+            by_bucket_ids = {}
+            for _eid, _e in usage_by_id.items():
+                by_bucket_ids.setdefault(_usage_bucket(_e.get("media_type")), {})[_eid] = _e
+            usage_by_path = {}
+            used_ids = set()
+            for _bucket in ("tv", "movie"):
+                cands_paths = [(f"{_root.rstrip('/')}/{folder}", False)
+                               for _mt, _cat, _root, folder in folder_list if _usage_bucket(_mt) == _bucket]
+                cands_paths += [(f"{_root.rstrip('/')}/{base_name}", True)
+                                for _mt, _cat, _root, base_name, _grp in loose_groups_list
+                                if _usage_bucket(_mt) == _bucket]
+                for _path, _ids in match_usage_by_path(cands_paths, by_bucket_ids.get(_bucket, {})).items():
+                    merged = None
+                    for _eid in _ids:
+                        _e = usage_by_id[_eid]
+                        merged = merge_usage_entries(merged, _e) if merged else dict(_e)
+                    usage_by_path[_path] = merged
+                    used_ids.update(_ids)
+            if usage_by_path:
+                _log.info("Liberar espacio: %d elemento(s) emparejados por ruta", len(usage_by_path))
+
             candidate_names_by_bucket = {"tv": [], "movie": []}
             for _mt, _cat, _root, folder in folder_list:
-                candidate_names_by_bucket[_usage_bucket(_mt)].append(folder)
+                if f"{_root.rstrip('/')}/{folder}" not in usage_by_path:
+                    candidate_names_by_bucket[_usage_bucket(_mt)].append(folder)
             for _mt, _cat, _root, base_name, _grp in loose_groups_list:
-                candidate_names_by_bucket[_usage_bucket(_mt)].append(base_name)
+                if f"{_root.rstrip('/')}/{base_name}" not in usage_by_path:
+                    candidate_names_by_bucket[_usage_bucket(_mt)].append(base_name)
             usage_names_by_bucket = {"tv": [], "movie": []}
-            for _name, _bucket in usage_by_key.keys():
+            for (_name, _bucket) in usage_by_key.keys():
+                _ids = ids_by_key.get((_name, _bucket))
+                if _ids and _ids <= used_ids:
+                    continue   # todas sus entradas ya tienen dueño por ruta
                 usage_names_by_bucket[_bucket].append(_name)
             name_to_usage_name_by_bucket = {}
             for _bucket in ("tv", "movie"):
@@ -484,9 +522,11 @@ class CleanupCoreMixin:
                     progress_cb(i + 1, total, folder)
                 path = f"{root.rstrip('/')}/{folder}"
                 bucket = _usage_bucket(media_type)
-                usage = None
-                matched_name = name_to_usage_name_by_bucket[bucket].get(folder)
-                if matched_name:
+                usage = usage_by_path.get(path)
+                matched_name = None if usage else name_to_usage_name_by_bucket[bucket].get(folder)
+                if usage:
+                    matched_count += 1
+                elif matched_name:
                     usage = usage_by_key.get((matched_name, bucket))
                     matched_count += 1
                 # Orden de preferencia para el tamaño: 1) LIST -R (ya
@@ -517,9 +557,11 @@ class CleanupCoreMixin:
                 if progress_cb:
                     progress_cb(len(folder_list) + j + 1, total, base_name)
                 bucket = _usage_bucket(media_type)
-                usage = None
-                matched_name = name_to_usage_name_by_bucket[bucket].get(base_name)
-                if matched_name:
+                usage = usage_by_path.get(f"{root.rstrip('/')}/{base_name}")
+                matched_name = None if usage else name_to_usage_name_by_bucket[bucket].get(base_name)
+                if usage:
+                    matched_count += 1
+                elif matched_name:
                     usage = usage_by_key.get((matched_name, bucket))
                     matched_count += 1
                 # El tamaño ya se conoce con exactitud (se sumó al listar
@@ -544,7 +586,7 @@ class CleanupCoreMixin:
                 ))
             self._cleanup_last_ftp_size_count = ftp_size_count
             _log.info(
-                "Liberar espacio: %d carpeta(s) + %d archivo(s) suelto(s), %d emparejadas por nombre, "
+                "Liberar espacio: %d carpeta(s) + %d archivo(s) suelto(s), %d emparejadas (ruta o nombre), "
                 "%d con tamaño calculado por FTP (lento), recorrido en %.1fs, total %.1fs",
                 len(folder_list), len(loose_groups_list), matched_count, ftp_size_count,
                 _time.monotonic() - t_walk, _time.monotonic() - t0)

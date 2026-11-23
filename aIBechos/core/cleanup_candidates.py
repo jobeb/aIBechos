@@ -186,6 +186,47 @@ def merge_usage_entries(a: dict, b: dict) -> dict:
     }
 
 
+def _media_path_matches(media_path: str, server_path: str, loose: bool) -> bool:
+    """¿La ruta que da Jellyfin/Plex (en SU disco, p.ej.
+    "/home/administrador/datos/peliculas/Peli (2020).mkv") es la de este
+    elemento del servidor ("/datos/peliculas/Peli (2020)")? Se compara
+    por sufijo, porque el servidor de medios monta el disco en otra
+    raíz. Carpeta: la ruta es la carpeta o algo dentro de ella. Grupo
+    suelto: la ruta, sin extensión, termina en "raíz/nombre_base"."""
+    p = (media_path or "").replace("\\", "/").rstrip("/")
+    tail = "/" + (server_path or "").replace("\\", "/").strip("/")
+    if not p or tail == "/":
+        return False
+    if loose:
+        stem = p.rpartition("/")[2]
+        if "." in stem:
+            p = p[: len(p) - len(stem) + stem.rfind(".")]
+        return p.endswith(tail)
+    return p.endswith(tail) or (tail + "/") in (p + "/")
+
+
+def match_usage_by_path(candidates: list, entries: dict) -> dict:
+    """Empareja elementos del servidor con entradas de Jellyfin/Plex por la
+    RUTA del archivo, antes que por nombre: por nombre, "Robots (2023)"
+    se llevaba los datos de "Robots" (2005) y "Enola Holmes (2020)" los de
+    "Enola Holmes 2", porque el título casa igual o mejor con la otra.
+    *candidates*: [(ruta_servidor, es_suelto), ...]; *entries*: {id:
+    entrada con "path"}. Devuelve {ruta_servidor: [id, ...]} (varias si el
+    mismo contenido está duplicado en la biblioteca); cada id se asigna
+    como mucho a un elemento, el de ruta más larga (el más concreto)."""
+    out: dict = {}
+    order = sorted(candidates, key=lambda c: len(c[0] or ""), reverse=True)
+    for eid, entry in entries.items():
+        mp = (entry or {}).get("path") or ""
+        if not mp:
+            continue
+        for server_path, loose in order:
+            if _media_path_matches(mp, server_path, loose):
+                out.setdefault(server_path, []).append(eid)
+                break
+    return out
+
+
 # Sufijos de archivos "compañeros" de un vídeo (carátulas, arte de Kodi/
 # Jellyfin) que hay que agrupar junto al vídeo, no tratar como entradas
 # sueltas propias -- vistos de verdad en un servidor real con películas

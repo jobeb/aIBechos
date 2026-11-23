@@ -634,7 +634,7 @@ def get_jellyfin_usage_stats(host: str, api_key: str, timeout: int = 120,
 
     Devuelve {jellyfin_id: {"name", "tmdb_id", "media_type", "year",
     "fully_watched", "play_count", "last_played", "date_added",
-    "size_bytes"}, ...} o None si falla o no está configurado. size_bytes
+    "size_bytes", "path"}, ...} o None si falla o no está configurado. size_bytes
     y date_added no dependen del usuario (son propiedades del archivo),
     así que se piden una sola vez, no una vez por usuario -- solo el
     visionado en sí necesita consultarse por usuario.
@@ -686,7 +686,7 @@ def get_jellyfin_usage_stats(host: str, api_key: str, timeout: int = 120,
             f"{base}/Users/{admin_user_id}/Items",
             headers={"X-Emby-Token": api_key},
             params={"IncludeItemTypes": "Series,Movie", "Recursive": "true",
-                   "Fields": "DateCreated,ProviderIds,MediaSources"},
+                   "Fields": "DateCreated,ProviderIds,MediaSources,Path"},
             timeout=timeout,
         )
         resp.raise_for_status()
@@ -719,6 +719,11 @@ def get_jellyfin_usage_stats(host: str, api_key: str, timeout: int = 120,
             "last_played": None,
             "date_added": item.get("DateCreated"),
             "size_bytes": size_bytes,
+            # Ruta en el servidor de Jellyfin (archivo de la película o
+            # carpeta de la serie): Liberar espacio empareja por ella antes
+            # que por nombre (ver cleanup_candidates.match_usage_by_path).
+            "path": item.get("Path") or next(
+                (ms.get("Path") for ms in item.get("MediaSources", []) or [] if ms.get("Path")), ""),
         }
 
     if series_ids:
