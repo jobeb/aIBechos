@@ -1474,26 +1474,16 @@ def explain_score(result: AmuleSearchResult, query: str = "", expected_year: int
 MIN_BEST_SCORE = 15.0
 
 
-def best_result(results: list, query: str = "", expected_year: int = None,
-                is_movie: bool = False, typical_size: int | None = None,
-                max_size: int | None = None) -> AmuleSearchResult | None:
-    """Devuelve el resultado (elemento de la lista) con mayor score, o None
-    si la lista está vacía O si ninguno alcanza el mínimo (peso
-    min_best_score, personalizable) -- así, cuando no hay ningún resultado
-    que coincida de verdad con la búsqueda, no se destaca ningún capítulo (la fila sale del
-    color normal). Empates: se queda con el primero (el orden de la búsqueda
-    suele ser antigüedad/prioridad). *query* se reenvía a score_download
-    para exigir que el mejor candidato coincida con la temporada/episodio
-    pedido (ver score_download), y *expected_year* hace lo propio con el año
-    de una película (botón ⬇ de Películas: busca solo por título y comprueba
-    aquí que el release elegido declara el año pedido). *is_movie* marca una
-    petición de película (botón ⬇ de Películas): los resultados con
-    numeración de capítulo se excluyen (ver score_download). *max_size* (uso
-    de "Adelgazar" en Liberar espacio): techo en bytes -- los resultados que
-    lo igualen o superen se descartan antes de puntuar, para no "adelgazar"
-    descargando algo igual o más pesado que lo que ya hay."""
+def eligible_results(results: list, is_movie: bool = False,
+                     max_size: int | None = None) -> list:
+    """Los resultados que pueden llegar a descargarse: sin porno, sin
+    idiomas bloqueados, sin capítulos en una película y, con *max_size*
+    (Adelgazar), solo los más ligeros. best_result elige entre ellos, y el
+    juez IA (core/amule_download._judge_or_keep) solo puede recurrir a
+    estos al vetar al mejor: antes probaba con TODOS y en un adelgazamiento
+    bajó el mismo 11 GB que ya había en el servidor."""
     if not results:
-        return None
+        return []
     # Los resultados porno se descartan SIEMPRE: ni como mejor candidato ni
     # como "segundo mejor" (un XXX 4K no debe ganar jamás). El italiano SIN
     # español también (is_italian_only): si lo único que hay es italiano, no
@@ -1515,6 +1505,28 @@ def best_result(results: list, query: str = "", expected_year: int = None,
         # ya hay (con un 1% de margen por redondeos de "450,5 MB").
         candidates = [r for r in candidates
                       if not _size_bytes(r) or _size_bytes(r) < max_size * 0.99]
+    return candidates
+
+
+def best_result(results: list, query: str = "", expected_year: int = None,
+                is_movie: bool = False, typical_size: int | None = None,
+                max_size: int | None = None) -> AmuleSearchResult | None:
+    """Devuelve el resultado (elemento de la lista) con mayor score, o None
+    si la lista está vacía O si ninguno alcanza el mínimo (peso
+    min_best_score, personalizable) -- así, cuando no hay ningún resultado
+    que coincida de verdad con la búsqueda, no se destaca ningún capítulo (la fila sale del
+    color normal). Empates: se queda con el primero (el orden de la búsqueda
+    suele ser antigüedad/prioridad). *query* se reenvía a score_download
+    para exigir que el mejor candidato coincida con la temporada/episodio
+    pedido (ver score_download), y *expected_year* hace lo propio con el año
+    de una película (botón ⬇ de Películas: busca solo por título y comprueba
+    aquí que el release elegido declara el año pedido). *is_movie* marca una
+    petición de película (botón ⬇ de Películas): los resultados con
+    numeración de capítulo se excluyen (ver score_download). *max_size* (uso
+    de "Adelgazar" en Liberar espacio): techo en bytes -- los resultados que
+    lo igualen o superen se descartan antes de puntuar, para no "adelgazar"
+    descargando algo igual o más pesado que lo que ya hay."""
+    candidates = eligible_results(results, is_movie, max_size)
     if not candidates:
         return None
     best = candidates[0]

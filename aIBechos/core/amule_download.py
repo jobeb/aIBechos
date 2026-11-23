@@ -104,8 +104,13 @@ def _judge_or_keep(config, query: str, best, results: list, is_movie: bool,
             model=resolve_model(config))
 
     try:
-        ranked = sorted((r for r in results if r is not None
-                         and _result_hash(r).lower() not in (excluded or set())),
+        from core.download_quality import eligible_results, _W
+        # Solo lo que best_result también habría aceptado (techo de
+        # Adelgazar, idiomas, porno...) y con la puntuación mínima.
+        pool = [r for r in eligible_results([r for r in results if r is not None], is_movie, max_size)
+                if _result_hash(r).lower() not in (excluded or set())
+                and score_download(r, query, expected_year, is_movie, typical_size) >= _W("min_best_score")]
+        ranked = sorted(pool,
                         # score_download no recibe max_size (el techo ya se aplicó al
                         # elegir): pasárselo lanzaba TypeError y, capturado abajo,
                         # el juez no llegó a ejecutarse NUNCA desde que existe.

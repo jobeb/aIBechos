@@ -126,6 +126,45 @@ class ResultsModel(QAbstractTableModel):
 A_NAME, A_SIZE, A_DONE, A_PCT, A_PROG, A_SPEED, A_SRC, A_ETA, A_STATUS, A_ACT = range(10)
 A_HEADERS = ["Archivo", "Tamaño", "Descargado", "%", "Progreso", "Velocidad", "Fuentes", "Restante",
              "Estado", ""]
+A_SORT = {A_NAME: "name", A_SIZE: "size", A_DONE: "done", A_PCT: "pct", A_PROG: "pct",
+          A_SPEED: "speed", A_SRC: "sources", A_ETA: "eta", A_STATUS: "status"}
+SORT_ACTIVE_ID = "descargas_activas"   # en config "table_sort"
+
+
+def _num(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def sort_active_rows(rows: list, key, asc: bool, status_label=None) -> list:
+    """Cola de aMule ordenada por la columna pulsada. "Restante": las que
+    no avanzan (sin velocidad, sin estimación) van siempre al final."""
+    rows = list(rows or [])
+    if not key:
+        return rows
+
+    def eta(d):
+        sp = _num(d.get("speed"))
+        remain = max(0.0, _num(d.get("size_full")) - _num(d.get("size_done")))
+        return remain / sp if sp > 0 and remain > 0 else None
+
+    if key == "eta":
+        known = sorted((d for d in rows if eta(d) is not None), key=eta, reverse=not asc)
+        return known + [d for d in rows if eta(d) is None]
+    fn = {
+        "name": lambda d: str(d.get("name", "")).lower(),
+        "size": lambda d: _num(d.get("size_full")),
+        "done": lambda d: _num(d.get("size_done")),
+        "pct": lambda d: _num(d.get("percent")),
+        "speed": lambda d: _num(d.get("speed")),
+        "sources": lambda d: _num(d.get("sources")),
+        "status": lambda d: (status_label(d.get("status", 0)) if status_label else str(d.get("status", ""))),
+    }.get(key)
+    if fn is None:
+        return rows
+    return sorted(rows, key=fn, reverse=not asc)
 
 
 class ActiveModel(QAbstractTableModel):
@@ -207,6 +246,11 @@ class DownloadsTab(QWidget):
         saved = (self.config.get("table_sort", {}) or {}).get(SORT_TABLE_ID)
         if isinstance(saved, dict) and saved.get("key") in R_SORT.values():
             self._sort_key, self._sort_asc = saved["key"], bool(saved.get("asc", True))
+        self._active_sort_key, self._active_sort_asc = None, True
+        saved = (self.config.get("table_sort", {}) or {}).get(SORT_ACTIVE_ID)
+        if isinstance(saved, dict) and saved.get("key") in A_SORT.values():
+            self._active_sort_key, self._active_sort_asc = saved["key"], bool(saved.get("asc", True))
+        self._active_queue: list = []
         self._expected_year = None
         self._is_movie = False
         self._query_for_year = None
@@ -301,6 +345,9 @@ class DownloadsTab(QWidget):
         for c, w in ((A_SIZE, 85), (A_DONE, 85), (A_PCT, 60), (A_PROG, 100), (A_SPEED, 85), (A_SRC, 60),
                      (A_ETA, 80), (A_STATUS, 100)):
             ah.resizeSection(c, w)
+        ah.setSectionsClickable(True)
+        ah.sectionClicked.connect(self._on_active_header)
+        self._update_active_sort_indicator()
         self.adelegate.actionTriggered.connect(self._on_active_action)
         ll.addWidget(self.active_view, 1)
 
@@ -608,6 +655,36 @@ class DownloadsTab(QWidget):
         self._update_results_sort_indicator()
         self._render()
 
+    def _render_active(self):
+        self.amodel.set_rows(sort_active_rows(self._active_queue, self._active_sort_key,
+                                              self._active_sort_asc,
+                                              self.host._status_label_for_download))
+
+    def _on_active_header(self, col):
+        key = A_SORT.get(col)
+        if key is None:
+            return
+        if key == self._active_sort_key:
+            self._active_sort_asc = not self._active_sort_asc
+        else:
+            # Números (peso, velocidad...) de mayor a menor al primer clic;
+            # nombre/estado/restante, de menor a mayor.
+            self._active_sort_key = key
+            self._active_sort_asc = key in ("name", "status", "eta")
+        all_saved = dict(self.config.get("table_sort", {}) or {})
+        all_saved[SORT_ACTIVE_ID] = {"key": self._active_sort_key, "asc": self._active_sort_asc}
+        self.config.set("table_sort", all_saved)
+        self.config.save()
+        self._update_active_sort_indicator()
+        self._render_active()
+
+    def _update_active_sort_indicator(self):
+        hdr = self.active_view.horizontalHeader()
+        col = next((c for c, k in A_SORT.items() if k == self._active_sort_key), None)
+        hdr.setSortIndicatorShown(col is not None)
+        if col is not None:
+            hdr.setSortIndicator(col, Qt.AscendingOrder if self._active_sort_asc else Qt.DescendingOrder)
+
     def _update_results_sort_indicator(self):
         hdr = self.results_view.horizontalHeader()
         col = next((c for c, k in R_SORT.items() if k == self._sort_key), None)
@@ -816,7 +893,8 @@ class DownloadsTab(QWidget):
                     d["percent"] = sd / sf * 100.0
             except Exception:
                 pass
-        self.amodel.set_rows(queue or [])
+        self._active_queue = list(queue or [])
+        self._render_active()
         if not queue:
             self._set_active_status("Sin descargas", PENDING_COLOR)
             return

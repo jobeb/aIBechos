@@ -281,3 +281,91 @@ def group_loose_files_by_name(files: list) -> dict:
     return {base: {"size_bytes": g["size_bytes"], "file_names": g["file_names"],
                    "files": g["files"]}
             for base, g in groups.items() if g["has_video"]}
+
+
+def apply_slim_replacement(items: list, trees: dict, ep_cache: dict, heavy_full: str,
+                           light_full: str, light_size: int, saved_bytes: int = 0):
+    """Refleja en el análisis de Liberar espacio que el gordo *heavy_full*
+    ya se sustituyó por la ligera *light_full* (*light_size* bytes), sin
+    volver a listar el servidor: tamaño del elemento, archivos sueltos de
+    la película y, si los hay, árbol/caché de capítulos de la serie. Así
+    desaparece de "adelgazables" en cuanto termina. Devuelve el elemento
+    tocado o None si no está en el análisis. Muta lo que recibe."""
+    import posixpath as pp
+
+    def _n(p):
+        return pp.normpath((p or "").replace("\\", "/")) if p else ""
+
+    heavy, light = _n(heavy_full), _n(light_full) or _n(heavy_full)
+    if not heavy:
+        return None
+    h_dir, h_name = pp.split(heavy)
+    l_name = pp.basename(light)
+    try:
+        light_size = int(light_size or 0)
+    except (TypeError, ValueError):
+        light_size = 0
+    old_size = None
+    target = None
+    for it in items or []:
+        paths = getattr(it, "loose_file_paths", None)
+        if paths:
+            if heavy not in [_n(p) for p in paths]:
+                continue
+            target = it
+            it.loose_file_paths = [light if _n(p) == heavy else p for p in paths]
+            new_files = []
+            for pair in getattr(it, "loose_files", None) or []:
+                try:
+                    name, size = pair[0], int(pair[1] or 0)
+                except (TypeError, ValueError, IndexError):
+                    continue
+                if name == h_name:
+                    old_size = size
+                    new_files.append([l_name, light_size])
+                else:
+                    new_files.append([name, size])
+            if getattr(it, "loose_files", None) is not None:
+                it.loose_files = new_files
+            break
+        base = _n(getattr(it, "ftp_path", ""))
+        if base and heavy.startswith(base + "/"):
+            target = it
+            break
+    if target is None:
+        return None
+    # Árbol por carpeta (análisis con LIST -R) y caché del listado bajo
+    # demanda de la serie (ver _store_cleanup_retree).
+    for folder in list((trees or {}).keys()):
+        if _n(folder) != h_dir:
+            continue
+        files = []
+        for name, size in trees[folder] or []:
+            if name == h_name:
+                old_size = old_size if old_size is not None else size
+                files.append((l_name, light_size))
+            else:
+                files.append((name, size))
+        trees[folder] = files
+    cached = (ep_cache or {}).get(target.ftp_path)
+    if cached:
+        flat = []
+        for name, size, folder in cached[1]:
+            if name == h_name and _n(folder) == h_dir:
+                old_size = old_size if old_size is not None else size
+                flat.append((l_name, light_size, folder))
+            else:
+                flat.append((name, size, folder))
+        ep_cache[target.ftp_path] = (cached[0], flat)
+    if old_size is not None:
+        delta = old_size - light_size
+    else:
+        try:
+            delta = int(saved_bytes or 0)
+        except (TypeError, ValueError):
+            delta = 0
+    try:
+        target.size_bytes = max(0, int(target.size_bytes or 0) - max(0, delta))
+    except (TypeError, ValueError):
+        pass
+    return target

@@ -385,3 +385,69 @@ def test_watcher_sustitucion_fallida_conserva_pendiente_y_viejo(tmp_path):
     assert len(upload_calls) == 1
     assert delete_calls == [], "sin la nueva subida el viejo no se toca"
     assert len(load_pending()) == 1
+
+
+# --- adelgazar con el MISMO nombre que el gordo ----------------------------
+# Lo normal: ligera y gordo salen de la misma plantilla. Real: «DC Liga de
+# supermascotas» (2,1 GB contra 12,7 GB) se omitió como "ya existe" y la
+# fila se quedó en "Renombrado".
+
+SAME = "/destino/Mi Serie 1x06.mkv"
+TMP = "/destino/.Mi Serie 1x06.mkv.ligera.tmp"
+
+
+def _same_name_watcher(upload_ok=True):
+    watcher, ftp, upload_calls, _d, events, file_events = _make_watcher()
+    state = {"heavy": True}
+    deletes, renames = [], []
+    ftp.get_remote_size.side_effect = lambda p: (100 if state["heavy"] else None) if p == SAME else None
+
+    def _delete(p):
+        deletes.append(p)
+        if p == SAME:
+            state["heavy"] = False
+        return True, p
+    ftp.delete_file.side_effect = _delete
+    ftp.rename_file.side_effect = lambda a, b: renames.append((a, b)) or (True, b)
+
+    def _upload(local_path, remote_path, **kw):
+        upload_calls.append(kw)
+        return (True, "ok") if upload_ok else (False, "boom")
+    ftp.upload_file.side_effect = _upload
+    return watcher, upload_calls, deletes, renames, file_events
+
+
+def test_ligera_con_el_mismo_nombre_sube_a_temporal_y_sustituye(tmp_path):
+    record(_tv_entry(heavy_remote_file=SAME))
+    watcher, upload_calls, deletes, renames, file_events = _same_name_watcher()
+    watcher._process(_ligera(tmp_path))
+    assert [u["remote_filename"] for u in upload_calls] == [".Mi Serie 1x06.mkv.ligera.tmp"]
+    assert upload_calls[0]["try_resume"] is False
+    assert deletes == [SAME] and renames == [(TMP, SAME)], (deletes, renames)
+    assert load_pending() == []
+    assert not any(len(a) > 1 and a[1] == "skip" for (a, kw) in file_events), "no es un duplicado"
+    ev = [kw for (a, kw) in file_events if len(a) > 1 and a[1] == "slim_replaced"]
+    assert ev and ev[0]["remote_full"] == SAME and ev[0]["size"] == 80,         "Liberar espacio necesita la ruta y el peso de la ligera para ponerse al día"
+
+
+def test_ligera_mismo_nombre_si_falla_la_subida_el_gordo_sigue(tmp_path):
+    record(_tv_entry(heavy_remote_file=SAME))
+    watcher, upload_calls, deletes, renames, _fe = _same_name_watcher(upload_ok=False)
+    watcher._process(_ligera(tmp_path))
+    assert deletes == [TMP], "solo se limpia el temporal; el gordo ni se toca"
+    assert renames == []
+    assert len(load_pending()) == 1
+
+
+def test_aviso_de_reemplazo_respeta_que_no_se_renombra_en_disco(tmp_path):
+    """Con "Renombrar en origen" desactivado, el evento de reemplazo decía
+    renamed_on_disk=True (por defecto) y la fila pasaba a apuntar a un
+    archivo inexistente: los eventos siguientes ya no la encontraban."""
+    record(_tv_entry())
+    watcher, _ftp, _up, _del, _ev, file_events = _make_watcher()
+    watcher.config.d["rename_local"] = False
+    original = _ligera(tmp_path)
+    watcher._process(original)
+    renamed = [kw for (a, kw) in file_events if len(a) > 1 and a[1] == "renamed"]
+    assert renamed and all(kw.get("renamed_on_disk") is False for kw in renamed), renamed
+    assert original.exists()

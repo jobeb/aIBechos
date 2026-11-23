@@ -116,3 +116,42 @@ def test_serie_sin_numeracion_con_is_movie_false_si_tiene_candidato(qtbot):
     assert tab._best() is r
     tab._is_movie = True   # el ⬇ de Películas sí sigue excluyendo capítulos
     assert tab._best() is None
+
+
+# ── Ordenar "Descargas en aMule" pulsando la cabecera ──
+# Antes la tabla de descargas activas no ordenaba por ninguna columna.
+
+def _dl(name, size, done, speed, sources, status=2):
+    return {"hash_hex": name, "name": name, "size_full": size, "size_done": done,
+            "percent": done / size * 100, "speed": speed, "sources": sources, "status": status}
+
+
+def test_ordenar_cola_por_columnas():
+    from gui_qt.downloads.tab import sort_active_rows
+    a = _dl("b peli", 1000, 100, 0, 3)
+    b = _dl("A serie", 3000, 2900, 50, 10)
+    c = _dl("c otra", 2000, 1000, 10, 1)
+    names = lambda rows: [d["name"] for d in rows]
+    assert names(sort_active_rows([a, b, c], "name", True)) == ["A serie", "b peli", "c otra"]
+    assert names(sort_active_rows([a, b, c], "size", False)) == ["A serie", "c otra", "b peli"]
+    assert names(sort_active_rows([a, b, c], "speed", False)) == ["A serie", "c otra", "b peli"]
+    assert names(sort_active_rows([a, b, c], "pct", True)) == ["b peli", "c otra", "A serie"]
+    # Restante: 2 s (b), 100 s (c); la parada (sin velocidad) siempre al final.
+    assert names(sort_active_rows([a, b, c], "eta", True)) == ["A serie", "c otra", "b peli"]
+    assert names(sort_active_rows([a, b, c], "eta", False)) == ["c otra", "A serie", "b peli"]
+    assert names(sort_active_rows([a, b, c], None, True)) == ["b peli", "A serie", "c otra"]
+
+
+def test_pulsar_cabecera_ordena_y_se_recuerda(qtbot):
+    from gui_qt.downloads.tab import A_SIZE
+    tab = _tab(qtbot)
+    tab._apply_active([_dl("peque", 1000, 10, 1, 1), _dl("grande", 9000, 10, 1, 1),
+                       _dl("media", 5000, 10, 1, 1)])
+    tab.active_view.horizontalHeader().sectionClicked.emit(A_SIZE)
+    assert [d["name"] for d in tab.amodel.rows] == ["grande", "media", "peque"]
+    tab.active_view.horizontalHeader().sectionClicked.emit(A_SIZE)
+    assert [d["name"] for d in tab.amodel.rows] == ["peque", "media", "grande"]
+    assert tab.config["table_sort"]["descargas_activas"] == {"key": "size", "asc": True}
+    # El siguiente sondeo de aMule respeta el orden elegido.
+    tab._apply_active([_dl("grande", 9000, 10, 1, 1), _dl("peque", 1000, 10, 1, 1)])
+    assert [d["name"] for d in tab.amodel.rows] == ["peque", "grande"]

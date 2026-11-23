@@ -107,3 +107,27 @@ def test_judge_or_keep_llega_a_consultar_al_juez(monkeypatch):
                                      2011, 300 * 2**20, 400 * 2**20)
     assert vistos and vistos[0][0]["year"] == 2011
     assert best is None and motivo.startswith("IA:")
+
+
+def test_juez_al_vetar_no_recurre_a_lo_que_supera_el_techo_de_adelgazar(monkeypatch):
+    """Caso real: Adelgazar «Noche en el museo 2» (11,1 GB, techo 85%). El
+    juez vetó al mejor y bajó el 2160p de 11,1 GB -- el mismo peso que ya
+    había en el servidor -- porque al vetar probaba con TODOS los
+    resultados, sin el techo de tamaño ni los filtros de best_result."""
+    from core import amule_download as ad
+    from core.amule_client import AmuleSearchResult as R
+    juzgados = []
+
+    def _judge(wanted, cand, key, model=None):
+        juzgados.append(cand["name"])
+        return {"verdict": "malo" if "1080p" in cand["name"] else "ok", "reason": "x"}
+    monkeypatch.setattr(aif, "judge_download_candidate", _judge)
+    cfg = {"ai_fallback_enabled": True, "ai_api_key": "k"}
+    ligera = R(1, "Noche en el museo 2 (2009) BDRip 1080p Castellano.mkv", "4.0 GB", 9, True)
+    gorda = R(2, "Noche en el museo 2 (2009) WEB-DL 2160p DUAL Castellano.mkv", "11.1 GB", 30, True)
+    italiana = R(3, "Una notte al museo 2 (2009) 720p ITA.mkv", "2.0 GB", 30, True)
+    heavy = int(11.1 * 2**30)
+    best, motivo = ad._judge_or_keep(cfg, "Noche en el museo 2", ligera, [ligera, gorda, italiana], True,
+                                     2009, 2 * 2**30, int(heavy * 0.85))
+    assert best is None and motivo.startswith("IA:"), (best, motivo)
+    assert gorda.name not in juzgados and italiana.name not in juzgados

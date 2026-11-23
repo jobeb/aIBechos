@@ -87,3 +87,107 @@ def test_registro_del_gordo_sin_anio_en_la_clave_y_con_tmdb(monkeypatch):
                                    local_size=3 * GB, tmdb_id=1234) is otro
     assert slim_pending.find_match([e], "movie", "La Odisea", year="2026",
                                    local_size=3 * GB, tmdb_id=999) is None, "otro TMDB no casa"
+
+
+def test_pelicula_suelta_lleva_el_boton_en_su_fila_sin_desplegar():
+    """🪶 junto a Jellyfin y borrar, en la fila de la película: desplegar
+    una película (un solo archivo) no aporta nada."""
+    from gui_qt.cleanup.tab import CleanupTab, Node
+    h = _host()
+    h._cleanup_ep_files = lambda it: Cleanup._cleanup_ep_files(h, it)
+    h._slim_candidates_for_item = lambda it, f: Cleanup._slim_candidates_for_item(h, it, f)
+    h._cleanup_movie_slim_candidate = lambda it: Cleanup._cleanup_movie_slim_candidate(h, it)
+    h._is_favorite = h._is_reserved = lambda *a: False
+    h._cleanup_deleting_paths, h._cleanup_rescanning = set(), set()
+    tab = SimpleNamespace(host=h)
+    gorda = _loose_item(source="jellyfin", server_id="x")
+    assert [a.id for a in CleanupTab.actions_for(tab, Node("item", gorda))] == ["open_server", "slim_one", "delete"]
+    ligera = _loose_item(loose_files=[["La Odisea (2026).mkv", GB]])
+    assert [a.id for a in CleanupTab.actions_for(tab, Node("item", ligera))] == ["delete"]
+    vieja = _loose_item(loose_files=None)   # análisis sin tamaños por archivo
+    assert [a.id for a in CleanupTab.actions_for(tab, Node("item", vieja))] == ["delete"]
+    cand = Cleanup._cleanup_movie_slim_candidate(h, gorda)
+    assert (cand["name"], cand["folder"]) == ("La Odisea (2026).mkv", "/datos/peliculas")
+
+
+def test_pelicula_suelta_no_se_despliega():
+    from gui_qt.cleanup.tab import CleanupModel, Node
+    h = _host()
+    h._cleanup_expanded, h._cleanup_expanded_seasons = set(), set()
+    h._render_cleanup_page = lambda: None
+    Cleanup._toggle_cleanup_expand(h, _loose_item())
+    assert h._cleanup_expanded == set()
+    model = CleanupModel(SimpleNamespace(host=h))
+    model.roots = [Node("item", _loose_item())]
+    assert model.hasChildren(model.index(0, 0)) is False
+
+
+def test_filtros_sin_arbol_sftp_siguen_viendo_las_peliculas_sueltas():
+    """SFTP no tiene LIST -R: _cleanup_trees queda vacío tras analizar, y
+    antes «Solo adelgazables»/«Por capítulo/película» decían siempre que
+    faltaba un análisis reciente."""
+    h = _host()
+    h._set_status = lambda *a: None
+    h._cleanup_files_by_owner = lambda items: Cleanup._cleanup_files_by_owner(h, items)
+    h._cleanup_ep_files = lambda it: Cleanup._cleanup_ep_files(h, it)
+    h._slim_candidates_for_item = lambda it, f: Cleanup._slim_candidates_for_item(h, it, f)
+    gorda, ligera = _loose_item(), _loose_item(loose_files=[["La Odisea (2026).mkv", GB]])
+    assert Cleanup._filter_slim_only(h, [gorda, ligera]) == [gorda]
+    assert [r["name"] for r in Cleanup._build_cleanup_flat_rows(h, [gorda])] == ["La Odisea (2026).mkv"]
+
+
+# ── Al terminar un adelgazamiento, Liberar espacio se pone al día solo ──
+# (antes el gancho estaba vacío desde la migración a Qt y la película
+# seguía saliendo como adelgazable hasta volver a analizar).
+
+def test_reemplazo_actualiza_pelicula_suelta_sin_red():
+    from core.cleanup_candidates import apply_slim_replacement
+    it = _loose_item()
+    before = it.size_bytes
+    got = apply_slim_replacement([it], {}, {}, "/datos/peliculas/La Odisea (2026).mkv",
+                                 "/datos/peliculas/La Odisea (2026).mkv", 2 * GB)
+    assert got is it
+    assert ["La Odisea (2026).mkv", 2 * GB] in it.loose_files
+    assert it.size_bytes == before - 7 * GB
+    h = _host()
+    assert Cleanup._slim_candidates_for_item(h, it, Cleanup._cleanup_ep_files(h, it))[0] == [], \
+        "ya no es adelgazable"
+
+
+def test_reemplazo_actualiza_capitulo_en_cache_de_la_serie():
+    from core.cleanup_candidates import apply_slim_replacement
+    serie = CleanupItem(tmdb_id=9, name="X", media_type="tv", ftp_path="/datos2/series/X",
+                        category_name="Series", size_bytes=6 * GB)
+    t1 = "/datos2/series/X/Temporada 01"
+    cache = {serie.ftp_path: (1.0, [("X 1x01.mkv", 5 * GB, t1), ("X 1x02.mkv", GB, t1)])}
+    trees = {t1: [("X 1x01.mkv", 5 * GB), ("X 1x02.mkv", GB)]}
+    otra = _loose_item()
+    got = apply_slim_replacement([otra, serie], trees, cache, f"{t1}/X 1x01.mkv",
+                                 f"{t1}/X 1x01 ligera.mkv", GB)
+    assert got is serie
+    assert cache[serie.ftp_path][1][0] == ("X 1x01 ligera.mkv", GB, t1)
+    assert trees[t1][0] == ("X 1x01 ligera.mkv", GB)
+    assert serie.size_bytes == 2 * GB
+    assert apply_slim_replacement([serie], {}, {}, "/otra/cosa.mkv", "", 1) is None
+
+
+def test_evento_slim_replaced_refresca_liberar_espacio(monkeypatch):
+    import core.cleanup_candidates_cache as ccc
+    saved = []
+    monkeypatch.setattr(ccc, "save_cache", lambda items, ts, by="": saved.append(len(items)))
+    it = _loose_item()
+    h = _host()
+    h._cleanup_raw_items = [it]
+    h._cleanup_last_scan_ts, h._cleanup_scanned_by = 1.0, "Jose"
+    applied = []
+    h._apply_cleanup_filters = lambda preserve_page=False: applied.append(preserve_page)
+    Cleanup._refresh_cleanup_item_after_replace(
+        h, "/datos/peliculas/La Odisea (2026).mkv", "/datos/peliculas/La Odisea (2026).mkv",
+        2 * GB, 7 * GB)
+    assert ["La Odisea (2026).mkv", 2 * GB] in it.loose_files
+    assert saved == [1] and applied == [True]
+
+
+def test_qtappcore_no_tapa_el_refresco_con_un_stub():
+    from gui_qt.core_host import QtAppCore
+    assert QtAppCore._refresh_cleanup_item_after_replace is Cleanup._refresh_cleanup_item_after_replace

@@ -631,9 +631,6 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
     def _cancel_missing_episodes_scan(self):
         self.missing_view.cancel_scan()
 
-    def _refresh_cleanup_item_after_replace(self, *args, **kwargs):
-        pass   # "Liberar espacio" aún no está migrada
-
     def _apply_synced_activity_history(self, activity_list: list):
         self._shared_activity_history = activity_list
         self.history_view.on_activity_synced()

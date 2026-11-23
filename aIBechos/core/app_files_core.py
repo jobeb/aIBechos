@@ -134,7 +134,8 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                 # adelgazadores (quien lo lanzó sale del pendiente; si el
                 # pendiente era antiguo y no trae autor, cae al nombre
                 # actual de Ajustes).
-                self._refresh_cleanup_item_after_replace(heavy_remote_file)
+                self._refresh_cleanup_item_after_replace(
+                    heavy_remote_file, remote_full, size, saved_bytes)
                 try:
                     _slim_person = (added_by or "") or str(
                         self.config_data.get("app_user_name", "") or "").strip()

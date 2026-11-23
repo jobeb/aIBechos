@@ -25,6 +25,7 @@ partida y olvida lo guardado) y mostrar/ocultar cada columna.
 
 from __future__ import annotations
 
+import time
 import weakref
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
@@ -37,6 +38,29 @@ _log = get_logger("aIBechos.qt", "app.log")
 #: Por debajo de esto una columna de relleno no se encoge sola (el usuario
 #: sí puede estrecharla a mano); si no cabe todo, sale la barra horizontal.
 MIN_FILL_WIDTH = 120
+# Vaivén de barras de desplazamiento: si en este plazo el ancho útil salta
+# entre dos valores al menos estas veces, se llena con el más estrecho.
+BOUNCE_WINDOW_S = 1.0
+BOUNCE_MIN_FLIPS = 4
+
+
+def settle_width(history: list, now: float, width: int) -> int:
+    """Ancho con el que llenar la tabla. *history* ([(t, ancho), ...], se
+    actualiza aquí) guarda los anchos recientes del viewport. Si el ancho
+    rebota entre DOS valores (la barra vertical aparece y desaparece: al
+    llenar el ancho sin ella, la horizontal asoma, quita alto, la vertical
+    sobra, se va, el ancho vuelve... para siempre), se usa el menor: con él
+    las columnas caben en los dos estados y el vaivén se corta. Real: la
+    pestaña Archivos colgada con 29 filas que llenaban justo el alto."""
+    history.append((now, width))
+    del history[:-12]
+    recent = [w for t, w in history if now - t <= BOUNCE_WINDOW_S]
+    distinct = set(recent)
+    if len(distinct) == 2 and len(recent) >= BOUNCE_MIN_FLIPS:
+        flips = sum(1 for a, b in zip(recent, recent[1:]) if a != b)
+        if flips >= BOUNCE_MIN_FLIPS - 1:
+            return min(distinct)
+    return width
 
 #: Clave de la config donde se guardan los anchos.
 CONFIG_KEY = "column_widths"
@@ -130,6 +154,7 @@ class _FillColumns(QObject):
         # pasa antes por el tamaño normal y lo guardado volvía descolocado.
         self._base = None
         self._defaults = None     # anchos de partida (para "Restablecer")
+        self._widths_seen = []    # [(t, ancho del viewport)], ver settle_width
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(SAVE_DELAY_MS)
@@ -319,7 +344,7 @@ class _FillColumns(QObject):
         if not cols:
             return
         hdr = self.header()
-        spare = self._view.viewport().width() - hdr.length()
+        spare = self._usable_width() - hdr.length()
         self._spread(cols, {c: hdr.sectionSize(c) for c in cols}, spare)
 
     def apply(self):
@@ -331,7 +356,10 @@ class _FillColumns(QObject):
         widths, base_vp = self._base
         hdr = self.header()
         base = {c: widths[c] if c < len(widths) else hdr.sectionSize(c) for c in cols}
-        self._spread(cols, base, self._view.viewport().width() - base_vp)
+        self._spread(cols, base, self._usable_width() - base_vp)
+
+    def _usable_width(self) -> int:
+        return settle_width(self._widths_seen, time.monotonic(), self._view.viewport().width())
 
     def _spread(self, cols, base, delta):
         hdr = self.header()

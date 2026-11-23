@@ -128,10 +128,9 @@ class CleanupModel(QAbstractItemModel):
         if parent.column() != 0:
             return False
         if n.kind == "item":
-            # Carpeta: desplegable. Película suelta (sin carpeta): también,
-            # si el análisis trae el tamaño de sus archivos (adelgazar).
-            return (not getattr(n.item, "loose_file_paths", None)
-                    or bool(getattr(n.item, "loose_files", None)))
+            # Carpeta: desplegable. Película suelta (un solo archivo): no,
+            # su 🪶 va en la propia fila.
+            return not getattr(n.item, "loose_file_paths", None)
         return bool(n.children) or n.kind == "season"
 
     def columnCount(self, parent=QModelIndex()):
@@ -805,6 +804,13 @@ class CleanupTab(QWidget):
                 acts.append(Action("open_server", "J" if it.source == "jellyfin" else "P",
                                    "#4b3f8f" if it.source == "jellyfin" else "#9c7a10",
                                    f"Abrir en {'Jellyfin' if it.source == 'jellyfin' else 'Plex'}"))
+            cand = h._cleanup_movie_slim_candidate(it)
+            if cand:
+                acts.append(Action("slim_one", "🪶", theme.ICON_DL_IDLE,
+                                   f"Adelgazar: pesa {fmt_size(cand['size'])}, objetivo {fmt_size(cand['target'])}. "
+                                   "Descarga automática de una versión más ligera (<85% del peso actual); "
+                                   "cuando llegue, la gorda se borra sola del servidor.",
+                                   enabled=not deleting))
             acts.append(Action("delete", "⏳" if deleting else "🗑", theme.ICON_IGNORE,
                                "Borrado en curso." if deleting else
                                ("Protegida (favorita o reservada): no se puede borrar." if prot else
@@ -910,7 +916,9 @@ class CleanupTab(QWidget):
         elif action_id == "search":
             h._slim_search_on_amule(it, n.data.get("name", ""))
         elif action_id == "slim_one":
-            d = n.data
+            d = n.data if n.kind != "item" else (h._cleanup_movie_slim_candidate(it) or {})
+            if not d:
+                return
             h._slim_download_one(it, d.get("name", ""), d.get("size") or 0, d.get("target") or 0, None,
                                  d.get("folder"))
         elif action_id == "slim_many":

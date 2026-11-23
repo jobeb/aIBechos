@@ -747,6 +747,19 @@ class CleanupCoreMixin:
                 target = None
         return cands, target
 
+    def _cleanup_movie_slim_candidate(self, item) -> dict | None:
+        """Película suelta: su vídeo si es adelgazable (dict de
+        find_slim_candidates + 'folder'), o None. Para poner 🪶 en la
+        propia fila, junto a Jellyfin y borrar, sin tener que desplegarla
+        (una película es un solo archivo: desplegarla no aporta nada)."""
+        if item.media_type == "tv" or not getattr(item, "loose_file_paths", None):
+            return None
+        try:
+            cands, _t = self._slim_candidates_for_item(item, self._cleanup_ep_files(item))
+        except Exception:
+            return None
+        return cands[0] if cands else None
+
     def _cleanup_files_by_owner(self, items: list) -> dict:
         """{ftp_path: [(nombre, tamaño, carpeta)]} para *items*, con los
         árboles del propio análisis (LIST -R, sin red): por cada carpeta
@@ -794,7 +807,9 @@ class CleanupCoreMixin:
         no se puede saber y se avisa en vez de filtrar a ciegas."""
         trees = getattr(self, "_cleanup_trees", {}) or {}
         ep_cache = getattr(self, "_cleanup_ep_cache", {}) or {}
-        if not trees and not ep_cache:
+        # Sin árbol (SFTP no tiene LIST -R) aún se puede filtrar lo que trae
+        # sus tamaños en el propio análisis: las películas sueltas.
+        if not trees and not ep_cache and not any(getattr(i, "loose_files", None) for i in items):
             self._set_status("«Solo adelgazables» necesita un análisis reciente: "
                              "pulsa «Analizar servidor» primero.", WARNING_COLOR)
             return items
@@ -839,7 +854,9 @@ class CleanupCoreMixin:
         from core.slim_candidates import find_oversize_flat
         trees = getattr(self, "_cleanup_trees", {}) or {}
         ep_cache = getattr(self, "_cleanup_ep_cache", {}) or {}
-        if not trees and not ep_cache:
+        # Sin árbol (SFTP no tiene LIST -R) aún se puede filtrar lo que trae
+        # sus tamaños en el propio análisis: las películas sueltas.
+        if not trees and not ep_cache and not any(getattr(i, "loose_files", None) for i in items):
             self._set_status("«Por capítulo/película» necesita un análisis reciente: "
                              "pulsa «Analizar servidor» primero.", WARNING_COLOR)
             return None
@@ -1131,11 +1148,9 @@ class CleanupCoreMixin:
             self._cleanup_expanded_seasons = {
                 k for k in self._cleanup_expanded_seasons if k[0] != key}
         else:
-            # Archivos sueltos: no hay nada que expandir (sus tamaños ya
-            # se conocen y no hay capítulos dentro).
+            # Película suelta (sin carpeta): no se despliega -- su 🪶 va en
+            # la propia fila (ver _cleanup_movie_slim_candidate).
             if getattr(item, "loose_file_paths", None):
-                self._set_status("Ese elemento son archivos sueltos, no una carpeta con capítulos.",
-                                 WARNING_COLOR)
                 return
             self._cleanup_expanded.add(key)
             if self._cleanup_ep_files(item) is None and key not in self._cleanup_slim_loading:
@@ -1238,6 +1253,38 @@ class CleanupCoreMixin:
                                  SUCCESS_COLOR if done else WARNING_COLOR)
             self.after(0, _apply)
         threading.Thread(target=worker, daemon=True).start()
+
+    def _refresh_cleanup_item_after_replace(self, heavy_remote_file, light_remote_file=None,
+                                            light_size=None, saved_bytes=None):
+        """Adelgazamiento terminado (evento "slim_replaced" del watcher):
+        el análisis de Liberar espacio se pone al día al momento con la
+        ligera (ruta y peso que trae el evento), sin volver a listar el
+        servidor, y se guarda; la película/capítulo deja de salir como
+        adelgazable. Si no está en el análisis, no hace nada."""
+        from core.cleanup_candidates import apply_slim_replacement
+        try:
+            item = apply_slim_replacement(
+                getattr(self, "_cleanup_raw_items", None) or [],
+                getattr(self, "_cleanup_trees", None) or {},
+                getattr(self, "_cleanup_ep_cache", None) or {},
+                heavy_remote_file, light_remote_file, light_size, saved_bytes)
+        except Exception:
+            _log.warning("Liberar espacio: no se pudo reflejar el reemplazo de %s",
+                         heavy_remote_file, exc_info=True)
+            return
+        if item is None:
+            return
+        _log.info("Liberar espacio: '%s' actualizado tras adelgazar (%s)", item.name, heavy_remote_file)
+        try:
+            from core.cleanup_candidates_cache import save_cache
+            save_cache(self._cleanup_raw_items, getattr(self, "_cleanup_last_scan_ts", None) or 0,
+                       getattr(self, "_cleanup_scanned_by", "") or "")
+        except Exception:
+            pass
+        try:
+            self._apply_cleanup_filters(preserve_page=True)
+        except Exception:
+            pass
 
     def _rescan_cleanup_item(self, item):
         """Re-lista SOLO la carpeta de *item* en el servidor (barato, sin

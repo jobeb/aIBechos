@@ -1247,9 +1247,16 @@ class AutoWatcher:
                               new_name, _heavy, _heavy_remote_size)
                     self.on_event("info", f"Reemplazo: subiendo ligera {new_name} "
                                           "(el gordo se borra después)")
+                    # renamed_on_disk: con "Renombrar en origen" desactivado
+                    # el archivo conserva su nombre; sin esto la fila pasaba
+                    # a apuntar a <carpeta>/<new_name>, que no existe, y los
+                    # eventos siguientes ya no la encontraban (se quedaba
+                    # en "Renombrado" para siempre: real, DC Liga de
+                    # supermascotas).
                     self.on_file_event(new_path, "renamed", new_name=new_name,
                                         reason=f"Reemplazo de versión pesada ({_heavy})",
-                                        is_slim=True)
+                                        is_slim=True,
+                                        renamed_on_disk=Path(new_path).name == new_name)
 
             # "Ya existe en el servidor": si en la carpeta remota de destino
             # ya hay un archivo con EXACTAMENTE este mismo nombre y ya está
@@ -1265,7 +1272,27 @@ class AutoWatcher:
             # como en la subida manual: se omite. Un parcial más pequeño no
             # cuenta como "ya existe": se sube de nuevo para completarse.
             remote_file_full = f"{remote_path.rstrip('/')}/{remote_filename}"
-            remote_size = self.ftp.get_remote_size(remote_file_full)
+            # Adelgazar con el MISMO nombre que el gordo (lo normal: los dos
+            # salen de la misma plantilla): el "ya existe" de abajo es el
+            # propio gordo y omitía la ligera como duplicado (real: DC Liga
+            # de supermascotas, 2,1 GB contra 12,7 GB). Se sube a un nombre
+            # temporal oculto y, ya verificada, se borra el gordo y se
+            # renombra a su sitio: si la subida falla, el gordo sigue.
+            _slim_same_name = False
+            if _slimpend is not None and not _slim_heavy_gone:
+                try:
+                    _heavy_full = (_slimpend.get("heavy_remote_file", "") or "").replace("\\", "/")
+                except Exception:
+                    _heavy_full = ""
+                import posixpath as _pp
+                _slim_same_name = bool(_heavy_full) and (
+                    _pp.normpath(_heavy_full) == _pp.normpath(remote_file_full))
+            # Nombre fijo (sin pid): un intento cortado se pisa en el
+            # siguiente en vez de dejar temporales huérfanos.
+            upload_filename = (f".{remote_filename}.ligera.tmp"
+                               if _slim_same_name else remote_filename)
+            remote_size = (None if _slim_same_name
+                           else self.ftp.get_remote_size(remote_file_full))
             try:
                 local_size = Path(new_path).stat().st_size
             except OSError:
@@ -1462,7 +1489,7 @@ class AutoWatcher:
                 _log.error("FTP conexion fallida (subida): %s", msg_conn)
                 ok3, msg3 = False, msg_conn
             else:
-                _remote_full_up = f"{remote_path.rstrip('/')}/{remote_filename}"
+                _remote_full_up = f"{remote_path.rstrip('/')}/{upload_filename}"
                 with self._skip_lock:
                     self._uploading_remote.add(_remote_full_up)
                 try:
@@ -1472,13 +1499,14 @@ class AutoWatcher:
                         cancel_event=self._stop,
                         skip_event=skip_event,
                         speed_limit_kbs=self._get_speed_limit_kbs,
-                        remote_filename=remote_filename,
+                        remote_filename=upload_filename,
                         # Reanudar el parcial si lo es de verdad (ver
                         # _is_prefix_of_local): tras un reinicio a media
                         # subida se continúa, no se reenvía desde cero.
                         # Salvo sustitución pedida o remoto con bytes de
                         # más: ahí se sobrescribe.
-                        try_resume=(_reqpend is None and not _overwrite_dirty),
+                        try_resume=(_reqpend is None and not _overwrite_dirty
+                                    and not _slim_same_name),
                     )
                 finally:
                     with self._skip_lock:
@@ -1529,6 +1557,26 @@ class AutoWatcher:
                             _gone = False
                 except Exception as e:
                     _ok_del, _msg_del, _gone = False, str(e), False
+                _tmp_full = f"{remote_path.rstrip('/')}/{upload_filename}"
+                if _slim_same_name and _ok_del and _gone:
+                    # La ligera está con nombre temporal: a su sitio.
+                    try:
+                        with self._ftp_lock:
+                            _ok_mv, _msg_mv = self.ftp.rename_file(_tmp_full, remote_file_full)
+                    except Exception as e:
+                        _ok_mv, _msg_mv = False, str(e)
+                    if not _ok_mv:
+                        _log.error("Gordo borrado pero no se pudo renombrar la ligera %s -> %s (%s): "
+                                   "renómbrala a mano", _tmp_full, remote_file_full, _msg_mv)
+                        self.on_event("error", f"Ligera subida como {upload_filename}: no se pudo "
+                                               f"renombrar a {remote_filename} ({_msg_mv}), hazlo a mano")
+                elif _slim_same_name:
+                    # El gordo no se pudo borrar: la ligera temporal sobra.
+                    try:
+                        with self._ftp_lock:
+                            self.ftp.delete_file(_tmp_full)
+                    except Exception:
+                        pass
                 if _ok_del and _gone:
                     try:
                         _consume_pending(_slimpend)
@@ -1575,6 +1623,7 @@ class AutoWatcher:
                         _light_size = 0
                     self.on_file_event(new_path, "slim_replaced", new_name=new_name,
                                        heavy_remote_file=_slimpend.get("heavy_remote_file", ""),
+                                       remote_full=remote_file_full, size=_light_size,
                                        added_by=_slimpend.get("added_by", "") or "",
                                        saved_bytes=max(0, _heavy_size - _light_size))
                 except Exception:
@@ -1593,7 +1642,9 @@ class AutoWatcher:
             # Cancelada a mano (ver cancel_file): el parcial no debe
             # quedarse en el servidor, donde el servidor multimedia lo
             # indexaría como si fuera el archivo completo.
-            remote_full = f"{remote_path.rstrip('/')}/{remote_filename}"
+            # upload_filename: en un adelgazamiento con el mismo nombre el
+            # parcial es el temporal -- el nombre final es el GORDO.
+            remote_full = f"{remote_path.rstrip('/')}/{upload_filename}"
             try:
                 with self._ftp_lock:
                     self.ftp.delete_file(remote_full)
@@ -1602,6 +1653,13 @@ class AutoWatcher:
             self._on_upload_skipped(new_path, new_name, _mark_both)
         else:
             _log.error("FTP upload fallido: %s | %s", new_name, msg3)
+            if _slim_same_name:
+                # Temporal a medias: fuera (el gordo no se ha tocado).
+                try:
+                    with self._ftp_lock:
+                        self.ftp.delete_file(f"{remote_path.rstrip('/')}/{upload_filename}")
+                except Exception:
+                    pass
             self.on_event("error", f"Error FTP al subir {new_name}: {msg3}")
             self.on_file_event(new_path, "error", new_name=new_name, reason=f"Error FTP al subir: {msg3}")
             _mark_both("error_ftp", new_name=new_name)
