@@ -275,3 +275,19 @@ def test_ec_status_maps_to_download_tab_codes():
     assert _ec_status_to_code(7, 0) == 1      # pausado
     assert _ec_status_to_code(9, 0) == 4      # completado
     assert _ec_status_to_code(3, 0) == 6      # verificando
+
+
+def test_download_queue_strict_raises_when_unreadable(monkeypatch):
+    """Con strict, una cola ilegible lanza en vez de devolver []: Solicitudes
+    tomaba [] por "cola vacía" y daba por perdidas todas las descargas en
+    curso a la vez (72 "descarga incompleta" en noviembre)."""
+    import core.amule_client as ac
+    from core.ec_client import EC_TAG_PARTFILE
+    weird = _make_tag(EC_TAG_PARTFILE, 4, (1).to_bytes(4, "big"), children=[
+        _make_string_tag(EC_TAG_PARTFILE_NAME, "sin hash.mkv")])
+    monkeypatch.setattr(ac, "_find_amulecmd", lambda *_a: "")
+    with pytest.raises(RuntimeError):
+        _queue_client(weird).get_download_queue(strict=True)
+    assert _queue_client(weird).get_download_queue() == []   # sin strict, igual que antes
+    # Cola de verdad vacía (EC respondió sin descargas): [] también con strict.
+    assert _queue_client().get_download_queue(strict=True) == []

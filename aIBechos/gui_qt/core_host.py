@@ -132,6 +132,7 @@ class QtAppCore(FilesCoreMixin, SharedSyncMixin, MissingEpScanMixin, AutoComplet
         self._download_requests_sweep_ts = 0.0
         self._download_requests_amule_warn_ts = 0.0
         self._download_requests_waiting_ts = 0.0
+        self._download_requests_lost_misses = {}   # rid -> lecturas seguidas sin verla en aMule
         self._download_requests_last_data = None   # (ts, cola): para el ⚡, ver _auto_requested_episodes
         self._fallback_missing_rows = None
         self._fallback_missing_ts = 0.0

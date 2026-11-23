@@ -979,6 +979,12 @@ def uploaded_for_request(history: list, entry: dict) -> bool:
 #: (recién añadida puede tardar en aparecer en la cola).
 LOST_GRACE_SECONDS = 10 * 60
 
+#: Lecturas SEGUIDAS de la cola de aMule sin la descarga antes de darla por
+#: perdida (y gastar un intento). Con una sola, cualquier lectura a medias
+#: restaba un intento a todas las solicitudes en curso a la vez (real: 72
+#: "descarga incompleta" en noviembre, cada una agotada en ~1 hora).
+LOST_CONFIRM_READS = 3
+
 
 def set_amule_hashes(data: dict, req_id: str, hashes) -> dict | None:
     """Dict NUEVO con los hashes (MD4 hex) de lo que se lanzó en aMule

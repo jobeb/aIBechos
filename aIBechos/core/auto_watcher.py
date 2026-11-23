@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 
 from core.adult_content import adult_reason, looks_adult
-from core.api_client import detect_episode
+from core.api_client import detect_episode, year_in_filename
 from core.renamer import (build_name_for_media_info, rename_file,
                            is_video_file, is_book_file, is_comic_file, is_archive_file)
 from core.ftp_client import FTPClient, _ftp_safe
@@ -837,7 +837,8 @@ class AutoWatcher:
                 # popularidad y "Amadeus 1x05" se identificaba como la
                 # película "Amadeus (1984)".
                 results = self._only_series_if_episode(
-                    self.tmdb.search_multi(detected["title"], prefer_type=media_type),
+                    self.tmdb.search_multi(detected["title"], prefer_type=media_type,
+                                           year=year_in_filename(path.name)),
                     media_type, season, episode, path)
                 if not results:
                     # Intentar búsqueda alternativa con template por serie
@@ -908,6 +909,10 @@ class AutoWatcher:
                     return
 
                 media_info = self.tmdb.build_media_info(result, season=season, episode=episode)
+                # build_media_info pasa la numeración absoluta del anime
+                # (2x129) a la de TMDB (2x67): seguir con la corregida.
+                if getattr(media_info, "media_type", "") == "tv" and media_info.episode is not None:
+                    season, episode = media_info.season, media_info.episode
 
                 # Enriquecer con info de episodio si es serie
                 if media_info.media_type == "tv" and season and episode:

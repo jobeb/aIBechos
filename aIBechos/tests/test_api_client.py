@@ -717,3 +717,58 @@ def test_search_multi_identico_con_articulo_antes_que_sin_el(monkeypatch):
     assert ids == [1292415, 1185344, 1263337]
     # Y al revés: buscando "The Beast" gana "The Beast".
     assert client.search_multi("The Beast", prefer_type="movie")[0]["id"] == 1185344
+
+
+# ── Hunter × Hunter (real, 11/2026): dos series con el mismo título y la
+#    numeración seguida del anime ──────────────────────────────────────────
+
+def test_year_in_filename_only_bracketed_years():
+    from core.api_client import year_in_filename
+    assert year_in_filename("1x27 Hunter x Hunter Hyskoa _Castellano (1999).mp4") == "1999"
+    assert year_in_filename("Blade Runner 2049 (2017) 1080p.mkv") == "2017"
+    assert year_in_filename("Serie 1x05 1080p 2160p.mkv") is None
+    assert year_in_filename("Peli [2011].mkv") == "2011"
+
+
+def test_search_multi_prefers_the_year_in_the_filename(monkeypatch):
+    client = TMDBClient("k")
+    results = [
+        {"id": 46298, "media_type": "tv", "name": "Hunter × Hunter",
+         "first_air_date": "2011-10-02", "popularity": 90},
+        {"id": 45952, "media_type": "tv", "name": "HunterxHunter",
+         "first_air_date": "1999-10-16", "popularity": 20},
+    ]
+    monkeypatch.setattr(client, "_get", lambda endpoint, **kw: {"results": results})
+    assert client.search_multi("Hunter X Hunter", prefer_type="tv")[0]["id"] == 46298
+    assert client.search_multi("Hunter X Hunter", prefer_type="tv", year="1999")[0]["id"] == 45952
+
+
+def test_absolute_to_season_episode():
+    from core.api_client import absolute_to_season_episode as conv
+    hxh = [(0, 30), (1, 62), (2, 74), (3, 12)]
+    assert conv(hxh, 2, 129) == (2, 67)
+    assert conv(hxh, 2, 124) == (2, 62)
+    assert conv(hxh, 1, 63) == (2, 1)
+    assert conv(hxh, 2, 21) is None          # cabe en su temporada: no se toca
+    assert conv(hxh, 1, 500) is None         # no cabe en la serie entera
+    assert conv(hxh, 3, 13) is None          # el 13 absoluto es de la temporada 1
+    assert conv([], 2, 129) is None
+
+
+def test_build_media_info_fixes_absolute_episode_number(monkeypatch):
+    client = TMDBClient("k")
+
+    def fake_get(endpoint, **kw):
+        if endpoint == "/tv/46298":
+            return {"seasons": [{"season_number": 1, "episode_count": 62},
+                                {"season_number": 2, "episode_count": 74},
+                                {"season_number": 3, "episode_count": 12}]}
+        if endpoint == "/tv/46298/season/2/episode/67":
+            return {"name": "Formidable Enemigo x Y x Objetivo Claro"}
+        raise RuntimeError("404")
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    info = client.build_media_info({"id": 46298, "media_type": "tv", "name": "Hunter × Hunter",
+                                    "first_air_date": "2011-10-02"}, season=2, episode=129)
+    assert (info.season, info.episode) == (2, 67)
+    assert info.episode_title == "Formidable Enemigo x Y x Objetivo Claro"

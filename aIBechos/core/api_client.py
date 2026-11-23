@@ -147,7 +147,7 @@ class TMDBClient:
     # "tv"/"movie" -- el anime es una serie más para su catálogo.
     _TMDB_TYPE = {"tv": "tv", "anime": "tv", "movie": "movie"}
 
-    def search_multi(self, query: str, prefer_type: str = "") -> list:
+    def search_multi(self, query: str, prefer_type: str = "", year=None) -> list:
         """Resultados de /search/multi ordenados por popularidad.
 
         *prefer_type* (el media_type que dedujo detect_episode del propio
@@ -176,7 +176,13 @@ class TMDBClient:
         que solo casa al quitárselo: caso real, "Beast.(La.bestia).(2026)"
         (la de MMA, original "Beast") se identificó como "The Beast"
         (2026, otra película, más popular), porque normalizado "the beast"
-        y "beast" son lo mismo."""
+        y "beast" son lo mismo.
+
+        *year* (el año que traía el nombre del archivo, ver
+        year_in_filename) va justo después del tipo: dos series con el
+        mismo título se distinguen por él. Caso real: "Hunter x Hunter
+        1x27 ... _Castellano (1999).mp4" se identificaba como la de 2011
+        y el anime de 1999 acababa mezclado en la carpeta de la otra."""
         import unicodedata
         from core.series_match import normalize_series_name
         data = self._get("/search/multi", query=query)
@@ -200,9 +206,18 @@ class TMDBClient:
         def _identical(r) -> bool:
             return bool(q_words) and any(_words(r.get(k)) == q_words for k in _keys)
 
+        want_year = str(year or "").strip()[:4]
+
+        def _year_ok(r) -> bool:
+            if not want_year:
+                return False
+            date = r.get("first_air_date") or r.get("release_date") or ""
+            return date[:4] == want_year
+
         return sorted(
             results,
             key=lambda r: (bool(preferred) and r.get("media_type") == preferred,
+                           _year_ok(r),
                            _exact(r),
                            _identical(r),
                            r.get("popularity", 0)),
@@ -478,8 +493,30 @@ class TMDBClient:
                 info.episode_title = ep.get("name", "")
             except Exception:
                 info.episode_title = ""
+                # Ese episodio no existe en TMDB: si el nombre traía la
+                # numeración SEGUIDA del anime ("Hunter × Hunter 2x129",
+                # cuando la temporada 2 tiene 74), se pasa a la de TMDB.
+                fixed = self._absolute_episode(info.tmdb_id, season, episode)
+                if fixed:
+                    info.season, info.episode = fixed
+                    try:
+                        ep = self.get_episode_info(info.tmdb_id, *fixed)
+                        info.episode_title = ep.get("name", "")
+                    except Exception:
+                        pass
 
         return info
+
+    def _absolute_episode(self, tv_id, season, episode):
+        """(temporada, episodio) de TMDB para un número de episodio
+        absoluto, o None si no aplica o no se puede saber. Nunca lanza."""
+        try:
+            details = self.get_tv_details(tv_id)
+            counts = [(s.get("season_number"), s.get("episode_count"))
+                      for s in (details.get("seasons") or [])]
+        except Exception:
+            return None
+        return absolute_to_season_episode(counts, season, episode)
 
     def validate_key(self) -> bool:
         try:
@@ -487,6 +524,45 @@ class TMDBClient:
             return True
         except Exception:
             return False
+
+
+def year_in_filename(name: str):
+    """Año (como texto) que trae el nombre de un archivo entre paréntesis
+    o corchetes -- "(1999)", "[2011]" --, o None. Solo esa forma: un 1080
+    o el número de un episodio no son años, y un año suelto puede ser
+    parte del título ("Blade Runner 2049"). Si hay varios, el último."""
+    import datetime as _dt
+    top = _dt.date.today().year + 1
+    found = None
+    for m in re.finditer(r"[\(\[]\s*((?:19|20)\d{2})\s*[\)\]]", name or ""):
+        if 1900 <= int(m.group(1)) <= top:
+            found = m.group(1)
+    return found
+
+
+def absolute_to_season_episode(season_counts, season, episode):
+    """Convierte un episodio con numeración absoluta (la del anime, que no
+    se reinicia en cada temporada) a (temporada, episodio) de TMDB.
+
+    *season_counts*: [(número de temporada, nº de episodios), ...] de
+    /tv/{id}; la 0 (especiales) no cuenta. Solo si *episode* NO cabe en
+    *season* y sí en la serie entera, y si el resultado cae en *season*
+    o después (un "2x129" no puede ser de la temporada 1). Si no, None.
+    Caso real: "Hunter × Hunter 2x129" (2011) es el 2x67."""
+    try:
+        season, episode = int(season), int(episode)
+        seasons = sorted((int(n), int(c or 0)) for n, c in season_counts if n and int(n) > 0)
+    except (TypeError, ValueError):
+        return None
+    counts = dict(seasons)
+    if not seasons or episode <= counts.get(season, 0):
+        return None
+    left = episode
+    for n, c in seasons:
+        if left <= c:
+            return (n, left) if n >= season else None
+        left -= c
+    return None
 
 
 # ── Patrones de detección ──────────────────────────────────────────────────────

@@ -604,11 +604,20 @@ class EcClient:
             return True, ""
         return True, ""
 
-    def get_download_queue(self) -> list[dict]:
+    def get_download_queue(self, strict: bool = False) -> list[dict]:
         """Lista de descargas en cola de aMule vía EC.
 
         Cada elemento: {hash_hex, name, size_done, size_full, percent, speed, sources, status}
         Si el servidor no soporta la operación o no hay cola, devuelve [] sin lanzar.
+
+        Con *strict*, si la cola no se pudo leer lanza RuntimeError en vez de
+        devolver []: quien da descargas por perdidas (Solicitudes) no debe
+        confundir "no sé" con "cola vacía". Caso real: un PC con muchas
+        descargas a la vez (Andrómeda, 46 capítulos) tardaba en responder,
+        la cola salía [] y cada ciclo restaba un intento a TODAS las
+        solicitudes en curso -- 72 "descarga incompleta" en una hora cada una.
+        Una lista vacía de amulecmd tampoco vale en *strict*: no distingue
+        cola vacía de "no conectó".
         """
         def _get_download_queue_via_amulecmd(host="localhost", port=4712, password="", timeout=5) -> list[dict]:
             """Fallback: lee "show DL" desde amulecmd para obtener descargas activas.
@@ -765,34 +774,33 @@ class EcClient:
             except Exception:
                 return []
 
+        def _fallback() -> list[dict]:
+            try:
+                q = _get_download_queue_via_amulecmd(self.host, self.port, self.password)
+            except Exception as e:
+                if strict:
+                    raise RuntimeError(f"cola de aMule ilegible: {e}") from e
+                return []
+            if strict and not q:
+                raise RuntimeError("cola de aMule ilegible (EC falló y amulecmd no dio nada)")
+            return q
+
         try:
             self._send_packet(EC_OP_GET_DLOAD_QUEUE, [])
             opcode, tags = self._recv_packet()
         except Exception:
             # Fallo de red/conexión EC: intentar amulecmd como respaldo
-            try:
-                return _get_download_queue_via_amulecmd(self.host, self.port, self.password)
-            except Exception:
-                return []
+            return _fallback()
         if opcode == EC_OP_FAILED:
             err = self._extract_error(tags) or ""
             # Si el servidor EC no soporta la operación (p.ej. "Unknown command"),
             # no lo tratamos como un fallo real: usamos el fallback amulecmd.
             if err and any(kw in err.lower() for kw in ("unknown", "unsupported", "not implemented", "command")):
-                try:
-                    return _get_download_queue_via_amulecmd(self.host, self.port, self.password)
-                except Exception:
-                    return []
-            try:
-                return _get_download_queue_via_amulecmd(self.host, self.port, self.password)
-            except Exception:
-                return []
+                return _fallback()
+            return _fallback()
         if opcode not in (EC_OP_DLOAD_QUEUE, EC_OP_STRINGS):
             # Si el servidor responde otro opcode (ej: status reply), intentar amulecmd
-            try:
-                return _get_download_queue_via_amulecmd(self.host, self.port, self.password)
-            except Exception:
-                return []
+            return _fallback()
         try:
             out = []
             for t in tags:
@@ -912,10 +920,7 @@ class EcClient:
             # aMule mandó descargas pero no se entendió ninguna: una cola
             # vacía haría creer a Solicitudes que se perdieron y las
             # relanzaría, así que mejor lo que diga amulecmd.
-            try:
-                return _get_download_queue_via_amulecmd(self.host, self.port, self.password)
-            except Exception:
-                return []
+            return _fallback()
         return out
 
     def cancel_download(self, hash_hex: str) -> Tuple[bool, str]:

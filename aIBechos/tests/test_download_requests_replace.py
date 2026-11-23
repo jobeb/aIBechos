@@ -47,7 +47,8 @@ def test_sustitucion_solo_done_con_subida_nueva(monkeypatch):
 def _cycle_app(data, launched, pushed):
     app = SimpleNamespace(config_data={"download_requests_enabled": True,
                                        "download_requests_max_active": 5},
-                          _download_requests_carry={})
+                          _download_requests_carry={},
+                          _download_requests_lost_misses={})
     app._download_requests_remote_path = lambda: "/x/solicitudes.json"
     app._download_requests_user = lambda: "Jose"
     app._download_requests_ftp = lambda: SimpleNamespace(disconnect=lambda: None)
@@ -158,6 +159,11 @@ def test_ciclo_libera_lo_que_ya_no_esta_en_amule(monkeypatch):
     app = _cycle_app(data, launched, pushed)
     app._download_requests_notify_web = lambda: None
     app._download_requests_amule_state = lambda needed: ([{"hash_hex": "x", "name": "Otra.mkv"}], [])
+    # Una lectura sin ella no basta (podía ser una lectura a medias de
+    # aMule): hacen falta LOST_CONFIRM_READS seguidas.
+    for _ in range(dr.LOST_CONFIRM_READS - 1):
+        App._download_requests_cycle(app)
+        assert all(p["obs"]["status"] == "downloading" for p in pushed), "aún no"
     App._download_requests_cycle(app)
     assert pushed[-1]["obs"]["status"] == "pending", "liberada"
     assert pushed[-1]["obs"]["attempts"] == 1
@@ -237,7 +243,8 @@ def test_ciclo_avisa_a_la_web_al_fallar(monkeypatch):
     app._download_requests_amule_state = lambda needed: ([{"hash_hex": "x", "name": "Otra.mkv"}], [])
     avisos = []
     app._download_requests_notify_web = lambda: avisos.append(1)
-    App._download_requests_cycle(app)
+    for _ in range(dr.LOST_CONFIRM_READS):
+        App._download_requests_cycle(app)
     assert pushed and pushed[-1]["r1"]["status"] == "failed"
     assert avisos == [1]
 
@@ -540,3 +547,23 @@ def test_ciclo_avisa_a_la_web_aunque_no_haya_presolicitadas(monkeypatch):
     app._download_requests_waiting_check_web = lambda: avisos.append(1)
     App._download_requests_cycle(app)
     assert avisos == [1]
+
+
+def test_ciclo_reaparece_en_amule_reinicia_la_cuenta(monkeypatch):
+    """Si entre lecturas la descarga vuelve a verse en aMule, las faltas
+    anteriores no cuentan: solo LOST_CONFIRM_READS SEGUIDAS la liberan."""
+    import core.shared_data as sd
+    now = time.time()
+    data = {"r1": {"tmdb_id": 1, "media_type": "movie", "title": "P", "amule_hashes": ["aa"],
+                   "status": "downloading", "claimed_by": "Jose",
+                   "claimed_at": now - 3600, "requested_at": now - 3600, "attempts": 0}}
+    monkeypatch.setattr(sd, "read_shared_json", lambda ftp, path, kind: (dict(data), False))
+    launched, pushed = [], []
+    app = _cycle_app(data, launched, pushed)
+    app._download_requests_notify_web = lambda: None
+    vacia = lambda needed: ([{"hash_hex": "x", "name": "Otra.mkv"}], [])
+    con_ella = lambda needed: ([{"hash_hex": "aa", "name": "P.mkv"}], [])
+    for estado in [vacia] * (dr.LOST_CONFIRM_READS - 1) + [con_ella] + [vacia] * (dr.LOST_CONFIRM_READS - 1):
+        app._download_requests_amule_state = estado
+        App._download_requests_cycle(app)
+    assert all(p["r1"]["status"] == "downloading" for p in pushed)

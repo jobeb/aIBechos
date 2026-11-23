@@ -108,7 +108,9 @@ def test_cancel_file_stops_only_that_upload(tmp_path, monkeypatch):
     # El parcial no se queda en el servidor, y no se vuelve a coger.
     ftp.delete_file.assert_called()
     assert _wait(lambda: w._processed.get(canon_path(str(f)), {}).get("status") == "descartado")
-    assert w._skip_events == {}
+    # El estado se marca dentro de la subida y el evento se quita en su
+    # finally, un instante después: esperar en vez de comprobar al momento.
+    assert _wait(lambda: w._skip_events == {}), w._skip_events
 
 
 def test_cancel_file_while_waiting_for_a_slot(tmp_path, monkeypatch):

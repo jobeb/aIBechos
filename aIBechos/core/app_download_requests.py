@@ -237,9 +237,21 @@ class DownloadRequestsMixin:
                     and self._download_request_up_key(entry_r) in _uploading_now):
                 continue
             outcome = self._download_request_check_done(data.get(rid) or {}, server_index)
-            if outcome is None and amule_queue is not None and _dr.lost_in_amule(
-                    data.get(rid) or {}, amule_queue, local_names):
-                outcome = "lost"
+            if outcome is None and amule_queue is not None:
+                # Perdida solo si falta en varias lecturas SEGUIDAS de la
+                # cola: una lectura a medias (aMule cargado) no debe
+                # gastar un intento (ver _dr.LOST_CONFIRM_READS).
+                if _dr.lost_in_amule(data.get(rid) or {}, amule_queue, local_names):
+                    misses = self._download_requests_lost_misses.get(rid, 0) + 1
+                    self._download_requests_lost_misses[rid] = misses
+                    if misses >= _dr.LOST_CONFIRM_READS:
+                        outcome = "lost"
+                        self._download_requests_lost_misses.pop(rid, None)
+                    else:
+                        _log.debug("Solicitudes: %s no aparece en aMule (%d/%d)",
+                                   rid, misses, _dr.LOST_CONFIRM_READS)
+                else:
+                    self._download_requests_lost_misses.pop(rid, None)
             if outcome is None and amule_queue is not None:
                 # Sigue en MI aMule (o terminada esperando subida): latido
                 # para que otro equipo no la reclame y la baje otra vez
@@ -778,7 +790,7 @@ class DownloadRequestsMixin:
                     # compartida para que la web lo enseñe.
                     queue = [{"hash_hex": it.get("hash_hex"), "name": it.get("name"),
                               "percent": it.get("percent"), "speed": it.get("speed")}
-                             for it in (ec.get_download_queue() or [])]
+                             for it in (ec.get_download_queue(strict=True) or [])]
                 finally:
                     ec.close()
         except Exception as e:

@@ -10,7 +10,7 @@ import difflib
 import threading
 from pathlib import Path
 
-from core.api_client import MediaInfo, detect_episode
+from core.api_client import MediaInfo, detect_episode, year_in_filename
 from core.applog import get_logger
 from core.mangadex_client import MangaDexClient
 from core.renamer import build_name_for_media_info, rename_file
@@ -114,7 +114,8 @@ class FilesIdentifyMixin:
         # película -- sin pasarlo, mandaba la popularidad y un título que
         # existe como las dos cosas se resolvía siempre a favor de la
         # película (ver TMDBClient.search_multi).
-        results = tmdb.search_multi(query, prefer_type=det.get("media_type", ""))
+        results = tmdb.search_multi(query, prefer_type=det.get("media_type", ""),
+                                    year=year_in_filename(entry.name))
         if not results:
             fallback = self._try_ai_fallback(entry, tmdb)
             if fallback:
