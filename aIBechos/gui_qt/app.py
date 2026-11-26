@@ -24,6 +24,12 @@ def run(argv=None) -> int:
     ctx = AppContext()
     win = MainWindow(ctx, start_minimized="--minimized" in argv)
     app._main_window = win   # mantener la referencia viva
+    # Abrir la app otra vez restaura esta ventana (ver gui_qt/activation.py).
+    try:
+        from gui_qt.activation import start_server
+        app._activation_server = start_server(win._show_from_tray)
+    except Exception:
+        _log.exception("Instancia única: no se pudo arrancar el canal para restaurar la ventana")
 
     def _save_on_system_shutdown():
         # Cierre de sesión/apagado del equipo (el programado de las

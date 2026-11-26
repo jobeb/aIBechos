@@ -230,3 +230,48 @@ def test_dialogo_qt(qtbot):
     assert dlg.result == "skip"   # la X no sustituye nada
     next(b for b in dlg.findChildren(QPushButton) if b.text() == "Sustituir todo").click()
     assert dlg.result == "replace"
+
+
+class _PrefixConn(_Conn):
+    """Remoto más pequeño con el mismo nombre; *is_prefix* dice si es un
+    parcial nuestro (reanudable) u otra versión."""
+    def __init__(self, is_prefix, **kw):
+        super().__init__(**kw)
+        self.is_prefix = is_prefix
+
+    def _is_prefix_of_local(self, remote_file, local, remote_size):
+        return self.is_prefix
+
+
+class _OneHost(_Host):
+    def _ask_gui(self, make, what, cancel_event=None):
+        self.asked.append(what)
+        return "skip"
+
+
+def test_mismo_nombre_menor_y_otra_version_pregunta(tmp_path):
+    # Real (Dragon Ball Daima 1x09): 285 MB en el servidor, 345 MB en local,
+    # no era un parcial y se sobrescribía sin preguntar.
+    e = _entry(tmp_path, 1)
+    h = _OneHost([e])
+    conn = _PrefixConn(False, sizes={f"{DIR}/{e.new_name}": 40})
+    assert h._upload_entry_with(e, conn, lambda: 0, None) == (True, "omitido")
+    assert h.asked == ["overwrite"]
+
+
+def test_mismo_nombre_menor_y_parcial_reanuda_sin_preguntar(tmp_path):
+    e = _entry(tmp_path, 1)
+    h = _OneHost([e])
+    conn = _PrefixConn(True, sizes={f"{DIR}/{e.new_name}": 40})
+    assert h._upload_entry_with(e, conn, lambda: 0, None) == (False, "cancelado")   # se iba a subir
+    assert h.asked == []
+
+
+def test_tanda_avisa_de_otra_version_con_el_mismo_nombre(tmp_path):
+    es = [_entry(tmp_path, 1), _entry(tmp_path, 2)]
+    h = _Host(es, answer="skip")
+    conn = _PrefixConn(False, sizes={f"{DIR}/{es[0].new_name}": 40})
+    h._prescan_batch_conflicts(conn)
+    assert h.asked == ["batch-conflicts"]
+    assert "otra versión" in h.dialog_items[0][1][0]
+    assert es[0]._conflict_policy == "skip"

@@ -54,6 +54,17 @@ DL_PRIMARY = {
     "fail": ("↻ Reintentar", theme.ICON_DL_FAIL),
 }
 
+# Botón "⬇ Todo" de las series (toda la serie, no solo el piloto) según
+# el estado de esa descarga.
+DL_ALL = {
+    "busy": ("⏳ Todo…", theme.ICON_DL_BUSY),
+    "ok": ("✓ Todo", theme.ICON_DL_OK),
+    "fail": ("↻ Todo", theme.ICON_DL_FAIL),
+}
+DL_ALL_TIP = ("Descargar en aMule TODOS los capítulos emitidos que faltan en el servidor, "
+              "no solo el piloto (en segundo plano). Los que no tengan doblaje confirmado "
+              "solo se bajan si el nombre dice castellano.")
+
 
 class PosterCache:
     """Pósteres en memoria + disco (app data/posters/), con descarga en
@@ -228,6 +239,32 @@ def card_buttons(item: dict, state: dict) -> tuple:
     return primary, icons
 
 
+def card_secondary(item: dict, state: dict):
+    """Botón "⬇ Todo" (Action) al lado del principal, solo en series que no
+    estén ya completas en el servidor; None si no toca. *state* trae
+    dl_all (None/busy/ok/fail) y dl_all_tip (resumen de la última)."""
+    if item.get("media_type") != "tv":
+        return None
+    if state.get("in_server") and not state.get("next_gap"):
+        return None
+    dl = state.get("dl_all")
+    if dl in DL_ALL:
+        text, color = DL_ALL[dl]
+        return Action("download_all", text, color, state.get("dl_all_tip") or DL_ALL_TIP,
+                      enabled=dl != "busy")
+    return Action("download_all", "⬇ Todo", theme.ICON_DL_IDLE, DL_ALL_TIP)
+
+
+def _compact_primary(primary):
+    """Texto corto del principal cuando comparte fila con "⬇ Todo"."""
+    glyph = primary.glyph
+    if glyph.startswith("⬇ Piloto"):
+        glyph = "⬇ Piloto"
+    elif glyph.startswith("⬇ Siguiente ("):
+        glyph = "⬇ " + glyph[len("⬇ Siguiente ("):].rstrip(")")
+    return Action(primary.id, glyph, primary.color, primary.tooltip, primary.enabled)
+
+
 def card_menu_entries(item: dict, state: dict) -> list:
     """[(id, texto, enabled, tooltip)] para el menú clic-derecho de una
     card: los mismos botones + Ver ficha. Una sola fuente para la pestaña
@@ -240,9 +277,13 @@ def card_menu_entries(item: dict, state: dict) -> list:
               "download": primary.glyph,
               "dismiss": "🚫 Quitar recomendación",
               "fav": ("★ Quitar de favoritos" if state.get("fav") else "☆ Marcar favorita"),
-              "lock": ("🔓 Quitar protección" if state.get("locked") else "🔒 Proteger")}
-    entries = [(act.id, labels.get(act.id, act.glyph), act.enabled, act.tooltip)
-               for act in [primary] + icons]
+              "lock": ("🔓 Quitar protección" if state.get("locked") else "🔒 Proteger"),
+              "download_all": "⬇ Descargar la serie entera"}
+    secondary = card_secondary(item, state)
+    acts = [primary] + ([secondary] if secondary is not None else []) + icons
+    entries = [(act.id, labels.get(act.id, act.glyph) if act.id != "download_all" or act.enabled
+                else act.glyph, act.enabled, act.tooltip)
+               for act in acts]
     entries.append(("__detail__", "🔎 Ver ficha", True, "Ver la ficha de la obra"))
     return entries
 
@@ -265,7 +306,7 @@ def card_state_key(state: dict) -> str:
 class _Layout:
     """Rectángulos de una card (pintado y hit-testing usan lo mismo)."""
 
-    def __init__(self, rect: QRect, n_icons: int):
+    def __init__(self, rect: QRect, n_icons: int, split: bool = False):
         x, y, w = rect.left(), rect.top(), rect.width()
         self.poster = QRect(x + PAD, y + PAD, POSTER_W, POSTER_H)
         y += PAD + POSTER_H + 4
@@ -274,6 +315,12 @@ class _Layout:
         self.meta = QRect(x + PAD, y, w - 2 * PAD, META_H)
         y += META_H + 4
         self.primary = QRect(x + PAD, y, w - 2 * PAD, PRIMARY_H)
+        self.secondary = None
+        if split:
+            # Series: principal (piloto/siguiente) + "⬇ Todo" a la derecha.
+            half = (w - 2 * PAD - 4) // 2
+            self.primary = QRect(x + PAD, y, half, PRIMARY_H)
+            self.secondary = QRect(x + PAD + half + 4, y, w - 2 * PAD - half - 4, PRIMARY_H)
         y += PRIMARY_H + 4
         total_icons = n_icons * ICON_W + max(0, n_icons - 1) * ICON_GAP
         ix = x + (w - total_icons) // 2
@@ -319,12 +366,17 @@ class CardDelegate(QStyledItemDelegate):
             return
         state = self.get_state(item)
         primary, icons = card_buttons(item, state)
-        lay = _Layout(option.rect, len(icons))
+        secondary = card_secondary(item, state)
+        lay = _Layout(option.rect, len(icons), split=secondary is not None)
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         self._paint_poster(painter, option, index, item, lay, state)
         self._paint_texts(painter, item, lay)
-        self._paint_primary(painter, primary, lay)
+        if secondary is not None:
+            self._paint_chip(painter, lay.primary, _compact_primary(primary), bold=True)
+            self._paint_chip(painter, lay.secondary, secondary, bold=True)
+        else:
+            self._paint_primary(painter, primary, lay)
         self._paint_icons(painter, icons, lay)
         painter.restore()
 
@@ -422,7 +474,9 @@ class CardDelegate(QStyledItemDelegate):
         # Botón principal: texto claro (sus fondos son oscuros); iconos:
         # claro también, igual que los chips de la tabla (actions.py).
         painter.setPen(QColor("#f2f2f2") if act.enabled else QColor("#8a8a8a"))
-        painter.drawText(rect, Qt.AlignCenter, act.glyph if len(act.glyph) <= 2 else act.glyph[:18])
+        text = act.glyph if len(act.glyph) <= 2 else act.glyph[:18]
+        text = painter.fontMetrics().elidedText(text, Qt.ElideRight, max(0, rect.width() - 6))
+        painter.drawText(rect, Qt.AlignCenter, text)
 
     def sizeHint(self, option, index):
         return QSize(CARD_W, CARD_H)
@@ -435,9 +489,12 @@ class CardDelegate(QStyledItemDelegate):
             return None, None
         state = self.get_state(item)
         primary, icons = card_buttons(item, state)
-        lay = _Layout(option.rect, len(icons))
+        secondary = card_secondary(item, state)
+        lay = _Layout(option.rect, len(icons), split=secondary is not None)
         if lay.primary.contains(pos):
             return item, primary
+        if secondary is not None and lay.secondary.contains(pos):
+            return item, secondary
         for rect, act in zip(lay.icons, icons):
             if rect.contains(pos):
                 return item, act

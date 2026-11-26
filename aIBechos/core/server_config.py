@@ -154,7 +154,7 @@ SHARED_CONFIG_KEYS = (
     # la puntuación (ver set_score_weights, sección Puntuación): mismo
     # motivo -- si cada cliente llevara los suyos, el mismo capítulo se
     # descargaría con criterios distintos según quién pulsó el botón.
-    "p2p_lang_vos", "p2p_lang_fr", "p2p_lang_it",
+    "p2p_lang_es", "p2p_lang_vos", "p2p_lang_fr", "p2p_lang_it",
     "p2p_lang_de", "p2p_lang_pt", "p2p_lang_ca",
     "p2p_blocked_adult", "p2p_blocked_sample", "p2p_blocked_scr",
     "p2p_blocked_exts", "p2p_score_weights",

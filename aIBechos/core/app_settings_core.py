@@ -681,7 +681,7 @@ class SettingsCoreMixin:
         self.config_data.set_many(data)
         self.config_data.save()
         self._apply_provider_lists({**{k: cfg(k) for k in (
-            "p2p_trusted_groups", "p2p_blocked_groups", "p2p_lang_vos",
+            "p2p_trusted_groups", "p2p_blocked_groups", "p2p_lang_es", "p2p_lang_vos",
             "p2p_lang_fr", "p2p_lang_it", "p2p_lang_de", "p2p_lang_pt",
             "p2p_lang_ca", "p2p_blocked_adult", "p2p_blocked_sample",
             "p2p_blocked_scr", "p2p_blocked_exts", "p2p_score_weights")}, **data})

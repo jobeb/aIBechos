@@ -642,6 +642,36 @@ class AutoWatcher:
         finally:
             self._in_progress.discard(key)
 
+    def _media_info_from_origin(self, path, detected: dict):
+        """MediaInfo de la ficha apuntada al lanzar la descarga de *path*
+        (core/download_origin.py), o None si no se apuntó o falla TMDB --
+        entonces se identifica como siempre. Real: "DragonBall Daima
+        1x10(Castellano).mp4" (todo junto) no lo encontraba TMDB al subirlo
+        aunque se había elegido buscando Dragon Ball Daima 1x10."""
+        try:
+            from core.download_origin import find
+            o = find(path.name, detected)
+            if not o:
+                return None
+            kind = o.get("media_type")
+            details = (self.tmdb.get_tv_details(o["tmdb_id"]) if kind == "tv"
+                       else self.tmdb.get_movie_details(o["tmdb_id"]))
+            if not isinstance(details, dict) or not details.get("id"):
+                return None
+            genre_ids = [g.get("id") for g in (details.get("genres") or [])
+                         if isinstance(g, dict) and g.get("id") is not None]
+            result = dict(details, media_type=kind, genre_ids=genre_ids)
+            info = self.tmdb.build_media_info(result, season=o.get("season"), episode=o.get("episode"))
+            _log.info("Identificado por la descarga que lanzó la app: %s -> %s (tmdb %s)%s",
+                      path.name, info.title, info.tmdb_id,
+                      f" {info.season}x{info.episode:02d}" if kind == "tv" and info.episode is not None else "")
+            self.on_event("info", f"Ya se sabía qué es (lo eligió la app): {path.name} → {info.title}")
+            return info
+        except Exception as e:
+            _log.warning("No se pudo usar el origen apuntado de %s (%s); se identifica como siempre",
+                         path.name, e)
+            return None
+
     @staticmethod
     def _only_series_if_episode(results, media_type, season, episode, path=None):
         """Un archivo con numeración de capítulo (2x41) es un capítulo de
@@ -771,7 +801,10 @@ class AutoWatcher:
             detected = detect_episode(path.name, is_book=is_book, is_comic=is_comic,
                                        folder_hint=path.parent.name)
             _log.debug("Detección local: %s", detected)
-            if not detected.get("title"):
+            # Descarga que eligió la propia app: ya se sabe qué es (ver
+            # core/download_origin.py), no hay que adivinarlo por el nombre.
+            origin_info = None if is_book else self._media_info_from_origin(path, detected)
+            if not detected.get("title") and origin_info is None:
                 _log.warning("Sin patrón reconocible: %s", path.name)
                 self.on_event("skip", f"No identificado (sin patrón): {path.name}")
                 self.on_file_event(str(path), "skip",
@@ -826,6 +859,10 @@ class AutoWatcher:
                     self._mark(key, "baja_confianza")
                     return
                 media_info = result.media_info
+            elif origin_info is not None:
+                media_info = origin_info
+                season, episode = media_info.season, media_info.episode
+                confidence = 100
             else:
                 # 2. Búsqueda TMDB
                 lang = self.config.get("language", "es-ES")
@@ -1629,7 +1666,7 @@ class AutoWatcher:
                 except Exception:
                     pass
             from core.media_server_refresh import trigger_refresh
-            trigger_refresh(self.config)
+            trigger_refresh(self.config, media_info=media_info)
             # Acción post-proceso: solo tras subida exitosa
             self._apply_post_process_action(Path(new_path))
         elif msg3 == "cancelado":

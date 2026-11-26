@@ -26,7 +26,7 @@ from core import missing_ep_rows as _mer
 from core.api_client import detect_episode
 from core.applog import get_logger
 from core.ftp_client import _ftp_safe, files_by_top_level_folder
-from core.series_match import series_similarity, sibling_blocks_folder
+from core.series_match import series_similarity, sibling_blocks_folder, spinoff_blocks_folder
 
 _log = get_logger("aIBechos.gui", "app.log")
 
@@ -1032,6 +1032,12 @@ class MissingEpScanMixin:
                         _log.info("Cruce FTP: '%s' no reclama la carpeta '%s' "
                                   "(es la carpeta exacta de otra serie conocida)",
                                   show_name, folder_name)
+                    elif spinoff_blocks_folder(show_name, folder_name):
+                        # Otra entrega de la misma franquicia aunque no sea
+                        # una serie conocida (Daima vs "Dragon Ball.").
+                        _log.info("Cruce FTP: '%s' no reclama la carpeta '%s' "
+                                  "(parece otra serie de la misma franquicia)",
+                                  show_name, folder_name)
                     else:
                         matched.append((root, folder_name))
                 elif ratio > best_ratio:
@@ -1194,42 +1200,45 @@ class MissingEpScanMixin:
                 if own_ftp_single.is_connected():
                     cats = self.config_data.get("ftp_categories", {"tv": [], "movie": [], "libro": []}).get("tv", [])
                     present = set()
-                    from core.series_match import series_similarity, normalize_series_name, sibling_blocks_folder
-                    norm_target = normalize_series_name(name)
-                    _sibling_names = self._known_series_names_from_cache() | {name}
+                    # Mismo emparejamiento de carpetas que el cruce FTP
+                    # (_match_ftp_folders: nombre real de Jellyfin, nombre
+                    # exacto, año, o parecido >= 0.75 con los guardianes de
+                    # series hermanas/franquicia). Antes aquí había uno
+                    # propio mucho más laxo ("contiene" en cualquier
+                    # sentido): "Dragon Ball Daima" se quedaba también con
+                    # la carpeta "Dragon Ball." (153 episodios de T1), y al
+                    # borrar a mano del FTP sus 1x10-1x20 el reescaneo
+                    # seguía viéndolos y la daba por completa.
+                    shallow_index = {}
                     for cat in cats:
                         root = cat.get("root", "")
-                        if not root:
+                        if not root or root in shallow_index:
                             continue
                         try:
                             dirs = own_ftp_single.list_dirs(root) or []
                         except Exception:
                             continue
-                        for d in dirs:
-                            # sibling_blocks_folder: la carpeta exacta de otra
-                            # serie conocida no se reclama por parecido (caso
-                            # Dragon Ball Daima / Dragon Ball) -- ver
-                            # _match_ftp_folders, mismo guardián.
-                            if (series_similarity(norm_target, normalize_series_name(d), strict=False) >= 0.85 or norm_target in normalize_series_name(d) or normalize_series_name(d) in norm_target) and not sibling_blocks_folder(name, d, _sibling_names):
-                                series_path = f"{root.rstrip('/')}/{d}"
-                                try:
-                                    subdirs = own_ftp_single.list_dirs(series_path) or []
-                                except Exception:
-                                    subdirs = []
-                                candidates = [series_path] + [f"{series_path.rstrip('/')}/{sd}" for sd in subdirs if sd.lower().startswith("temporada")]
-                                for p in candidates:
-                                    try:
-                                        files = own_ftp_single.list_files(p) or []
-                                        for fn in files:
-                                            from core.api_client import detect_episode as _det
-                                            det = _det(fn)
-                                            if det and det.get("season") and det.get("episode"):
-                                                present.add((det["season"], det["episode"]))
-                                    except Exception:
-                                        continue
-                    if not present:
-                        # No se encontró nada en FTP para esta serie → vacía (todo falta) o None si FTP falló
-                        present = set()
+                        self._ftp_dir_cache[root] = list(dirs)
+                        shallow_index[root] = {d: set() for d in dirs}
+                    matched_folders, _best, _ratio = self._match_ftp_folders(
+                        shallow_index, name, folder_name,
+                        known_year=self._missing_ep_known_year({"first_air_date": first_air_date}),
+                        all_show_names=self._known_series_names_from_cache())
+                    for root, d in matched_folders:
+                        path = f"{root.rstrip('/')}/{d}"
+                        # Dos listados unidos, como en el cruce completo --
+                        # un listado cortado dejaría fuera un episodio suelto.
+                        files = set(own_ftp_single.list_files_recursive(path, max_depth=2))
+                        files |= set(own_ftp_single.list_files_recursive(path, max_depth=2))
+                        for fn in files:
+                            det = detect_episode(fn)
+                            if det.get("season") and det.get("episode"):
+                                present.add((det["season"], det["episode"]))
+                                for extra_ep in det.get("extra_episodes", []):
+                                    present.add((det["season"], extra_ep))
+                    _log.info("Reescaneo individual: '%s' -> %d episodio(s) en el FTP, carpeta(s): %s",
+                              name, len(present),
+                              ", ".join(sorted(f"{r}/{d}" for r, d in matched_folders)) or "ninguna")
                 else:
                     present = None
             finally:
@@ -1334,6 +1343,8 @@ class MissingEpScanMixin:
         cache[str(tmdb_id)] = cache_entry
 
         if not (missing or unknown_seasons):
+            cache_entry["ai_verdict"] = self._ai_verdict_if_same_data(
+                cache_entry["ai_verdict"], r, missing, present_season_counts, name)
             save_scan_result(cache, started_gen)
             self._push_missing_episodes_to_ftp()
             return [], None   # ya no le falta nada -- se quita de la lista
@@ -1371,12 +1382,39 @@ class MissingEpScanMixin:
         cache_entry["unknown_seasons"] = sorted(new_row.get("unknown_seasons") or [])
         cache_entry["present_season_counts"] = {
             str(k): v for k, v in (new_row.get("server_season_counts") or {}).items()}
+        new_row["ai_verdict"] = cache_entry["ai_verdict"] = self._ai_verdict_if_same_data(
+            cache_entry["ai_verdict"], r, new_row["missing"], new_row.get("server_season_counts") or {}, name)
         save_scan_result(cache, started_gen)
         self._push_missing_episodes_to_ftp()
 
         if not (new_row["missing"] or new_row["unknown_seasons"]):
             return [], None
         return [new_row], None
+
+    @staticmethod
+    def _ai_verdict_if_same_data(verdict, old_row: dict, new_missing: dict, new_counts: dict, name: str = ""):
+        """El veredicto de la IA de *old_row* si el reescaneo no cambió los
+        datos sobre los que se dio (huecos y episodios por temporada en el
+        servidor), None si cambiaron. La IA no mira el FTP por su cuenta,
+        juzga lo que se le pasa: caso real, "Dragon Ball Daima" con la
+        carpeta de "Dragon Ball" mezclada (153 episodios en el servidor
+        frente a 20 en TMDB) -> "numeracion_distinta"; corregido el
+        emparejamiento y con 1x10-1x20 borrados de verdad, ese veredicto
+        viejo seguiría ocultando el hueco real con "Ocultar descartadas por
+        la IA"."""
+        if not verdict:
+            return verdict
+
+        def _norm(d):
+            return {int(k): sorted(v) if isinstance(v, (list, set, tuple)) else v
+                    for k, v in (d or {}).items()}
+
+        if (_norm(old_row.get("missing")) == _norm(new_missing)
+                and _norm(old_row.get("server_season_counts")) == _norm(new_counts)):
+            return verdict
+        _log.info("Reescaneo individual: '%s' -- los huecos cambiaron, se descarta el veredicto "
+                  "de la IA anterior (%s)", name, verdict.get("veredicto"))
+        return None
 
     def _fetch_dub_cutoff(self, tmdb_id: int, name: str, pending: list,
                           want_eldoblaje: bool = True, want_streaming: bool = True,

@@ -45,7 +45,7 @@ def test_launch_pasa_hashes_originales(monkeypatch):
     seen = {}
 
     def fake_launch(query, is_movie=False, expected_year=None, typical_size=None,
-                    exclude_hashes=()):
+                    exclude_hashes=(), origin=None):
         seen.update(query=query, exclude=tuple(exclude_hashes))
         return True, "", NEW
     app = SimpleNamespace(config_data={"series_search_patterns": {}})
@@ -68,7 +68,7 @@ def test_launch_normal_no_excluye(monkeypatch):
     seen = {}
 
     def fake_launch(query, is_movie=False, expected_year=None, typical_size=None,
-                    exclude_hashes=()):
+                    exclude_hashes=(), origin=None):
         seen.update(exclude=tuple(exclude_hashes))
         return True, "", NEW
     app = SimpleNamespace(config_data={"series_search_patterns": {}})

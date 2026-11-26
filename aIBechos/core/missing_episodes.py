@@ -338,6 +338,19 @@ def is_ep_dub_confirmed(season: int, ep: int, dub_episodes: dict = None,
     return dub.get(f"{season}x{ep:02d}") is True
 
 
+def ep_dub_status(season: int, ep: int, dub_episodes: dict = None,
+                  dub_cutoff: dict = None):
+    """True (doblado), False (se sabe que NO) o None (no hay datos), con la
+    misma precedencia que is_ep_dub_confirmed. El ⚡ baja los None solo si
+    el nombre del archivo declara castellano; los False no los baja."""
+    if dub_cutoff is not None:
+        cut = dub_cutoff.get(season, dub_cutoff.get(str(season)))
+        if cut is not None:
+            return ep <= cut
+    val = (dub_episodes or {}).get(f"{season}x{ep:02d}")
+    return val if isinstance(val, bool) else None
+
+
 def filter_missing_by_spanish_dub(missing: dict, dub_by_episode: dict,
                                   hide_unverified: bool = False) -> dict:
     """Reduce *missing* ({temporada: [episodios]}) a solo los episodios con

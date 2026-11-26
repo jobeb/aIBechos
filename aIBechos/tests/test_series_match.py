@@ -1,3 +1,5 @@
+import pytest
+
 from core.series_match import (
     normalize_series_name,
     series_similarity,
@@ -291,3 +293,51 @@ def test_best_match_with_year_without_known_year_returns_nothing():
     name, ratio = best_match_with_year("Ranma ½", candidates, known_year=None)
     assert name is None
     assert ratio == 0.0
+
+
+# ── spinoff_blocks_folder: otra entrega de la misma franquicia ──────────
+from core.series_match import spinoff_blocks_folder
+
+
+@pytest.mark.parametrize("show,folder", [
+    ("Dragon Ball Daima", "Dragon Ball."),      # caso real: absorbía la serie de 1986
+    ("Dragon Ball Daima", "Dragon Ball GT."),
+    ("Dragon Ball Daima", "Dragon Ball Z."),
+    ("Avatar: La leyenda de Aang", "Avatar La leyenda de Korra."),
+    ("Steven Universe", "Steven Universe Future."),
+    ("Fullmetal Alchemist", "Fullmetal Alchemist Brotherhood"),
+])
+def test_spinoff_blocks_other_franchise_entry(show, folder):
+    assert spinoff_blocks_folder(show, folder)
+
+
+@pytest.mark.parametrize("show,folder", [
+    ("Dragon Ball Daima", "Dragon Ball Daima"),
+    ("Steven Universe", "Steven Universe."),
+    ("Prodigiosa: Las aventuras de Ladybug", "Miraculous Las aventuras de Ladybug"),
+    ("Dr. Slump", "Dr.Slump (fin faltan capitulos)"),   # anotación entre paréntesis
+    ("Monstruos a la obra", "Monstruos a la obra (2021)"),
+    ("Los Simpson", "Los Simpsons"),
+])
+def test_spinoff_does_not_block_same_series(show, folder):
+    assert not spinoff_blocks_folder(show, folder)
+
+
+def test_match_ftp_folders_daima_ignores_unknown_parent_franchise():
+    from core.missing_ep_scan import MissingEpScanMixin as M
+    folders = ["Dragon Ball.", "Dragon Ball Daima", "Dragon Ball GT.", "Dragon Ball Z.", "Dragon Ball Super"]
+    index = {"/series": {f: set() for f in folders}}
+    # Sin "Dragon Ball" entre las series conocidas (caso real: no figuraba así en Jellyfin)
+    matched, _best, _ratio = M._match_ftp_folders(index, "Dragon Ball Daima", None, None,
+                                                  all_show_names={"Dragon Ball Daima"})
+    assert matched == [("/series", "Dragon Ball Daima")]
+
+
+def test_rescan_drops_ai_verdict_when_gaps_change():
+    from core.missing_ep_scan import MissingEpScanMixin as M
+    verdict = {"veredicto": "numeracion_distinta", "motivo": "TMDB 20, servidor 153"}
+    old = {"missing": {}, "server_season_counts": {1: 153}, "ai_verdict": verdict}
+    # Mismos datos -> se conserva
+    assert M._ai_verdict_if_same_data(verdict, old, {}, {1: 153}) is verdict
+    # Daima tras el arreglo: faltan 1x10-1x20 y solo hay 9 en el servidor -> fuera
+    assert M._ai_verdict_if_same_data(verdict, old, {1: list(range(10, 21))}, {1: 9}) is None

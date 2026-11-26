@@ -387,6 +387,11 @@ DEFAULTS = {
     # Preferencias descargas, apartado Idioma, uno por línea. Un release que
     # contenga alguno se EXCLUYE como el francés (salvo con español además),
     # salvo el catalán, que solo penaliza fuerte. Compartidas por el grupo.
+    # Español: la ÚNICA lista que decide qué cuenta como castellano (puntúa
+    # "Español" y la exige la descarga de capítulos sin doblaje confirmado),
+    # sin ninguna lista fija detrás. Mismos valores que
+    # download_quality.BUILTIN_LANG_MARKERS["es"].
+    "p2p_lang_es": ["castellano", "español", "espanol", "spanish", "spa", "dual", "latino"],
     "p2p_lang_vos": ["vos", "vose", "vosi", "versión original",
                      "version original"],
     "p2p_lang_fr": ["vostfr", "vosta", "truefrench", "vff", "vf", "fr",

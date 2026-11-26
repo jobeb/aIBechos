@@ -100,6 +100,8 @@ class MoviesTab(QWidget):
         self._dl_state: dict = {}
         self._owned: set = set()
         self._next_gaps: dict = {}   # tmdb_id de serie -> (temporada, episodio) del primer hueco
+        self._dl_all_state: dict = {}   # ("tv", tmdb_id) -> busy/ok/fail del botón "⬇ Todo"
+        self._dl_all_tip: dict = {}     # ("tv", tmdb_id) -> resumen de la última "⬇ Todo"
         self._genre_names: dict = {"movie": {}, "tv": {}}   # por tipo: nombre -> ids
         self._shown_key = None
         self._server_ids_ready = False
@@ -632,6 +634,8 @@ class MoviesTab(QWidget):
                 "next_gap": self._next_gaps.get(int(tid or 0)) if mt == "tv" else None,
                 "dl": self._dl_state.get((mt, tid)),
                 "auto_on": mt == "tv" and self.host._is_missing_ep_auto_enabled(tid),
+                "dl_all": self._dl_all_state.get((mt, tid)),
+                "dl_all_tip": self._dl_all_tip.get((mt, tid)),
                 "fav": self.ctx.is_favorite(mt, tid),
                 "locked": self.ctx.is_reserved(mt, tid),
                 # Tooltips con quién/cuándo (igual que la tabla: ver test_mark_attribution).
@@ -759,6 +763,8 @@ class MoviesTab(QWidget):
                 pass
         elif action_id == "download":
             self._download(item, year, is_tv)
+        elif action_id == "download_all" and is_tv:
+            self._download_all(item, year)
         elif action_id == "dismiss":
             if self._shown_key == (mt, tid):
                 self._shown_key = None
@@ -774,6 +780,53 @@ class MoviesTab(QWidget):
             size = self.ctx.best_known_size_bytes(mt, tid, 0)
             self.ctx.toggle_reservation(self.window(), mt, tid, item.get("title", ""), size)
             self._refresh_card((mt, tid))
+
+    def _download_all(self, r, year):
+        """"⬇ Todo": toda la serie que falta, no solo el piloto (lógica en
+        core/app_movies_core.py::_download_whole_series)."""
+        key = ("tv", r.get("tmdb_id", 0))
+        if self._dl_all_state.get(key) == "busy":
+            return
+        tid, title = int(r.get("tmdb_id") or 0), r.get("title", "")
+        self._dl_all_state[key] = "busy"
+        self._dl_all_tip[key] = f"Buscando los capítulos de {title} en aMule…"
+        self._refresh_card(key)
+        self.ctx.set_status(f"{title}: buscando los capítulos que faltan en aMule…", PENDING_COLOR)
+        host = self.host
+
+        def progress(i, total, label):
+            ui(lambda: self.ctx.set_status(f"{title}: buscando {label} en aMule ({i}/{total})…",
+                                           PENDING_COLOR))
+
+        def worker():
+            res = host._download_whole_series(tid, title, year, progress_cb=progress)
+
+            def apply():
+                launched, no_cast, failed = res["launched"], res["no_castellano"], res["failed"]
+                if res["error"]:
+                    self._dl_all_state[key] = "fail"
+                    msg = f"{title}: {res['error']}"
+                    color = WARNING_COLOR
+                elif not res["total"]:
+                    self._dl_all_state[key] = "ok"
+                    msg = f"{title}: no falta ningún capítulo en el servidor"
+                    color = SUCCESS_COLOR
+                else:
+                    self._dl_all_state[key] = "ok" if launched else "fail"
+                    parts = [f"{len(launched)}/{res['total']} capítulo(s) lanzados"]
+                    if no_cast:
+                        parts.append("sin versión en castellano: " + ", ".join(no_cast[:8])
+                                     + ("…" if len(no_cast) > 8 else ""))
+                    if failed:
+                        parts.append("no encontrados: " + ", ".join(l for l, _w in failed[:8])
+                                     + ("…" if len(failed) > 8 else ""))
+                    msg = f"{title}: " + " -- ".join(parts)
+                    color = SUCCESS_COLOR if launched and not (no_cast or failed) else WARNING_COLOR
+                self._dl_all_tip[key] = msg + "\n\nPulsa para volver a intentarlo con los que falten."
+                self.ctx.set_status(msg, color)
+                self._refresh_card(key)
+            ui(apply)
+        run_in_thread(worker)
 
     def _download(self, r, year, is_tv):
         from core.amule_download import auto_download
@@ -794,9 +847,14 @@ class MoviesTab(QWidget):
             if is_tv:
                 from core.amule_download import typical_size_for_query
                 typical = typical_size_for_query(host.config_data, query)
+            origin = {"tmdb_id": r.get("tmdb_id"), "media_type": "tv" if is_tv else "movie",
+                      "title": r.get("title", ""), "year": year}
+            if is_tv:
+                origin.update(season=season, episode=episode)
             ok, why, _h, name = auto_download(host.config_data, host._amule_ec_lock, query,
                                               typical_size=typical, is_movie=not is_tv,
-                                              expected_year=int(year) if str(year or "").isdigit() else None)
+                                              expected_year=int(year) if str(year or "").isdigit() else None,
+                                              origin=origin)
 
             def apply():
                 if ok:

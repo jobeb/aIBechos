@@ -123,7 +123,8 @@ class HistoryModel(QAbstractTableModel):
             if col == H_FILE:
                 return e.get("name", "") if (is_req or is_del) else e.get("filename", "")
             if col == H_KIND:
-                return "Solicitud" if is_req else "Borrado" if is_del else "Subida"
+                return ("Solicitud" if is_req else "Borrado" if is_del
+                        else "Adelgazar" if e.get("slim") else "Subida")
             if col == H_WHO:
                 return e.get("person", "")
             if col == H_DEST:

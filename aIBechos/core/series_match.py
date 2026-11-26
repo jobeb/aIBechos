@@ -166,6 +166,50 @@ def sibling_blocks_folder(show_name: str, folder_name: str, all_show_names) -> b
     return False
 
 
+def spinoff_blocks_folder(show_name: str, folder_name: str) -> bool:
+    """True si *folder_name* parece OTRA entrega de la misma franquicia que
+    *show_name* y no la propia serie -- para no reclamarla por parecido
+    aunque esa otra serie no esté entre las conocidas (complemento de
+    sibling_blocks_folder, que solo bloquea carpetas con dueño conocido).
+
+    Caso real: "Dragon Ball Daima" (20 episodios) reclamaba la carpeta
+    "Dragon Ball." (0.90 por prefijo literal) porque la serie de 1986 no
+    figuraba con ese nombre en Jellyfin; sus 1x10-1x20 contaban como de
+    Daima y el reescaneo daba la serie por completa tras borrar a mano del
+    FTP justo esos episodios. Igual "Dragon Ball GT." / "Dragon Ball Z."
+    (0.77-0.80, por encima del umbral de 0.75).
+
+    Dos patrones, sobre los nombres normalizados palabra a palabra:
+      - uno es prefijo del otro y lo que sobra son palabras que NO son una
+        anotación (año suelto o texto entre paréntesis del original:
+        "Desencanto (Disenchantment)", "Dr.Slump (fin faltan capitulos)"
+        siguen casando);
+      - comparten al menos dos palabras iniciales y luego cada uno sigue
+        con algo distinto ("dragon ball gt" vs "dragon ball daima",
+        "avatar la leyenda de aang" vs "... korra").
+    "Prodigiosa: Las aventuras de Ladybug" vs "Miraculous Las aventuras de
+    Ladybug" no comparte el principio y sigue casando."""
+    a = normalize_series_name(show_name).split()
+    b = normalize_series_name(folder_name).split()
+    if not a or not b or a == b:
+        return False
+    common = 0
+    for wa, wb in zip(a, b):
+        if wa != wb:
+            break
+        common += 1
+    if common == 0:
+        return False
+    tail_a, tail_b = a[common:], b[common:]
+    if not tail_a or not tail_b:
+        remainder = " ".join(tail_a or tail_b)
+        return not _is_annotation_remainder(show_name, folder_name, remainder)
+    if common < 2:
+        return False
+    ratio = difflib.SequenceMatcher(None, " ".join(tail_a), " ".join(tail_b)).ratio()
+    return ratio < 0.8
+
+
 def best_match(desired: str, candidates, min_ratio: float = 0.55,
                strict: bool = False, allow_annotation: bool = False):
     """Devuelve (mejor_candidato, ratio) entre *candidates*, o (None, 0.0)

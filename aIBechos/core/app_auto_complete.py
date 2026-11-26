@@ -714,6 +714,22 @@ class AutoCompleteMixin:
                 expected[n] = nums
         return expected
 
+    def _auto_complete_rec_from_tmdb(self, tmdb_id: int) -> dict | None:
+        """{"title", "year", "folder_name"} de la ficha TMDB de la serie, o
+        None si TMDB no la da. Nunca lanza."""
+        try:
+            details = self.tmdb.get_tv_details(tmdb_id) or {}
+        except Exception:
+            _log.warning("Autocompletado: no se pudo pedir a TMDB la serie %s", tmdb_id, exc_info=True)
+            return None
+        name = details.get("name") or details.get("original_name") or ""
+        if not name:
+            return None
+        _log.info("Autocompletado: serie %s sin fila en Episodios ni en Recomendado, "
+                  "se usa su ficha de TMDB ('%s')", tmdb_id, name)
+        return {"title": name, "year": (details.get("first_air_date") or "")[:4],
+                "folder_name": None}
+
     def _auto_complete_series_single_impl(self, tmdb_id: int, force: bool = False):
         # Fila actual si ya está cachada; sin ella no se puede reescanear
         # esa serie sola (se necesita source/server_id).
@@ -771,7 +787,14 @@ class AutoCompleteMixin:
             rec = next((r for r in (getattr(self, "_movies_results", None) or [])
                         if r.get("media_type") == "tv" and r.get("tmdb_id") == tmdb_id), None)
             if rec is None:
-                _log.info("Autocompletado: serie %s sin fila (ni en servidor ni recomendada), se omite", tmdb_id)
+                # Ni fila en Episodios ni en la lista actual de Recomendado
+                # (real: Blade Runner 2099, ⚡ activado desde Recomendado,
+                # piloto ya subido pero aún sin escanear y fuera de la
+                # lista): se usa la ficha de TMDB, el resto es igual.
+                rec = self._auto_complete_rec_from_tmdb(tmdb_id)
+            if rec is None:
+                _log.info("Autocompletado: serie %s sin fila (ni en servidor ni recomendada) "
+                          "ni ficha en TMDB, se omite", tmdb_id)
                 return
             try:
                 expected = self._tmdb_expected_episodes(tmdb_id)
@@ -879,30 +902,41 @@ class AutoCompleteMixin:
         # veredictos por episodio de TMDB (ver
         # core/missing_episodes.py::is_ep_dub_confirmed).
         to_download = list(pending)
+        # Capítulos SIN datos de doblaje: se intentan, pero solo vale un
+        # candidato cuyo nombre declare castellano (lo que no dice idioma
+        # suele ser la versión original -- real: Daima 1x11/1x14 en japonés).
+        # Los que se sabe que NO están doblados no se bajan.
+        _need_cast: set = set()
         try:
             _allow_undubbed = bool(self.config_data.get("download_undubbed", False))
         except Exception:
             _allow_undubbed = False
         if not _allow_undubbed and pending:
             try:
-                from core.missing_episodes import is_ep_dub_confirmed
+                from core.missing_episodes import ep_dub_status
                 _ai = ((row or {}).get("ai_verdict") or {}) if "row" in locals() else {}
                 _cutoff = self._dub_cutoff_for_series(tmdb_id, _ai)
                 _cache_entry = (self._spanish_dub_cache or {}).get(str(tmdb_id), {})
                 _dub_eps = _cache_entry.get("episodes") or {}
-                _blocked = [(s, e) for (s, e) in pending
-                            if not is_ep_dub_confirmed(s, e, _dub_eps, _cutoff)]
+                _status = {(s, e): ep_dub_status(s, e, _dub_eps, _cutoff) for (s, e) in pending}
+                _blocked = [k for k in pending if _status[k] is False]
+                _need_cast = {k for k in pending if _status[k] is None}
                 if _blocked:
-                    _log.info("Autocompletado: '%s' %d capítulo(s) sin doblaje confirmado, no se descargan "
+                    _log.info("Autocompletado: '%s' %d capítulo(s) sin doblaje al castellano, no se descargan "
                               "(%s) -- para permitirlos activa 'Descargar sin doblaje' en "
                               "Configuración → Cliente",
                               series_name, len(_blocked),
                               ", ".join(f"{s}x{e:02d}" for s, e in _blocked[:8]))
-                to_download = [(s, e) for (s, e) in pending
-                               if is_ep_dub_confirmed(s, e, _dub_eps, _cutoff)]
+                if _need_cast:
+                    _log.info("Autocompletado: '%s' %d capítulo(s) sin datos de doblaje, solo se bajan si el "
+                              "nombre dice castellano (%s)", series_name, len(_need_cast),
+                              ", ".join(f"{s}x{e:02d}" for s, e in sorted(_need_cast)[:8]))
+                to_download = [k for k in pending if _status[k] is not False]
             except Exception:
-                _log.exception("Autocompletado: filtro de doblaje falló para '%s', se sigue sin filtrar", series_name)
+                _log.exception("Autocompletado: filtro de doblaje falló para '%s', solo se bajará lo que "
+                               "diga castellano", series_name)
                 to_download = list(pending)
+                _need_cast = set(pending)
         elif pending:
             # Permitidos por la opción de cliente: se descargan igual, pero
             # que el log cuente cuáles van sin doblaje confirmado (el filtro
@@ -1041,7 +1075,11 @@ class AutoCompleteMixin:
                         except Exception:
                             _typ_alt = None
                         ok2, why2, h2 = self._auto_amule_download_series(alt_query, search_type=alt_st, typical_size=_typ_alt,
-                                                                           expected_year=_series_year_int)
+                                                                           expected_year=_series_year_int,
+                                                                           require_castellano=(season, episode) in _need_cast,
+                                                                           origin={"tmdb_id": tmdb_id, "media_type": "tv",
+                                                                                   "title": series_name, "season": season,
+                                                                                   "episode": episode})
                         rec["stuck_tries"] = int(rec.get("stuck_tries", 0) or 0) + 1
                         rec["last_alt_ts"] = _time.time()
                         if ok2 and h2:
@@ -1074,7 +1112,12 @@ class AutoCompleteMixin:
             except Exception:
                 _typ_ep = None
             ok, why, h = self._auto_amule_download_series(query, typical_size=_typ_ep,
-                                                          expected_year=_series_year_int)
+                                                          expected_year=_series_year_int,
+                                                          score_query=build_amule_query(series_name, season, episode),
+                                                          require_castellano=(season, episode) in _need_cast,
+                                                          origin={"tmdb_id": tmdb_id, "media_type": "tv",
+                                                                  "title": series_name, "season": season,
+                                                                  "episode": episode})
             if ok:
                 # Éxito: queda "checked" (no se vuelve a reintentar) y se
                 # borra cualquier reintento previo. Además se registra en
@@ -1194,7 +1237,9 @@ class AutoCompleteMixin:
         return False
     def _auto_amule_download_series(self, query: str, search_type: str | None = None, typical_size: int | None = None,
                                         max_size: int | None = None, is_movie: bool = False,
-                                        expected_year: int | None = None, exclude_hashes=()):
+                                        expected_year: int | None = None, exclude_hashes=(),
+                                        score_query: str | None = None, origin: dict | None = None,
+                                        require_castellano: bool = False):
         """Busca *query* en aMule y descarga el mejor candidato (mismo
         criterio best_result que el botón manual). Devuelve (ok, motivo,
         hash_hex).
@@ -1211,7 +1256,8 @@ class AutoCompleteMixin:
         ok, why, h, _name = auto_download(self.config_data, self._amule_ec_lock, query, search_type=search_type,
                                           typical_size=typical_size, max_size=max_size,
                                           is_movie=is_movie, expected_year=expected_year,
-                                          exclude_hashes=exclude_hashes)
+                                          exclude_hashes=exclude_hashes, score_query=score_query,
+                                          origin=origin, require_castellano=require_castellano)
         return ok, why, h
 
     def _typical_size_for_series(self, series_name: str, season: int | None = None) -> int | None:

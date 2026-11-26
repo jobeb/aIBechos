@@ -607,6 +607,9 @@ class FilesUploadMixin:
                 continue
             remote_size = ftp_conn.get_remote_size(remote_file)
             already_exists = remote_size is not None and remote_size >= local_size
+            other_version = not already_exists and self._same_name_other_version(
+                ftp_conn, remote_file, entry.path, remote_size, local_size)
+            already_exists = already_exists or other_version
             dup = None
             listed = False
             if not already_exists and not getattr(entry, "_duplicate_checked", False):
@@ -620,7 +623,10 @@ class FilesUploadMixin:
                     dup = (None if getattr(entry, "has_manual_name", False)
                            else find_duplicate(listing, entry.media_info, remote_filename))
             reasons = []
-            if already_exists:
+            if other_version:
+                reasons.append("ya está completo en el servidor, pero es otra versión "
+                               f"({_fmt_size(remote_size)})")
+            elif already_exists:
                 reasons.append("ya está completo en el servidor")
             if dup:
                 reasons.append(f"ya hay otra versión: {dup}")
@@ -656,6 +662,25 @@ class FilesUploadMixin:
             e._conflict_policy = res
             e._conflict_dup = dup
             e._duplicate_checked = True
+
+    @staticmethod
+    def _same_name_other_version(ftp_conn, remote_file: str, local_path: str,
+                                 remote_size, local_size) -> bool:
+        """¿Hay en *remote_file* un archivo MÁS PEQUEÑO que el local que no
+        es un parcial suyo (otra versión con el mismo nombre)? Antes se
+        tomaba cualquier remoto menor por un parcial a reanudar, y la
+        subida descubría después que no lo era y lo sobrescribía entero
+        sin preguntar (real: Dragon Ball Daima 1x09, 285 MB del servidor
+        pisados por 345 MB). Sin forma de comprobarlo, False (como antes)."""
+        if remote_size is None or not local_size or not (0 < remote_size < local_size):
+            return False
+        check = getattr(ftp_conn, "_is_prefix_of_local", None)
+        if check is None:
+            return False
+        try:
+            return not check(remote_file, Path(local_path), remote_size)
+        except Exception:
+            return False
 
     def _upload_target(self, entry, ftp_conn):
         """Destino remoto de *entry*: (root, remote_dir, remote_filename,
@@ -816,6 +841,15 @@ class FilesUploadMixin:
                    and remote_size <= prev_remote_size)
         entry._last_upload_remote_size = remote_size
         already_exists = remote_size is not None and remote_size >= local_size
+        if not already_exists and self._same_name_other_version(
+                ftp_conn, remote_file, entry.path, remote_size, local_size):
+            # Mismo nombre, menor y NO es un parcial nuestro: otra versión
+            # completa. Se pregunta como "ya existe" en vez de pisarla.
+            _log.info("Subida: %s en el servidor es otra versión (%s, no un parcial de este "
+                      "archivo de %s): se pregunta antes de sobrescribir",
+                      remote_file, _fmt_size(remote_size), _fmt_size(local_size))
+            already_exists = True
+            stalled = False
         force_overwrite = False
 
         # Detección de duplicados — solo cuando el archivo con el nombre
@@ -1093,7 +1127,7 @@ class FilesUploadMixin:
                 remote_file, "ok", size, local_path=entry.path, media_info=entry.media_info)
             _log.info("Subida: OK %r (%s)", remote_filename, _fmt_size(size))
             from core.media_server_refresh import trigger_refresh
-            trigger_refresh(self.config_data)
+            trigger_refresh(self.config_data, media_info=entry.media_info)
             # Este método corre en un hilo de subida, no en el de la GUI --
             # a diferencia del mismo hook en _on_auto_file_event (que ya
             # corre dentro de self.after), aquí sí hay que agendarlo.

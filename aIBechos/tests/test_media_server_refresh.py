@@ -1149,3 +1149,64 @@ def test_find_plex_item_by_tmdb_id_returns_none_on_network_failure(monkeypatch):
         raise ConnectionError("sin red")
     monkeypatch.setattr(msr.requests, "get", _raise)
     assert msr.find_plex_item_by_tmdb_id("http://plex:32400", "tok", 9999, "tv") is None
+
+
+def test_trigger_refresh_agrupa_las_seguidas_en_una_al_final(monkeypatch):
+    """Lo que llega dentro del intervalo ya no se pierde: una sola llamada
+    más al acabar el intervalo."""
+    msr._reset_debounce_for_tests()
+    calls = []
+    monkeypatch.setattr(msr, "refresh_configured_servers", lambda cfg, **kw: calls.append(1))
+    cfg = _FakeConfig({})
+    for _ in range(4):
+        msr.trigger_refresh(cfg, min_interval_seconds=0.3)
+    assert _wait_for_calls(calls, want=2, timeout=5) == [1, 1]
+    msr._reset_debounce_for_tests()
+
+
+class _MI:
+    def __init__(self, media_type="tv", tmdb_id=236994):
+        self.media_type, self.tmdb_id = media_type, tmdb_id
+
+
+def test_trigger_refresh_serie_existente_reescanea_solo_la_serie(monkeypatch):
+    msr._reset_debounce_for_tests()
+    full, series = [], []
+    monkeypatch.setattr(msr, "refresh_jellyfin", lambda *a, **k: full.append(1) or (True, ""))
+    monkeypatch.setattr(msr, "find_jellyfin_item_by_tmdb_id", lambda h, k, t, mt: {"id": "S1"})
+    monkeypatch.setattr(msr, "refresh_jellyfin_series",
+                        lambda h, k, item_id, **kw: series.append(item_id) or (True, ""))
+    cfg = _FakeConfig({"jellyfin_enabled": True, "jellyfin_host": "h", "jellyfin_api_key": "k"})
+    msr.trigger_refresh(cfg, media_info=_MI())
+    assert _wait_for_calls(series) == ["S1"]
+    import time as _t
+    _t.sleep(0.2)
+    assert full == [], "con la serie ya en Jellyfin no hace falta la biblioteca entera"
+    msr._reset_debounce_for_tests()
+
+
+def test_trigger_refresh_serie_nueva_cae_a_biblioteca_entera(monkeypatch):
+    msr._reset_debounce_for_tests()
+    full = []
+    monkeypatch.setattr(msr, "refresh_jellyfin", lambda *a, **k: full.append(1) or (True, ""))
+    monkeypatch.setattr(msr, "find_jellyfin_item_by_tmdb_id", lambda *a: None)
+    cfg = _FakeConfig({"jellyfin_enabled": True, "jellyfin_host": "h", "jellyfin_api_key": "k"})
+    msr.trigger_refresh(cfg, media_info=_MI())
+    assert _wait_for_calls(full) == [1]
+    msr._reset_debounce_for_tests()
+
+
+def test_refresh_jellyfin_series_llama_al_item(monkeypatch):
+    seen = {}
+
+    class _R:
+        def raise_for_status(self):
+            pass
+
+    def fake_post(url, headers=None, params=None, timeout=None):
+        seen.update(url=url, params=params)
+        return _R()
+    monkeypatch.setattr(msr.requests, "post", fake_post)
+    ok, _ = msr.refresh_jellyfin_series("http://nas:8096/", "K", "S1")
+    assert ok and seen["url"] == "http://nas:8096/Items/S1/Refresh"
+    assert seen["params"]["Recursive"] == "true"

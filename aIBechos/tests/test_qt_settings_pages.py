@@ -38,7 +38,7 @@ SETTINGS_KEYS = {
     "ftp_user", "google_books_api_key", "jellyfin_api_key", "jellyfin_enabled", "jellyfin_host",
     "jellyfin_username", "language", "libro_template", "manual_action", "min_confidence",
     "movie_template", "p2p_blocked_adult", "p2p_blocked_exts", "p2p_blocked_groups",
-    "p2p_blocked_sample", "p2p_blocked_scr", "p2p_lang_ca", "p2p_lang_de", "p2p_lang_fr",
+    "p2p_blocked_sample", "p2p_blocked_scr", "p2p_lang_ca", "p2p_lang_de", "p2p_lang_es", "p2p_lang_fr",
     "p2p_lang_it", "p2p_lang_pt", "p2p_lang_vos", "p2p_score_weights", "p2p_trusted_groups",
     "plex_enabled", "plex_host", "plex_token", "poll_interval", "rename_local", "rename_remote",
     "reservation_quota_gb", "shared_data_ftp_path", "solicitudes_web_url", "start_with_windows",

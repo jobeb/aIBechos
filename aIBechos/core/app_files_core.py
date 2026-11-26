@@ -169,7 +169,8 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                 if tipo == "uploaded":
                     try:
                         self._save_history_entry(Path(path).name, remote_full or path,
-                                                 "ok", size or 0, local_path=path)
+                                                 "ok", size or 0, local_path=path,
+                                                 slim=bool(is_slim))
                     except Exception:
                         pass
                 return
@@ -261,7 +262,8 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                 # se le puso al renombrar; el nombre final sigue visible en
                 # la columna "destino" (remote incluye el nombre remoto).
                 self._save_history_entry(entry.name, remote_full or path, "ok", size or 0,
-                                          local_path=path, media_info=entry.media_info)
+                                          local_path=path, media_info=entry.media_info,
+                                          slim=bool(is_slim or getattr(entry, "is_slim", False)))
                 self._remove_uploaded_episode_from_missing_list(entry.media_info)
                 self._remove_uploaded_movie_from_movies_list(entry.media_info)
                 self._refresh_ftp_space()
@@ -283,7 +285,8 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                 self._save_history_entry(
                     entry.name, "",
                     "cancelado" if (reason or "").startswith("Subida cancelada") else "omitido",
-                    _size, error_msg=reason or "Omitido por el modo automático", local_path=path)
+                    _size, error_msg=reason or "Omitido por el modo automático", local_path=path,
+                    slim=bool(is_slim or getattr(entry, "is_slim", False)))
                 self._update_row(entry)
                 if self._selected_entry is entry:
                     self._update_detail(entry)
@@ -582,7 +585,7 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
         return rp.stale_remote_from_history(self._load_history(), local_path, filename, new_remote)
 
     def _save_history_entry(self, filename: str, remote: str, status: str, size: int, error_msg: str = "",
-                             local_path: str = "", media_info=None):
+                             local_path: str = "", media_info=None, slim: bool = False):
         entry = {
             "ts":        _time.time(),
             "filename":  filename,
@@ -602,6 +605,12 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
             # útil ya en local si en el futuro hace falta distinguir.
             "person":    self.config_data.get("app_user_name", ""),
         }
+        if slim:
+            # Ligera de un adelgazamiento (sustituye a un gordo del
+            # servidor): el Historial la muestra como "Adelgazar" en vez de
+            # "Subida". Sigue siendo kind "subida" para estadísticas y
+            # actividad compartida.
+            entry["slim"] = True
         # Qué capítulo es (TMDB, temporada, episodio): la web avisa con esto
         # a quien sigue la serie (⚡ Seguir serie) de lo que llega al
         # servidor por cualquier vía -- el ⚡ de un PC, una solicitud o a
@@ -686,6 +695,11 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
                   "skip": WARNING_COLOR, "error": ERROR_COLOR}
         self._after_from_worker(lambda: self._set_status(msg, colors.get(tipo, ACCENT)))
 
+    # ▶ con lo recién subido: cuánto se espera a que Jellyfin lo indexe
+    # (tras pedírselo) antes de caer al archivo local, y cada cuánto se mira.
+    _JELLYFIN_PLAY_WAIT_S = 90.0
+    _JELLYFIN_PLAY_POLL_S = 4.0
+
     def _play_file(self, entry):
         """▶: si el archivo ya está subido, se abre en Jellyfin (su ficha,
         para pulsar play allí); si no, se abre el archivo local con la
@@ -732,15 +746,30 @@ class FilesCoreMixin(FilesUploadMixin, FilesIdentifyMixin):
             if not (cfg.get("jellyfin_enabled") and host and key):
                 raise RuntimeError("Jellyfin no configurado")
             from core.media_server_refresh import (find_jellyfin_episode_id,
-                                                   find_jellyfin_item_by_tmdb_id)
-            found = find_jellyfin_item_by_tmdb_id(host, key, int(info.tmdb_id), info.media_type)
-            item_id = None
-            if found:
+                                                   find_jellyfin_item_by_tmdb_id,
+                                                   request_jellyfin_index)
+
+            def _lookup():
+                found = find_jellyfin_item_by_tmdb_id(host, key, int(info.tmdb_id), info.media_type)
+                if not found:
+                    return None
                 if info.media_type == "tv" and info.season and info.episode:
-                    item_id = find_jellyfin_episode_id(host, key, found["id"],
-                                                       info.season, info.episode)
-                else:
-                    item_id = found["id"]
+                    return find_jellyfin_episode_id(host, key, found["id"], info.season, info.episode)
+                return found["id"]
+
+            item_id = _lookup()
+            if not item_id:
+                # Recién subido y Jellyfin aún no lo indexó: se le pide que
+                # lo haga YA (la serie sola si existe) y se espera a que
+                # aparezca, en vez de rendirse al primer intento.
+                _log.info("Abrir en Jellyfin: %r aún no está, se pide indexarlo y se espera", entry.name)
+                self.after(0, lambda: self._set_status(
+                    "Jellyfin aún no lo tiene: pidiéndole que lo indexe y esperando...", PENDING_COLOR))
+                request_jellyfin_index(cfg, info)
+                deadline = _time.monotonic() + self._JELLYFIN_PLAY_WAIT_S
+                while not item_id and _time.monotonic() < deadline:
+                    _time.sleep(self._JELLYFIN_PLAY_POLL_S)
+                    item_id = _lookup()
             if not item_id:
                 raise LookupError("no está en Jellyfin todavía")
             import webbrowser

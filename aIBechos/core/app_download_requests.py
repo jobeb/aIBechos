@@ -1474,17 +1474,25 @@ class DownloadRequestsMixin:
                     query = build_amule_query(name, None, None, year, templates, prefers)
                     ok, motivo, _h = self._auto_amule_download_series(
                         query, is_movie=True, expected_year=int(year) if str(year).isdigit() else None,
-                        exclude_hashes=old_hashes)
+                        exclude_hashes=old_hashes,
+                        origin={"tmdb_id": entry.get("tmdb_id"), "media_type": "movie",
+                                "title": name, "year": year})
                 elif target[0] == "season_pack":
                     query = build_amule_season_query(name, target[1], templates, prefers)
                     ok, motivo, _h = self._auto_amule_download_series(query, is_movie=False,
-                                                                       exclude_hashes=old_hashes)
+                                                                       exclude_hashes=old_hashes,
+                                                                       origin={"tmdb_id": entry.get("tmdb_id"),
+                                                                               "media_type": "tv", "title": name,
+                                                                               "season": target[1]})
                 else:
                     _t, s, e = target
                     query = build_amule_query(name, s, e, year, templates, prefers)
                     ok, motivo, _h = self._auto_amule_download_series(
                         query, is_movie=False, typical_size=typical, exclude_hashes=old_hashes,
-                        expected_year=int(year) if str(year).isdigit() else None)
+                        expected_year=int(year) if str(year).isdigit() else None,
+                        score_query=build_amule_query(name, s, e, year),
+                        origin={"tmdb_id": entry.get("tmdb_id"), "media_type": "tv",
+                                "title": name, "season": s, "episode": e})
             except Exception as ex:
                 ok, motivo, _h = False, str(ex)[:200], ""
             if not ok and motivo == _dr.AMULE_UNAVAILABLE:

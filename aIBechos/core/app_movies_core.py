@@ -417,6 +417,97 @@ class MoviesCoreMixin:
         save_cache(cache)
         return rows
 
+    def _download_whole_series(self, tmdb_id: int, title: str, year=None,
+                               progress_cb=None, cancel_event=None) -> dict:
+        """Botón "⬇ Todo" de Recomendado: lanza en aMule TODOS los
+        capítulos emitidos (según TMDB) que no están en el FTP, no solo el
+        piloto. Mismo criterio que Episodios: capítulo sin doblaje
+        confirmado -> solo vale un nombre que declare castellano (salvo
+        "Descargar sin doblaje"). Los lanzados quedan "checked" para que el
+        ⚡ no los relance. *progress_cb(i, total, "1x03")* por capítulo.
+        Devuelve {"total", "launched": [...], "no_castellano": [...],
+        "failed": [(ep, motivo)], "error": str}. Nunca lanza."""
+        from core.amule_download import (NO_CASTELLANO_REASON, auto_download,
+                                         typical_size_for_series)
+        from core.amule_search import build_amule_query
+        from core.missing_episodes import is_ep_dub_confirmed
+        out = {"total": 0, "launched": [], "no_castellano": [], "failed": [], "error": ""}
+        try:
+            expected = self._tmdb_expected_episodes(tmdb_id)
+        except Exception as e:
+            _log.warning("Serie entera: TMDB no dio los episodios de %s (%s)", tmdb_id, e)
+            out["error"] = "TMDB no da los episodios"
+            return out
+        if not expected:
+            out["error"] = "sin episodios emitidos en TMDB"
+            return out
+        tmp = {"name": title, "expected_episodes": expected, "missing": dict(expected),
+               "folder_name": None, "tmdb_id": tmdb_id}
+        try:
+            tmp = self._cross_check_single_result_with_ftp(tmp)
+        except Exception:
+            # Sin cruce no se sabe qué hay: mejor no bajar la serie entera
+            # repetida encima de lo que ya está.
+            _log.exception("Serie entera: cruce FTP de '%s' falló", title)
+            out["error"] = "no se pudo comprobar el FTP"
+            return out
+        missing = tmp.get("missing") or {}
+        eps = [(int(s), int(e)) for s in sorted(missing, key=int) for e in sorted(missing[s])]
+        out["total"] = len(eps)
+        if not eps:
+            return out
+        cfg = self.config_data
+        allow_undubbed = bool(cfg.get("download_undubbed", False))
+        cutoff = self._dub_cutoff_for_series(tmdb_id, None)
+        dub_eps = ((self._spanish_dub_cache or {}).get(str(tmdb_id)) or {}).get("episodes") or {}
+        templates = cfg.get("series_search_patterns", {}) or {}
+        try:
+            year_int = int(str(year)[:4]) if year and str(year)[:4].isdigit() else None
+        except (TypeError, ValueError):
+            year_int = None
+        typical_by_season = {}
+        _log.info("Serie entera: '%s' -> %d capítulo(s) por descargar", title, len(eps))
+        for i, (s, e) in enumerate(eps, 1):
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            label = f"{s}x{e:02d}"
+            if progress_cb:
+                try:
+                    progress_cb(i, len(eps), label)
+                except Exception:
+                    pass
+            if s not in typical_by_season:
+                try:
+                    typical_by_season[s] = typical_size_for_series(cfg, title, s)
+                except Exception:
+                    typical_by_season[s] = None
+            req_cast = not allow_undubbed and not is_ep_dub_confirmed(s, e, dub_eps, cutoff)
+            try:
+                ok, why, _h, _name = auto_download(
+                    cfg, self._amule_ec_lock, build_amule_query(title, s, e, templates=templates),
+                    typical_size=typical_by_season[s], expected_year=year_int,
+                    require_castellano=req_cast, score_query=build_amule_query(title, s, e),
+                    origin={"tmdb_id": tmdb_id, "media_type": "tv", "title": title,
+                            "season": s, "episode": e})
+            except Exception as ex:
+                ok, why = False, str(ex)[:120]
+            if ok:
+                out["launched"].append(label)
+                try:
+                    self._set_auto_checked_episode(tmdb_id, s, e)
+                except Exception:
+                    pass
+            elif why == NO_CASTELLANO_REASON:
+                out["no_castellano"].append(label)
+            else:
+                out["failed"].append((label, why))
+                if why == "aMule no disponible":
+                    break
+        _log.info("Serie entera: '%s' lanzados %d/%d (sin castellano: %s; fallidos: %s)",
+                  title, len(out["launched"]), len(eps), ", ".join(out["no_castellano"]) or "-",
+                  ", ".join(f"{l} ({w})" for l, w in out["failed"]) or "-")
+        return out
+
     def _dismiss_missing_movie(self, r: dict):
         """Botón "🚫" de una fila: quita esta recomendación de la caché en
         disco (para que no reaparezca al reiniciar) y de la tabla, sin

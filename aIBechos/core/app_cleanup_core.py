@@ -1003,9 +1003,9 @@ class CleanupCoreMixin:
             terms = filename_stem_to_search_terms(filename or "")
         except Exception:
             terms = (filename or "").rsplit(".", 1)[0] if "." in (filename or "") else (filename or "")
+        # Sin añadir "castellano": Kad exige todas las palabras y dejaba
+        # fuera los buenos (ver amule_search._maybe_add_castellano).
         q = f"{item.name} {terms}".strip()
-        if "castellano" in (filename or "").lower() and "castellano" not in q.lower():
-            q = f"{q} castellano"
         return _sanq(q), None
 
     def _record_slim_replacement(self, item, filename: str, size: int, folder, query: str):

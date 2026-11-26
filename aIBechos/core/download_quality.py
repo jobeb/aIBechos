@@ -31,8 +31,10 @@ from core.amule_client import AmuleSearchResult
 from core.series_match import series_similarity
 
 
-_LANG_RE = re.compile(r"\b(?:spa|spanish|español|espanol|castellano|latino|dual)\b",
-                      re.IGNORECASE)
+# Marcas de español: ya NO hay lista fija aquí -- son las de la sección
+# [es] de Ajustes → Servidor → Preferencias descargas → Idioma (config
+# p2p_lang_es), ver _has_spanish / set_filter_lists. Lo que el usuario
+# quite de ahí deja de contar como castellano en TODO el motor.
 # Catalán SIN español: un release solo en catalán se penaliza fuerte para
 # que jamás gane a uno en español. Con pista en español también (dual), no
 # se penaliza. "cat" suelto
@@ -257,6 +259,7 @@ def parse_provider_lines(text: str) -> list:
 # Etiquetas de cada idioma para el campo único de Idioma (ver
 # parse_lang_box/format_lang_box).
 LANG_KIND_LABELS = {
+    "es": "Español (cuenta como castellano)",
     "vos": "VOS / VOSE / VOSI",
     "fr": "Francés",
     "it": "Italiano",
@@ -419,7 +422,7 @@ def is_user_blocked(name: str) -> bool:
     Sin excepción por español, a diferencia de los filtros de idioma
     (ver is_french_content): la lista es de proveedores/marcas ("no
     descargar"), no de idiomas -- la marca dice quién lo hizo, no en
-    qué idioma está. Además el "español" de _LANG_RE lo mismo es audio
+    qué idioma está. Además el "español" de la lista [es] lo mismo es audio
     que subtítulos (real: "Jap.SUB.Esp-Spa ... by.Skuallo" trae "Spa"
     de subtítulos, y con la excepción el veto al grupo no se aplicaba
     y ese release se descargaba igual)."""
@@ -440,12 +443,18 @@ def is_user_blocked(name: str) -> bool:
 # guardas, títulos italianos, V.O.S. espaciado...) sigue fijo y estas
 # listas AÑADEN marcadores con el mismo matching con guardas que los
 # proveedores (ver _compile_guarded).
-LANG_KINDS = ("vos", "fr", "it", "de", "pt", "ca")
+LANG_KINDS = ("es", "vos", "fr", "it", "de", "pt", "ca")
 LANG_CONFIG_KEYS = {
+    "es": "p2p_lang_es",
     "vos": "p2p_lang_vos", "fr": "p2p_lang_fr", "it": "p2p_lang_it",
     "de": "p2p_lang_de", "pt": "p2p_lang_pt", "ca": "p2p_lang_ca",
 }
 BUILTIN_LANG_MARKERS = {
+    # Español: a diferencia de los demás idiomas NO hay motor fijo detrás --
+    # esta lista (la de Ajustes) es la ÚNICA que decide qué es castellano.
+    # "latino" incluido como siempre ha puntuado; quitarlo en Ajustes si
+    # solo se quiere castellano de España.
+    "es": ["castellano", "español", "espanol", "spanish", "spa", "dual", "latino"],
     "vos": ["vos", "vose", "vosi", "versión original", "version original"],
     "fr": ["vostfr", "vosta", "truefrench", "vff", "vf", "fr", "f.r.",
            "french", "francais", "français", "vq"],
@@ -466,6 +475,10 @@ BUILTIN_NONVIDEO_EXTS = sorted(_NON_VIDEO_EXTS)
 
 _USER_LANG: dict = {k: [] for k in LANG_KINDS}
 _USER_LANG_RES: dict = {k: [] for k in LANG_KINDS}
+# El español arranca con su lista inicial (nadie ha llamado aún al setter:
+# tests, watcher standalone) -- en la app la sustituye la de config.
+_USER_LANG["es"] = list(BUILTIN_LANG_MARKERS["es"])
+_USER_LANG_RES["es"] = _compile_guarded(_USER_LANG["es"])
 _USER_ADULT: list = []
 _USER_ADULT_RES: list = []
 _USER_SAMPLE: list = []
@@ -562,6 +575,12 @@ def _lang_hit(kind: str, name: str):
     except Exception:
         pass
     return None
+
+
+def _has_spanish(name: str) -> bool:
+    """True si *name* lleva alguna marca de la lista de español de Ajustes
+    (sección [es], config p2p_lang_es)."""
+    return _lang_hit("es", name) is not None
 
 
 def adult_match(name: str):
@@ -874,7 +893,7 @@ def is_italian_only(name: str) -> bool:
     if not name:
         return False
     # Hay rastro de español (audio o subs): no es "solo italiano".
-    if _LANG_RE.search(name):
+    if _has_spanish(name):
         return False
     # Marcador explícito ITA/Italiano (caza SUB_ITA, AAC_ITA con (?<![A-Za-z0-9]))
     # o de la lista editable del usuario.
@@ -910,7 +929,7 @@ def is_vos_content(name: str) -> bool:
         return False
     if _DUAL_RE.search(name):
         return False
-    if _ENG_SUBS_RE.search(name) and not _LANG_RE.search(name):
+    if _ENG_SUBS_RE.search(name) and not _has_spanish(name):
         return True
     return bool(_VOS_RE.search(name) or _lang_hit("vos", name))
 
@@ -931,9 +950,20 @@ def is_french_content(name: str) -> bool:
     editable p2p_lang_fr. Caso real: 'Tensei Shitara Slime Datta Ken 4xXX
     VOSTFR Web (by OtakuNashi).ts'. Un dual 'Spanish French Subs' no se
     excluye (tiene castellano)."""
-    if not name or _LANG_RE.search(name):
+    if not name or _has_spanish(name):
         return False
     return bool(_FRA_RE.search(name) or _lang_hit("fr", name))
+
+
+def declares_castellano_audio(name: str) -> bool:
+    """True si el nombre DECLARA audio en castellano: castellano / español /
+    spanish / spa o dual, (cualquier marca de la lista [es] de Ajustes) y no es V.O.S. (ahí
+    "spanish" suele ser solo los subtítulos, ver is_vos_content). Para capítulos sin doblaje confirmado (ver auto_download,
+    require_castellano): un nombre sin idioma ("Dragon Ball Daima - 1X11 -
+    Leyenda.mkv") suele ser la versión japonesa/original."""
+    if not name or is_vos_content(name):
+        return False
+    return _has_spanish(name)
 
 
 # Aliases para compatibilidad con best_result (is_*_only)
@@ -950,7 +980,7 @@ def is_german_content(name: str) -> bool:
     excluye, igual que el italiano solo (ver is_italian_only). Motor
     (_GER_RE) más la lista editable p2p_lang_de. Un dual con castellano
     no se excluye (tiene español), solo se penaliza."""
-    if not name or _LANG_RE.search(name):
+    if not name or _has_spanish(name):
         return False
     return bool(_GER_RE.search(name) or _lang_hit("de", name))
 
@@ -964,7 +994,7 @@ def is_portuguese_content(name: str) -> bool:
     español: se excluye, igual que el italiano solo. Motor (_POR_RE)
     más la lista editable p2p_lang_pt. Un dual con castellano no se
     excluye, solo se penaliza."""
-    if not name or _LANG_RE.search(name):
+    if not name or _has_spanish(name):
         return False
     return bool(_POR_RE.search(name) or _lang_hit("pt", name))
 
@@ -1275,7 +1305,7 @@ def score_download(result: AmuleSearchResult,
         score += _W("title_overlap_0")
 
     # Idioma/audio español
-    if _LANG_RE.search(name):
+    if _has_spanish(name):
         score += _W("spanish")
     else:
         # Ninguna marca de idioma: puede ser castellano sin etiquetar, pero
@@ -1394,7 +1424,7 @@ def explain_score(result: AmuleSearchResult, query: str = "", expected_year: int
         if years:
             lines.append(f"Año en nombre {years} vs esperado {expected_year} {'✓' if expected_year in years else '✗'}")
     # Idioma (pesos efectivos, ver _W)
-    if _LANG_RE.search(name):
+    if _has_spanish(name):
         lines.append(f"Idioma castellano/spa → {_W('spanish'):+.0f}")
     else:
         lines.append(f"Sin marca de idioma → {_W('no_language'):+.0f}")

@@ -875,11 +875,19 @@ def test_vos_explicito_con_dual_sigue_elegible():
 
 # ---- Listas editables de idioma y otros filtros (híbrido motor+listas) ----
 
+def _default_langs():
+    """Listas de idioma "de fábrica" para restaurar entre tests: sin
+    extras en los idiomas extranjeros y la lista inicial del español (que
+    ya no tiene motor fijo detrás: vaciarla es no reconocer el castellano)."""
+    from core.download_quality import LANG_KINDS, BUILTIN_LANG_MARKERS
+    return {k: (list(BUILTIN_LANG_MARKERS["es"]) if k == "es" else []) for k in LANG_KINDS}
+
+
 def _reset_download_filters():
     from core.download_quality import (
         set_filter_lists, set_score_weights, set_provider_lists,
         LANG_KINDS, _BUILTIN_TRUSTED)
-    set_filter_lists(langs={k: [] for k in LANG_KINDS},
+    set_filter_lists(langs=_default_langs(),
                      adult=[], sample=[], scr=[], exts=[])
     set_score_weights(None)
     set_provider_lists(trusted=list(_BUILTIN_TRUSTED), blocked=[])
@@ -1079,7 +1087,7 @@ def test_size_has_single_bad_band():
 def test_lang_box_roundtrip():
     """format → parse devuelve las mismas listas por idioma."""
     from core.download_quality import parse_lang_box, format_lang_box
-    langs = {"vos": ["vos", "mi-marca"], "fr": ["vostfr"], "it": [],
+    langs = {"es": ["castellano", "dual"], "vos": ["vos", "mi-marca"], "fr": ["vostfr"], "it": [],
              "de": ["ger"], "pt": [], "ca": ["vosc"]}
     parsed = parse_lang_box(format_lang_box(langs))
     assert parsed == langs
@@ -1116,13 +1124,13 @@ def test_lang_box_marks_flow_into_engine():
     """Lo parseado del campo único alimenta al motor como las listas."""
     from core.download_quality import (
         parse_lang_box, set_filter_lists, is_french_content, LANG_KINDS)
-    langs = parse_lang_box("[fr] Francés\nchti\n")
+    langs = parse_lang_box("[es]\ncastellano\nspanish\nspa\ndual\n[fr] Francés\nchti\n")
     set_filter_lists(langs=langs, adult=None, sample=None, scr=None,
                      exts=None)
     try:
         assert is_french_content("Serie 1x01 chti 720p.mkv")
     finally:
-        set_filter_lists(langs={k: [] for k in LANG_KINDS}, adult=[],
+        set_filter_lists(langs=_default_langs(), adult=[],
                          sample=[], scr=[], exts=[])
 
 # ── Casos reales 2026-11 (Hunter × Hunter, Lower Decks, Twilight Zone) ──
@@ -1168,3 +1176,24 @@ def test_a_igualdad_gana_el_que_declara_castellano():
     sin = score_download(_r(1, "Serie 1x01 720p.mkv"), "Serie 1x01")
     con = score_download(_r(1, "Serie 1x01 720p Castellano.mkv"), "Serie 1x01")
     assert con > sin
+
+
+
+# ── Español solo desde la lista [es] de Ajustes (sin lista fija) ──
+
+def test_espanol_solo_cuenta_lo_que_hay_en_la_lista():
+    from core.download_quality import set_filter_lists, declares_castellano_audio
+    try:
+        set_filter_lists(langs={"es": ["castellano"]})
+        assert declares_castellano_audio("Serie 1x01 [Castellano].mkv")
+        assert not declares_castellano_audio("Serie 1x01 Spanish.mkv"), "quitado de la lista: ya no cuenta"
+        set_filter_lists(langs={"es": ["castellano", "cast"]})
+        assert declares_castellano_audio("Serie 1x01 [Cast] 1080p.mkv"), "añadido en Ajustes: cuenta"
+    finally:
+        set_filter_lists(langs=_default_langs())
+
+
+def test_lista_inicial_de_espanol_igual_en_config_y_motor():
+    from core.download_quality import BUILTIN_LANG_MARKERS
+    from config import DEFAULTS
+    assert DEFAULTS["p2p_lang_es"] == BUILTIN_LANG_MARKERS["es"]

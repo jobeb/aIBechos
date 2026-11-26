@@ -15,7 +15,7 @@ import time
 from core.applog import get_logger
 from core.download_quality import best_result
 from core.ec_client import EcClient, EcConnectionError, EcAuthError, EcProtocolError
-from core.series_match import normalize_series_name, series_similarity, sibling_blocks_folder
+from core.series_match import normalize_series_name, series_similarity, sibling_blocks_folder, spinoff_blocks_folder
 from core.transfer import make_client
 
 _log = get_logger("aIBechos.amule_download", "app.log")
@@ -202,16 +202,85 @@ def _already_completed(ec, best) -> bool:
     return False
 
 
+NO_CASTELLANO_REASON = "sin candidato que declare castellano (doblaje no confirmado)"
+CANDIDATES_LOGGED = 8
+
+
+def _log_candidates(query: str, results: list, chosen, expected_year, is_movie, typical_size,
+                    note: str = "") -> None:
+    """Deja en app.log los candidatos de la búsqueda (los mejores por
+    puntuación), para poder ver después qué opciones había y por qué se
+    eligió uno -- real: Dragon Ball Daima 1x11/1x14 se bajaron en japonés y
+    no había forma de saber si existía una versión en castellano."""
+    try:
+        from core.download_quality import score_download
+        scored = sorted(((score_download(r, query, expected_year, is_movie, typical_size), r)
+                         for r in (results or []) if r is not None),
+                        key=lambda t: t[0], reverse=True)
+        lines = [f"  {'→' if r is chosen else ' '} {sc:6.1f}  {getattr(r, 'size_human', '?'):>9}  "
+                 f"{getattr(r, 'sources', '?'):>3} fuentes  {getattr(r, 'name', '?')}"
+                 for sc, r in scored[:CANDIDATES_LOGGED]]
+        more = f" (+{len(scored) - CANDIDATES_LOGGED} más)" if len(scored) > CANDIDATES_LOGGED else ""
+        _log.info("Candidatos aMule para %r: %d resultado(s)%s%s\n%s", query, len(scored), more,
+                  f" -- {note}" if note else "", "\n".join(lines) or "  (ninguno)")
+    except Exception:
+        _log.debug("No se pudieron registrar los candidatos de %r", query, exc_info=True)
+
+
+def _effective_score_query(query: str, score_query: str | None, results) -> str:
+    """Consulta con la que se puntúa: *score_query* (el nombre real de la
+    serie, "Dragon Ball Daima 1x10") si algún resultado es de esa serie; si
+    no, la buscada. Con una plantilla de búsqueda ("Daima") la puntuación
+    exigía que el título del resultado fuera "Daima" y descartaba todos los
+    "Dragon Ball Daima 1x10..." (real: 14 candidatos, ninguno elegible).
+    Si los resultados se llaman como la plantilla (Tensura para Slime),
+    se sigue puntuando con la consulta buscada."""
+    if not score_query or score_query == query:
+        return query
+    try:
+        from core.download_quality import _same_series_title
+        if any(r is not None and _same_series_title(score_query, getattr(r, "name", "") or "")
+               for r in results or []):
+            return score_query
+    except Exception:
+        pass
+    return query
+
+
+def _record_origin(origin: dict | None, best) -> None:
+    if not origin:
+        return
+    try:
+        from core.download_origin import record
+        record(getattr(best, "name", ""), origin.get("tmdb_id"), origin.get("media_type", ""),
+               title=origin.get("title", ""), season=origin.get("season"),
+               episode=origin.get("episode"), year=origin.get("year"),
+               hash_hex=_result_hash(best))
+    except Exception:
+        _log.debug("No se pudo apuntar el origen de %r", getattr(best, "name", "?"), exc_info=True)
+
+
 def auto_download(config, ec_lock, query: str, search_type: str | None = None,
                   typical_size: int | None = None, max_size: int | None = None,
                   is_movie: bool = False, expected_year: int | None = None,
-                  exclude_hashes=()):
+                  exclude_hashes=(), require_castellano: bool = False,
+                  score_query: str | None = None, origin: dict | None = None):
     """Busca *query* en aMule y descarga el mejor candidato
     (core.download_quality.best_result). Devuelve (ok, motivo, hash_hex,
     nombre_elegido). *max_size*: techo en bytes ("Adelgazar").
     *exclude_hashes*: hashes MD4 hex que no se pueden elegir (Sustituir:
     el archivo que ya está en el servidor, para no descargarlo idéntico)
-    -- si solo hay esos, falla con motivo en vez de repetirlo."""
+    -- si solo hay esos, falla con motivo en vez de repetirlo.
+    *require_castellano*: solo candidatos cuyo nombre declara castellano
+    (download_quality.declares_castellano_audio) -- para capítulos sin
+    doblaje confirmado, donde lo que no dice idioma suele ser la versión
+    original; si no hay ninguno, falla con NO_CASTELLANO_REASON.
+    *score_query*: la consulta sin plantilla de búsqueda, para puntuar
+    (ver _effective_score_query).
+    *origin*: la ficha que se buscaba ({tmdb_id, media_type, title,
+    season, episode, year}); si la descarga se lanza se apunta con el
+    nombre elegido para que AutoWatcher no tenga que adivinarla al
+    subirla (ver core/download_origin.py)."""
     ec = ec_client_from_config(config)
     try:
         with ec_lock:
@@ -225,11 +294,19 @@ def auto_download(config, ec_lock, query: str, search_type: str | None = None,
             last_key = None
             only_excluded = False
             results: list = []
+            sq = query
             try:
                 # Se lee en vivo (aMule va llenando la lista); si el mejor se
                 # repite dos sondeos seguidos se sale antes del límite.
-                for results in ec.iter_search(query, search_type=st, poll_interval=2.0, max_duration=20.0):
-                    candidate = _best_not_excluded(results, query, expected_year, is_movie,
+                all_results: list = []
+                for all_results in ec.iter_search(query, search_type=st, poll_interval=2.0, max_duration=20.0):
+                    results = all_results
+                    if require_castellano and results:
+                        from core.download_quality import declares_castellano_audio
+                        results = [r for r in results
+                                   if r is not None and declares_castellano_audio(getattr(r, "name", ""))]
+                    sq = _effective_score_query(query, score_query, all_results)
+                    candidate = _best_not_excluded(results, sq, expected_year, is_movie,
                                                    typical_size, max_size, excluded) if results else None
                     if results and candidate is None and excluded:
                         only_excluded = True
@@ -240,18 +317,27 @@ def auto_download(config, ec_lock, query: str, search_type: str | None = None,
                             break
                         best = candidate
                         last_key = cand_key
+                note = "solo los que declaran castellano (doblaje no confirmado)" if require_castellano else ""
                 if best is None:
+                    _log_candidates(sq, all_results, None, expected_year, is_movie, typical_size,
+                                    note or "ninguno elegible")
                     if only_excluded:
                         return False, "solo está el mismo archivo que ya hay en el servidor", "", ""
+                    if require_castellano and all_results:
+                        _log.info("auto_download: %r sin candidato que declare castellano, no se descarga", query)
+                        return False, NO_CASTELLANO_REASON, "", ""
                     return False, "no encontrado", "", ""
-                best, block_reason = _judge_or_keep(config, query, best, results, is_movie,
+                best, block_reason = _judge_or_keep(config, sq, best, results, is_movie,
                                                     expected_year, typical_size, max_size, excluded)
+                _log_candidates(sq, all_results, best, expected_year, is_movie, typical_size,
+                                note if best is not None else (block_reason or note))
                 if best is None:
                     return False, block_reason, "", ""
                 ok, _raw = ec.download(best)
                 if ok and _already_completed(ec, best):
                     return False, ALREADY_COMPLETED_REASON, _result_hash(best), best.name
                 if ok:
+                    _record_origin(origin, best)
                     return True, "", _result_hash(best), best.name
                 return False, "aMule rechazó la descarga", "", best.name
             except (EcProtocolError, OSError) as e:
@@ -354,9 +440,14 @@ def typical_size_for_series(config, series_name: str, season: int | None = None,
             return None
         norm_target = normalize_series_name(series_name)
         # sibling_blocks_folder: no reclamar por parecido la carpeta exacta
-        # de otra serie conocida (Dragon Ball Daima / Dragon Ball).
+        # de otra serie conocida; spinoff_blocks_folder: ni la de otra
+        # entrega de la franquicia aunque no sea conocida. La carpeta exacta
+        # gana a cualquier parecida. Real: el típico de "Dragon Ball Daima"
+        # salía de "Dragon Ball." (193 MB contra ~500 MB de los suyos) y el
+        # 1x10 en castellano de 675 MB quedaba por debajo del umbral.
         sibling_names = known_series_names_from_cache() | {series_name}
         cat, folder_name = None, None
+        loose = None
         for c in config.get("ftp_categories", {"tv": []}).get("tv", []):
             root_try = c.get("root", "")
             if not root_try:
@@ -364,15 +455,21 @@ def typical_size_for_series(config, series_name: str, season: int | None = None,
             try:
                 for d in own_ftp.list_dirs(root_try) or []:
                     nd = normalize_series_name(d)
-                    if ((series_similarity(norm_target, nd, strict=False) >= 0.85
-                         or norm_target in nd or nd in norm_target)
-                            and not sibling_blocks_folder(series_name, d, sibling_names)):
+                    if nd == norm_target:
                         cat, folder_name = c, d
                         break
+                    if (loose is None
+                            and (series_similarity(norm_target, nd, strict=False) >= 0.85
+                                 or norm_target in nd or nd in norm_target)
+                            and not sibling_blocks_folder(series_name, d, sibling_names)
+                            and not spinoff_blocks_folder(series_name, d)):
+                        loose = (c, d)
                 if cat:
                     break
             except Exception:
                 continue
+        if not cat and loose:
+            cat, folder_name = loose
         if not cat or not folder_name:
             _log.info("Típico %r (norm %r): no se encontró carpeta en FTP", series_name, norm_target)
             return None

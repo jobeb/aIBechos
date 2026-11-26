@@ -110,6 +110,9 @@ def test_worker_sin_jellyfin_cae_al_local(tmp_path, monkeypatch):
     import core.media_server_refresh as msr
     h = _host_jellyfin()
     monkeypatch.setattr(msr, "find_jellyfin_item_by_tmdb_id", lambda *a: None)
+    monkeypatch.setattr(msr, "request_jellyfin_index", lambda cfg, info: None)
+    monkeypatch.setattr(h, "_JELLYFIN_PLAY_WAIT_S", 0.05)
+    monkeypatch.setattr(h, "_JELLYFIN_PLAY_POLL_S", 0.01)
     monkeypatch.setattr(h, "_play_local_file", lambda e: h.calls.append(("local", e)))
     h._play_in_jellyfin_worker(_entry(tmp_path))
     assert "local" in [c[0] for c in h.calls]
@@ -120,6 +123,9 @@ def test_worker_sin_jellyfin_ni_local_avisa(tmp_path, monkeypatch):
     import core.media_server_refresh as msr
     h = _host_jellyfin()
     monkeypatch.setattr(msr, "find_jellyfin_item_by_tmdb_id", lambda *a: None)
+    monkeypatch.setattr(msr, "request_jellyfin_index", lambda cfg, info: None)
+    monkeypatch.setattr(h, "_JELLYFIN_PLAY_WAIT_S", 0.05)
+    monkeypatch.setattr(h, "_JELLYFIN_PLAY_POLL_S", 0.01)
     e = _entry(tmp_path)
     e.path = str(tmp_path / "borrado.mkv")
     h._play_in_jellyfin_worker(e)
@@ -142,3 +148,28 @@ def test_find_episode_id(monkeypatch):
     assert msr.find_jellyfin_episode_id("h", "k", "S", 1, 2) == "B"
     assert msr.find_jellyfin_episode_id("h", "k", "S", 3, 1) is None
     assert msr.find_jellyfin_episode_id("", "k", "S", 1, 1) is None
+
+
+def test_worker_recien_subido_pide_indexar_y_espera(tmp_path, monkeypatch):
+    """Recién subido: Jellyfin aún no lo tiene -> se le pide indexar y se
+    abre en cuanto aparece, sin caer al local."""
+    import core.media_server_refresh as msr
+    import webbrowser
+    h = _host_jellyfin()
+    lookups = []
+    monkeypatch.setattr(msr, "find_jellyfin_item_by_tmdb_id",
+                        lambda *a: lookups.append(1) or {"id": "SERIE1"})
+    # El capítulo aparece al tercer intento
+    monkeypatch.setattr(msr, "find_jellyfin_episode_id",
+                        lambda *a: "EP9" if len(lookups) >= 3 else None)
+    asked = []
+    monkeypatch.setattr(msr, "request_jellyfin_index", lambda cfg, info: asked.append(info.tmdb_id))
+    monkeypatch.setattr(h, "_JELLYFIN_PLAY_WAIT_S", 5.0)
+    monkeypatch.setattr(h, "_JELLYFIN_PLAY_POLL_S", 0.01)
+    monkeypatch.setattr(h, "_play_local_file", lambda e: h.calls.append(("local", e)))
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url))
+    h._play_in_jellyfin_worker(_entry(tmp_path))
+    assert len(asked) == 1
+    assert opened == ["http://nas:8096/web/#/details?id=EP9"]
+    assert "local" not in [c[0] for c in h.calls]

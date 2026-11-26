@@ -496,10 +496,12 @@ class DownloadPrefsPage(Page):
         self.bind("p2p_trusted_groups", lambda: parse_provider_lines(trusted.toPlainText()))
         self.bind("p2p_blocked_groups", lambda: parse_provider_lines(blocked.toPlainText()))
 
-        c = self.card("Idioma", "El motor siempre excluye estos idiomas sin pista en español (VOS, francés/"
-                                "VOSTFR, italiano, alemán, portugués) y penaliza el catalán. Tus marcadores se "
-                                "AÑADEN por secciones [vos] [fr] [it] [de] [pt] [ca], uno por línea. No toques "
-                                "las líneas [..].")
+        c = self.card("Idioma", "[es]: las ÚNICAS marcas que cuentan como castellano (puntúan «Español» y "
+                                "son las que se exigen al bajar capítulos sin doblaje confirmado); lo que quites "
+                                "deja de contar. El resto: el motor siempre excluye estos idiomas sin pista en "
+                                "español (VOS, francés/VOSTFR, italiano, alemán, portugués) y penaliza el catalán; "
+                                "tus marcadores se AÑADEN por secciones [vos] [fr] [it] [de] [pt] [ca]. Uno por "
+                                "línea. No toques las líneas [..].")
         langs = {kind: (self.cfg.get(ckey, []) or []) for kind, ckey in LANG_CONFIG_KEYS.items()}
         lang_box = list_box([], height=240, tip="Todos los idiomas juntos, por secciones.\nCada marcador se suma "
                                                 "al motor de su idioma.\nUno por línea, sin comas ni regex.")

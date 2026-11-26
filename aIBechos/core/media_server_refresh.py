@@ -4,7 +4,8 @@ de subir contenido nuevo, en vez de esperar a su próximo escaneo periódico.
 Cada uno se activa de forma independiente, solo si el usuario configura
 host+credencial en Ajustes -- si no, no se llama a nada.
 
-De momento refresca la biblioteca ENTERA de cada servidor (no solo la
+Plex: refresca la biblioteca ENTERA. Jellyfin: solo la serie si ya existe
+allí (ver trigger_refresh); si no, también la biblioteca entera (no solo la
 carpeta concreta que se acaba de subir): evita tener que hacer que el
 usuario empareje cada categoría FTP con un ID de sección de Plex/biblioteca
 de Jellyfin, a costa de ser menos quirúrgico. Tanto Plex como Jellyfin son
@@ -1270,7 +1271,7 @@ def _reset_storage_cache_for_tests() -> None:
     _storage_cache = {"ts": 0.0, "folders": None}
 
 
-def refresh_configured_servers(config, force: bool = False) -> None:
+def refresh_configured_servers(config, force: bool = False, skip_jellyfin: bool = False) -> None:
     """Refresca Plex y/o Jellyfin según lo que haya activado el usuario en
     *config* (objeto con .get(key, default), p.ej. Config o el dict-like
     que usa AutoWatcher). No lanza -- cualquier fallo queda solo registrado
@@ -1279,30 +1280,167 @@ def refresh_configured_servers(config, force: bool = False) -> None:
         ok, msg = refresh_plex(config.get("plex_host", ""), config.get("plex_token", ""))
         if not ok:
             _log.warning("Refresco de Plex no completado: %s", msg)
-    if config.get("jellyfin_enabled"):
+    if config.get("jellyfin_enabled") and not skip_jellyfin:
         ok, msg = refresh_jellyfin(config.get("jellyfin_host", ""), config.get("jellyfin_api_key", ""))
         if not ok:
             _log.warning("Refresco de Jellyfin no completado: %s", msg)
 
 
-def trigger_refresh(config, min_interval_seconds: int = 60) -> None:
+def trigger_refresh(config, min_interval_seconds: int = 60, media_info=None) -> None:
     """Punto de entrada pensado para llamar tras cada subida (manual o
-    automática): con antirrebote -- si ya se refrescó hace menos de
-    min_interval_seconds, no hace nada, para no machacar Plex/Jellyfin con
-    un aviso por cada archivo de un lote grande -- y siempre en un hilo
-    aparte, así el llamador nunca espera a la respuesta de red."""
+    automática), siempre en hilos aparte (el llamador nunca espera a la red).
+
+    Jellyfin, si se sabe a qué SERIE va la subida (*media_info* con tmdb_id
+    y media_type "tv") y la serie ya existe allí: se reescanea solo esa
+    serie (refresh_jellyfin_series, segundos) en vez de la biblioteca
+    entera, que con una biblioteca grande tardaba minutos y el ▶ de
+    Archivos no encontraba el capítulo recién subido. Si la serie aún no
+    existe (o es una película, que siempre es un item nuevo), refresco
+    completo como antes.
+
+    El refresco completo lleva antirrebote para no machacar el servidor con
+    un aviso por archivo de un lote: la primera llamada va al momento y las
+    que llegan dentro de *min_interval_seconds* se agrupan en UNA al final
+    del intervalo. Antes se DESCARTABAN sin más, así que lo subido en ese
+    minuto no se indexaba hasta el siguiente escaneo programado."""
+    targeted_jellyfin = False
+    try:
+        tmdb_id = int(getattr(media_info, "tmdb_id", 0) or 0)
+    except (TypeError, ValueError):
+        tmdb_id = 0
+    if (media_info is not None and getattr(media_info, "media_type", "") == "tv" and tmdb_id
+            and config.get("jellyfin_enabled")):
+        targeted_jellyfin = True
+        threading.Thread(target=_refresh_jellyfin_series_or_full,
+                         args=(config, tmdb_id, min_interval_seconds), daemon=True).start()
+    _debounced_full_refresh(config, min_interval_seconds, skip_jellyfin=targeted_jellyfin)
+
+
+_pending_timers = {}   # clave ("plex+jellyfin" / "plex") -> threading.Timer pendiente
+
+
+def _debounced_full_refresh(config, min_interval_seconds: int, skip_jellyfin: bool = False) -> None:
+    """Refresco completo (refresh_configured_servers) con antirrebote de
+    primera + última llamada -- ver trigger_refresh."""
     global _last_refresh_ts
+    if skip_jellyfin:
+        if not config.get("plex_enabled"):
+            return
+        target = lambda: refresh_configured_servers(config, skip_jellyfin=True)
+    else:
+        target = lambda: refresh_configured_servers(config)
     with _refresh_lock:
         now = time.monotonic()
-        if now - _last_refresh_ts < min_interval_seconds:
+        wait = min_interval_seconds - (now - _last_refresh_ts)
+        if wait <= 0:
+            _last_refresh_ts = now
+            threading.Thread(target=target, daemon=True).start()
             return
-        _last_refresh_ts = now
-    threading.Thread(target=refresh_configured_servers, args=(config,), daemon=True).start()
+        key = "plex" if skip_jellyfin else "all"
+        # Un pendiente "all" ya cubre también a Plex.
+        if key in _pending_timers or "all" in _pending_timers:
+            return
+
+        def _fire():
+            global _last_refresh_ts
+            with _refresh_lock:
+                _pending_timers.pop(key, None)
+                _last_refresh_ts = time.monotonic()
+            target()
+
+        timer = threading.Timer(wait, _fire)
+        timer.daemon = True
+        _pending_timers[key] = timer
+        timer.start()
+
+
+_series_refresh_ts = {}   # tmdb_id -> monotonic del último reescaneo de esa serie
+_SERIES_REFRESH_MIN_GAP = 5.0
+
+
+def _refresh_jellyfin_series_or_full(config, tmdb_id: int, min_interval_seconds: int = 60) -> bool:
+    """Reescanea en Jellyfin solo la serie *tmdb_id*; si no existe allí aún
+    (serie nueva), refresco completo con antirrebote. True si se pudo pedir
+    el reescaneo de la serie."""
+    host = config.get("jellyfin_host", "")
+    key = config.get("jellyfin_api_key", "")
+    with _refresh_lock:
+        now = time.monotonic()
+        if now - _series_refresh_ts.get(tmdb_id, -1e9) < _SERIES_REFRESH_MIN_GAP:
+            return True   # se acaba de pedir para esta misma serie
+        _series_refresh_ts[tmdb_id] = now
+    found = find_jellyfin_item_by_tmdb_id(host, key, tmdb_id, "tv")
+    if found and found.get("id"):
+        ok, _msg = refresh_jellyfin_series(host, key, found["id"])
+        if ok:
+            return True
+    _log.info("Jellyfin: serie tmdb_id=%s sin ficha todavía, refresco de la biblioteca entera", tmdb_id)
+    with _refresh_lock:
+        _series_refresh_ts.pop(tmdb_id, None)
+    _debounced_jellyfin_only(config, min_interval_seconds)
+    return False
+
+
+def _debounced_jellyfin_only(config, min_interval_seconds: int) -> None:
+    """Refresco completo SOLO de Jellyfin con el mismo antirrebote."""
+    class _OnlyJellyfin:
+        def get(self, k, default=None):
+            if k == "plex_enabled":
+                return False
+            return config.get(k, default)
+    _debounced_full_refresh(_OnlyJellyfin(), min_interval_seconds)
+
+
+def refresh_jellyfin_series(host: str, api_key: str, item_id: str, timeout: int = 10) -> tuple[bool, str]:
+    """Reescanea en Jellyfin UNA serie (su carpeta y subcarpetas): descubre
+    los archivos nuevos en segundos, sin recorrer la biblioteca entera.
+    Mismo efecto que "Actualizar metadatos -> Buscar archivos nuevos" de la
+    ficha de la serie en la web de Jellyfin."""
+    if not host or not api_key or not item_id:
+        return False, "Jellyfin no configurado"
+    try:
+        resp = requests.post(
+            f"{host.rstrip('/')}/Items/{item_id}/Refresh",
+            headers={"X-Emby-Token": api_key},
+            params={"Recursive": "true", "MetadataRefreshMode": "Default",
+                    "ImageRefreshMode": "Default", "ReplaceAllMetadata": "false",
+                    "ReplaceAllImages": "false"},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        _log.warning("Jellyfin: fallo al reescanear la serie %s: %s", item_id, e)
+        return False, f"Error reescaneando la serie: {e}"
+    _log.info("Jellyfin: reescaneo de la serie %s disparado", item_id)
+    return True, "Reescaneo disparado"
+
+
+def request_jellyfin_index(config, media_info) -> None:
+    """Para el ▶ de Archivos cuando Jellyfin aún no tiene lo subido: pide
+    que lo indexe ya (la serie sola si existe; si no, la biblioteca, sin
+    esperar al antirrebote -- lo pidió el usuario a mano). Bloqueante,
+    llamar desde un hilo."""
+    try:
+        tmdb_id = int(getattr(media_info, "tmdb_id", 0) or 0)
+    except (TypeError, ValueError):
+        tmdb_id = 0
+    host = config.get("jellyfin_host", "")
+    key = config.get("jellyfin_api_key", "")
+    if getattr(media_info, "media_type", "") == "tv" and tmdb_id:
+        found = find_jellyfin_item_by_tmdb_id(host, key, tmdb_id, "tv")
+        if found and found.get("id") and refresh_jellyfin_series(host, key, found["id"])[0]:
+            return
+    refresh_jellyfin(host, key)
 
 
 def _reset_debounce_for_tests() -> None:
     global _last_refresh_ts
-    _last_refresh_ts = 0.0
+    with _refresh_lock:
+        _last_refresh_ts = 0.0
+        for t in _pending_timers.values():
+            t.cancel()
+        _pending_timers.clear()
+        _series_refresh_ts.clear()
 
 
 def get_jellyfin_movies(host: str, api_key: str, timeout: int = 15) -> Optional[list]:

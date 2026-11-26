@@ -21,7 +21,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QHBoxLayout, QLabel
                                QVBoxLayout, QWidget)
 
 from core import missing_ep_rows as mer
-from core.amule_download import auto_download, typical_size_for_query, typical_size_for_series
+from core.amule_download import (NO_CASTELLANO_REASON, auto_download, typical_size_for_query,
+                                 typical_size_for_series)
 from core.amule_search import build_amule_query
 from core.applog import get_logger
 from gui_qt import theme
@@ -636,6 +637,17 @@ class MissingEpisodesTab(QWidget):
                                  templates=self.config.get("series_search_patterns", {}) or {},
                                  prefers_castellano=self.ctx_prefers_castellano(r["name"]))
 
+    def _score_query_for(self, r: dict, season: int, ep: int) -> str:
+        """La consulta sin plantilla de búsqueda: con ella se puntúa (ver
+        amule_download._effective_score_query)."""
+        return build_amule_query(r["name"], season, ep)
+
+    @staticmethod
+    def _origin_for(r: dict, tmdb_id, season: int, ep: int) -> dict:
+        """Ficha que se apunta al lanzar la descarga (ver core/download_origin.py)."""
+        return {"tmdb_id": tmdb_id, "media_type": "tv", "title": r.get("name", ""),
+                "season": season, "episode": ep}
+
     def _confirm_dub(self, r: dict, season: int, eps: list) -> bool:
         """Con "Ocultar sin doblaje ES" activo, avisa antes de descargar
         episodios sin doblaje confirmado. True = seguir."""
@@ -651,6 +663,19 @@ class MissingEpisodesTab(QWidget):
                        "confirmado (ni en TMDB/eldoblaje ni por la IA). Lo que se encuentre en aMule "
                        "probablemente sea V.O.S.",
                        confirm_text="Descargar igual")
+
+    def _require_castellano(self, r: dict, season: int, ep: int) -> bool:
+        """True si este capítulo solo debe bajarse con un nombre que declare
+        castellano: sin doblaje confirmado y "Descargar sin doblaje" apagado
+        -- mismo criterio que el autocompletado, que esos ni los descarga.
+        Lo que no dice idioma suele ser la versión original (real: Dragon
+        Ball Daima 1x11/1x14 bajados en japonés desde "Descargar temporada")."""
+        if self.config.get("download_undubbed", False):
+            return False
+        try:
+            return bool(mer.dub_warning_eps(r, season, [ep], self._dub_cache))
+        except Exception:
+            return False
 
     def _set_dl_state(self, key, color):
         self.model.dl_state[key] = color
@@ -673,17 +698,27 @@ class MissingEpisodesTab(QWidget):
                 nodes = [n for n in nodes if (n.tmdb_id, n.line[0]) != (tmdb_id, season)]
         if not nodes:
             return
-        jobs = [(n.episode_key(), n.r, self._query_for(n.r, n.line[0], n.line[1])) for n in nodes]
-        for key, _r, _q in jobs:
+        jobs = [(n.episode_key(), n.r, self._query_for(n.r, n.line[0], n.line[1]),
+                 self._require_castellano(n.r, n.line[0], n.line[1])) for n in nodes]
+        for key, _r, _q, _rc in jobs:
             self._set_dl_state(key, theme.ICON_DL_BUSY)
         if len(jobs) > 1:
             self.ctx.set_status(f"Descargando {len(jobs)} episodio(s)…")
 
         def worker():
             ok_count = 0
-            for i, (key, _r, query) in enumerate(jobs):
-                typical = typical_size_for_query(self.config, query)
-                ok, why, _h, chosen = auto_download(self.config, self.ctx.ec_lock, query, typical_size=typical)
+            for i, (key, _r, query, req_cast) in enumerate(jobs):
+                # Típico y puntuación con el nombre real de la serie, no con
+                # la plantilla de búsqueda (ver amule_download._effective_score_query).
+                season, ep = key[1], key[2]
+                try:
+                    typical = typical_size_for_series(self.config, _r["name"], season)
+                except Exception:
+                    typical = typical_size_for_query(self.config, query)
+                ok, why, _h, chosen = auto_download(self.config, self.ctx.ec_lock, query, typical_size=typical,
+                                                    require_castellano=req_cast,
+                                                    score_query=self._score_query_for(_r, season, ep),
+                                                    origin=self._origin_for(_r, key[0], season, ep))
                 if ok:
                     ok_count += 1
                     color = theme.ICON_DL_OK
@@ -727,34 +762,43 @@ class MissingEpisodesTab(QWidget):
                 continue
             if not self._confirm_dub(r, season, eps):
                 continue
-            jobs.append((tmdb_id, season, r, eps))
+            jobs.append((tmdb_id, season, r, eps,
+                         {ep: self._require_castellano(r, season, ep) for ep in eps}))
         if not jobs:
             return
-        for tmdb_id, season, _r, _eps in jobs:
+        for tmdb_id, season, _r, _eps, _rc in jobs:
             self._set_dl_state((tmdb_id, season), theme.ICON_DL_BUSY)
         total = sum(len(j[3]) for j in jobs)
         self.ctx.set_status(f"Descargando {total} episodio(s) de {len(jobs)} temporada(s)…")
 
         def worker():
             ok_total = 0
-            for tmdb_id, season, r, eps in jobs:
+            for tmdb_id, season, r, eps, req_cast in jobs:
                 try:
                     typical = typical_size_for_series(self.config, r["name"], season)
                 except Exception:
                     typical = None
                 ok_count = 0
+                no_cast = []
                 for ep in eps:
-                    ok, _why, _h, _n = auto_download(self.config, self.ctx.ec_lock,
-                                                     self._query_for(r, season, ep), typical_size=typical)
+                    ok, why, _h, _n = auto_download(self.config, self.ctx.ec_lock,
+                                                    self._query_for(r, season, ep), typical_size=typical,
+                                                    require_castellano=req_cast.get(ep, False),
+                                                    score_query=self._score_query_for(r, season, ep),
+                                                    origin=self._origin_for(r, tmdb_id, season, ep))
                     if ok:
                         ok_count += 1
+                    elif why == NO_CASTELLANO_REASON:
+                        no_cast.append(ep)
                     time.sleep(1.2)
                 ok_total += ok_count
                 color = theme.ICON_DL_OK if ok_count == len(eps) else (
                     theme.ICON_DL_ALREADY if ok_count else theme.ICON_DL_FAIL)
                 ui(lambda k=(tmdb_id, season), c=color: self._set_dl_state(k, c))
-                self.ctx.set_status(f"{r['name']} T{season} lanzada: {ok_count}/{len(eps)} episodio(s)",
-                                    theme.SUCCESS_COLOR if ok_count else theme.WARNING_COLOR)
+                extra = (f" -- sin versión en castellano: {', '.join(f'{season}x{e:02d}' for e in no_cast)}"
+                         if no_cast else "")
+                self.ctx.set_status(f"{r['name']} T{season} lanzada: {ok_count}/{len(eps)} episodio(s){extra}",
+                                    theme.SUCCESS_COLOR if ok_count and not no_cast else theme.WARNING_COLOR)
             if len(jobs) > 1:
                 self.ctx.set_status(f"Lanzados {ok_total}/{total} episodio(s)",
                                     theme.SUCCESS_COLOR if ok_total else theme.WARNING_COLOR)

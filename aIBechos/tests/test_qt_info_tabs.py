@@ -230,3 +230,30 @@ def test_historial_omitidos_y_cancelados_con_motivo(qtbot):
     assert m.data(m.index(2, H_STATE)) == "Cancelado"
     assert m.data(m.index(1, 7), ActionsRole)[0].enabled          # con ruta: reintentable
     assert not m.data(m.index(2, 7), ActionsRole)[0].enabled      # sin ruta: no
+
+
+def test_historial_tipo_adelgazar(qtbot):
+    from gui_qt.history.tab import H_KIND, HistoryModel, upload_summary
+    m = HistoryModel()
+    rows = [{"filename": "a.mkv", "status": "ok", "remote": "/p/a.mkv", "size": 5},
+            {"filename": "b.mkv", "status": "ok", "remote": "/p/b.mkv", "size": 7, "slim": True},
+            {"kind": "borrado", "name": "c", "reason": "x"}]
+    m.set_rows(rows)
+    assert [m.data(m.index(i, H_KIND)) for i in range(3)] == ["Subida", "Adelgazar", "Borrado"]
+    assert upload_summary(rows).startswith("2 subidas"), "la ligera cuenta como subida"
+
+
+def test_subida_de_adelgazamiento_se_marca(tmp_path):
+    import threading
+    from core.app_files_core import FilesCoreMixin
+    pushed = []
+    host = SimpleNamespace(config_data={"app_user_name": "Jose"}, _history_lock=threading.Lock(),
+                           _history_path=lambda: tmp_path / "h.json", _load_history=lambda: [],
+                           _push_activity_entry_to_ftp=lambda e, k: pushed.append(e),
+                           _history_dirty=False)
+    for slim in (True, False):
+        try:
+            FilesCoreMixin._save_history_entry(host, "x.mkv", "/s/x.mkv", "ok", 10, slim=slim)
+        except AttributeError:
+            pass   # estadísticas posteriores: fuera del alcance
+    assert pushed[0].get("slim") is True and "slim" not in pushed[1]

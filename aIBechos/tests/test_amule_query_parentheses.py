@@ -8,7 +8,7 @@ from core.amule_search import build_amule_query, build_amule_season_query, searc
 def test_paréntesis_final_fuera_de_la_búsqueda():
     assert build_amule_query("Incontrolable (I Swear)", None, None, "2025") == "Incontrolable"
     assert build_amule_query("El juego de la sospecha (Cluedo)", None, None, "1985",
-                             None, True) == "El juego de la sospecha castellano"
+                             None, True) == "El juego de la sospecha"
     assert build_amule_query("Doctor Who (2005)", 3, 4) == "Doctor Who 3x04"
     assert build_amule_season_query("Doctor Who (2005)", 3) == "Doctor Who 3x"
 

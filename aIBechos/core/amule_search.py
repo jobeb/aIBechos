@@ -59,8 +59,12 @@ def _normalize(s: str) -> str:
 
 
 def _maybe_add_castellano(q: str, prefers: bool) -> str:
-    if prefers and "castellano" not in q.lower():
-        return f"{q} castellano" if q else "castellano"
+    """Ya NO añade "castellano" a la búsqueda (se mantiene la firma para
+    los llamadores de *prefers_castellano*): Kad exige TODAS las palabras,
+    así que dejaba fuera los buenos que no lo dicen en el nombre -- real:
+    "Dragon Ball Daima 1x10 castellano" daba 1 resultado contra 14 sin la
+    palabra. La preferencia por castellano la aplica la puntuación
+    (download_quality, lista [es] de Preferencias de descarga)."""
     return q
 
 
@@ -75,8 +79,7 @@ def _build_amule_query_raw(series_name: str, season: int, episode: int,
     - Si no hay template, devuelve f"{series_name} {season}x{episode:02d}".
     - Para películas (season/episode None): devuelve el template formateado sin sufijo,
       o series_name si no hay template.
-    - Si prefers_castellano=True y la query no trae 'castellano', lo añade como
-      indicador (el nombre del archivo original contenía Castellano/castellano).
+    - prefers_castellano ya no cambia la query (ver _maybe_add_castellano).
 
     templates: dict {nombre_TMDB: template_str} o None.
     """
@@ -133,10 +136,6 @@ def _build_amule_query_raw(series_name: str, season: int, episode: int,
 
     # Limpiar dobles espacios
     q = re.sub(r"\s{2,}", " ", q).strip()
-    # Si hay template personalizado se respeta tal cual (no añadir castellano automáticamente)
-    has_custom = tmpl is not None and str(tmpl).strip() != ""
-    if not has_custom and prefers_castellano and "castellano" not in q.lower():
-        q = f"{q} castellano" if q else "castellano"
     return q if q else f"{series_name} {season}x{episode:02d}" if season is not None else series_name
 
 
